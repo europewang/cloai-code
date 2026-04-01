@@ -162,6 +162,12 @@ doge
 
 也就是说，这个 Fork 现在的目标入口名是 [`doge`](README.md)，而不是 [`claude`](README.md)。
 
+如果你使用 [`bun link`](README.md) 进行全局注册链接，那么现在注册出来的包名也不再是原版名，而是：
+
+```bash
+@doge-code/cli
+```
+
 输出版本号：
 
 ```bash

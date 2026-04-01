@@ -1,5 +1,5 @@
 {
-  "name": "@anthropic-ai/claude-code",
+  "name": "@doge-code/cli",
   "version": "999.0.0-DOGE",
   "private": true,
   "description": "Restored Claude Code source tree reconstructed from source maps.",
