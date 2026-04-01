@@ -148,6 +148,91 @@
 bun install
 ```
 
+## 快速安装（推荐开发者直接源码使用）
+
+如果你是直接拉这个仓库源码来用，最快的方式是用 [`bun link`](README.md) 把它注册成全局命令。
+
+### 方式一：源码目录内直接注册
+
+在仓库根目录执行：
+
+```bash
+bun install
+bun link
+```
+
+注册成功后：
+
+- 全局包名是 [`@doge-code/cli`](package.json:2)
+- 命令名是 [`doge`](package.json:24)
+
+此后可直接运行：
+
+```bash
+doge
+```
+
+### 方式二：在其他项目中引用 link 包
+
+如果你要在别的工程里依赖它，可以使用：
+
+```bash
+bun link @doge-code/cli
+```
+
+或者在 [`package.json`](package.json) 中写：
+
+```json
+{
+  "dependencies": {
+    "@doge-code/cli": "link:@doge-code/cli"
+  }
+}
+```
+
+## 使用 Git 直接源码级更新
+
+这个 Fork 很适合直接通过 Git 拉取更新，而不是走传统已发布包升级。
+
+典型更新流程：
+
+```bash
+git pull
+bun install
+bun link
+```
+
+含义分别是：
+
+- [`git pull`](README.md)：拉取最新源码改动
+- [`bun install`](README.md)：同步依赖变化
+- [`bun link`](README.md)：刷新全局 link 注册，确保命令入口与当前源码一致
+
+如果你本地就是长期用源码目录跑 [`Doge Code`](README.md)，这基本就是“源码级更新”的标准姿势。
+
+### 一个推荐工作流
+
+首次安装：
+
+```bash
+git clone <your-fork-or-repo-url>
+cd claude-code-rev
+bun install
+bun link
+doge
+```
+
+后续更新：
+
+```bash
+git pull
+bun install
+bun link
+doge
+```
+
+## 命令与包名
+
 运行 [`Doge Code`](README.md) CLI：
 
 ```bash
