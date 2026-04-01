@@ -1,4 +1,6 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
+import { getGlobalConfig } from '../config.js'
+import { readCustomApiStorage } from '../customApiStorage.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
@@ -13,7 +15,7 @@ export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
 
 export type AgentModelOption = {
-  value: AgentModelAlias
+  value: string
   label: string
   description: string
 }
@@ -132,6 +134,28 @@ export function getAgentModelDisplay(model: string | undefined): string {
  * Get available model options for agents
  */
 export function getAgentModelOptions(): AgentModelOption[] {
+  const customModels = [
+    ...(getGlobalConfig().customApiEndpoint?.savedModels ?? []),
+    ...(readCustomApiStorage().savedModels ?? []),
+  ]
+    .map(model => model.trim())
+    .filter(Boolean)
+
+  if (customModels.length > 0) {
+    return [
+      ...[...new Set(customModels)].map(model => ({
+        value: model,
+        label: model,
+        description: 'Custom model',
+      })),
+      {
+        value: 'inherit',
+        label: 'Inherit from parent',
+        description: 'Use the same model as the main conversation',
+      },
+    ]
+  }
+
   return [
     {
       value: 'sonnet',

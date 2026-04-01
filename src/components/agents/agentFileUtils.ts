@@ -14,6 +14,16 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { getErrnoCode } from '../../utils/errors.js'
 import { AGENT_PATHS } from './types.js'
 
+function assertPathSegment(
+  value: string | undefined,
+  name: string,
+): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`[agentFileUtils] ${name} is undefined or empty`)
+  }
+  return value
+}
+
 /**
  * Formats agent data as markdown file content
  */
@@ -62,24 +72,20 @@ function getAgentDirectoryPath(location: SettingSource): string {
     case 'flagSettings':
       throw new Error(`Cannot get directory path for ${location} agents`)
     case 'userSettings':
-      return join(getClaudeConfigHomeDir(), AGENT_PATHS.AGENTS_DIR)
+      return join(getClaudeConfigHomeDir(), 'agents')
     case 'projectSettings':
-      return join(getCwd(), AGENT_PATHS.FOLDER_NAME, AGENT_PATHS.AGENTS_DIR)
+      return join(getCwd(), '.claude', 'agents')
     case 'policySettings':
-      return join(
-        getManagedFilePath(),
-        AGENT_PATHS.FOLDER_NAME,
-        AGENT_PATHS.AGENTS_DIR,
-      )
+      return join(getManagedFilePath(), '.claude', 'agents')
     case 'localSettings':
-      return join(getCwd(), AGENT_PATHS.FOLDER_NAME, AGENT_PATHS.AGENTS_DIR)
+      return join(getCwd(), '.claude', 'agents')
   }
 }
 
 function getRelativeAgentDirectoryPath(location: SettingSource): string {
   switch (location) {
     case 'projectSettings':
-      return join('.', AGENT_PATHS.FOLDER_NAME, AGENT_PATHS.AGENTS_DIR)
+      return join('.', '.claude', 'agents')
     default:
       return getAgentDirectoryPath(location)
   }
@@ -93,8 +99,12 @@ export function getNewAgentFilePath(agent: {
   source: SettingSource
   agentType: string
 }): string {
-  const dirPath = getAgentDirectoryPath(agent.source)
-  return join(dirPath, `${agent.agentType}.md`)
+  const dirPath = assertPathSegment(
+    getAgentDirectoryPath(agent.source),
+    'dirPath(getNewAgentFilePath)',
+  )
+  const agentType = assertPathSegment(agent.agentType, 'agentType(getNewAgentFilePath)')
+  return join(dirPath, `${agentType}.md`)
 }
 
 /**
@@ -125,8 +135,15 @@ export function getNewRelativeAgentFilePath(agent: {
   if (agent.source === 'built-in') {
     return 'Built-in'
   }
-  const dirPath = getRelativeAgentDirectoryPath(agent.source)
-  return join(dirPath, `${agent.agentType}.md`)
+  const dirPath = assertPathSegment(
+    getRelativeAgentDirectoryPath(agent.source),
+    'dirPath(getNewRelativeAgentFilePath)',
+  )
+  const agentType = assertPathSegment(
+    agent.agentType,
+    'agentType(getNewRelativeAgentFilePath)',
+  )
+  return join(dirPath, `${agentType}.md`)
 }
 
 /**

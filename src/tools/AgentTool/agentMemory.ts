@@ -28,13 +28,13 @@ function sanitizeAgentTypeForPath(agentType: string): string {
  */
 function getLocalAgentMemoryDir(dirName: string): string {
   if (process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR) {
+    const projectRoot = findCanonicalGitRoot(getProjectRoot()) ?? getProjectRoot()
+    const sanitizedProjectRoot = sanitizePath(projectRoot)
     return (
       join(
         process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR,
         'projects',
-        sanitizePath(
-          findCanonicalGitRoot(getProjectRoot()) ?? getProjectRoot(),
-        ),
+        sanitizedProjectRoot || 'default-project',
         'agent-memory-local',
         dirName,
       ) + sep
