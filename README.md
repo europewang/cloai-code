@@ -154,6 +154,14 @@ bun install
 bun run dev
 ```
 
+安装为全局命令后，默认命令名为：
+
+```bash
+doge
+```
+
+也就是说，这个 Fork 现在的目标入口名是 [`doge`](README.md)，而不是 [`claude`](README.md)。
+
 输出版本号：
 
 ```bash

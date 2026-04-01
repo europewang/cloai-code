@@ -20,6 +20,9 @@
     "version": "bun run ./src/bootstrap-entry.ts --version",
     "dev:restore-check": "bun run ./src/dev-entry.ts"
   },
+  "bin": {
+    "doge": "./src/bootstrap-entry.ts"
+  },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "*",
     "@ant/claude-for-chrome-mcp": "file:./shims/ant-claude-for-chrome-mcp",
