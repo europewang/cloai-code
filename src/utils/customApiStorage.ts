@@ -1,6 +1,7 @@
 import { getSecureStorage } from './secureStorage/index.js'
 
 export type CustomApiStorageData = {
+  provider?: 'anthropic' | 'openai'
   baseURL?: string
   apiKey?: string
   model?: string
@@ -19,6 +20,10 @@ export function readCustomApiStorage(): CustomApiStorageData {
   if (!raw || typeof raw !== 'object') return {}
   const value = raw as Record<string, unknown>
   return {
+    provider:
+      value.provider === 'openai' || value.provider === 'anthropic'
+        ? value.provider
+        : undefined,
     baseURL: typeof value.baseURL === 'string' ? value.baseURL : undefined,
     apiKey: typeof value.apiKey === 'string' ? value.apiKey : undefined,
     model: typeof value.model === 'string' ? value.model : undefined,

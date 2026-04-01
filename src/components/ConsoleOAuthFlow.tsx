@@ -26,11 +26,16 @@ type Props = {
   mode?: 'login' | 'setup-token';
   forceLoginMethod?: 'claudeai' | 'console';
 };
+type CompatibleApiProvider = 'anthropic' | 'openai';
 type OAuthStatus = {
   state: 'idle';
 } // Initial state, waiting to select login method
 | {
+  state: 'provider_select';
+} // Select compatible API protocol/provider
+| {
   state: 'custom_config';
+  provider: CompatibleApiProvider;
   step: 'baseURL' | 'apiKey' | 'model';
 } // Collect custom compatible API endpoint config
 | {
@@ -72,6 +77,7 @@ export function ConsoleOAuthFlow({
     ...(getGlobalConfig().customApiEndpoint ?? {}),
     ...readCustomApiStorage()
   }), []);
+  const persistedProvider = persistedCustomApiEndpoint.provider ?? 'anthropic';
   const terminal = useTerminalNotification();
   const [oauthStatus, setOAuthStatus] = useState<OAuthStatus>(() => {
     if (mode === 'setup-token') {
@@ -85,10 +91,10 @@ export function ConsoleOAuthFlow({
       };
     }
     return {
-      state: 'custom_config',
-      step: 'baseURL'
+      state: 'provider_select'
     };
   });
+  const [compatibleApiProvider, setCompatibleApiProvider] = useState<CompatibleApiProvider>(persistedProvider);
   const [pastedCode, setPastedCode] = useState('');
   const [cursorOffset, setCursorOffset] = useState(0);
   const [customBaseURL, setCustomBaseURL] = useState(persistedCustomApiEndpoint.baseURL ?? process.env.ANTHROPIC_BASE_URL ?? '');
@@ -106,6 +112,15 @@ export function ConsoleOAuthFlow({
   const [urlCopied, setUrlCopied] = useState(false);
   const [isCustomInputPasting, setIsCustomInputPasting] = useState(false);
   const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
+
+  const startCompatibleApiConfig = useCallback((provider: CompatibleApiProvider) => {
+    setCompatibleApiProvider(provider);
+    setOAuthStatus({
+      state: 'custom_config',
+      provider,
+      step: 'baseURL'
+    });
+  }, []);
 
   // Log forced login method on mount
   useEffect(() => {
@@ -179,6 +194,7 @@ export function ConsoleOAuthFlow({
     saveGlobalConfig(current => ({
       ...current,
       customApiEndpoint: {
+        provider: compatibleApiProvider,
         baseURL: nextBaseURL,
         apiKey: undefined,
         model: nextModel
@@ -189,12 +205,13 @@ export function ConsoleOAuthFlow({
       } : current.customApiKeyResponses
     }));
     writeCustomApiStorage({
+      provider: compatibleApiProvider,
       baseURL: nextBaseURL,
       apiKey: nextApiKey,
       model: nextModel,
       savedModels: persistedCustomApiEndpoint.savedModels ?? []
     });
-  }, [customApiKey, customBaseURL, customModel]);
+  }, [compatibleApiProvider, customApiKey, customBaseURL, customModel, persistedCustomApiEndpoint.savedModels]);
   const handleSubmitCustomConfig = useCallback((value: string) => {
     if (oauthStatus.state !== 'custom_config') {
       return;
@@ -207,6 +224,7 @@ export function ConsoleOAuthFlow({
           message: '兼容地址不能为空',
           toRetry: {
             state: 'custom_config',
+            provider: oauthStatus.provider,
             step: 'baseURL'
           }
         });
@@ -214,10 +232,11 @@ export function ConsoleOAuthFlow({
       }
       setCustomBaseURL(nextValue);
       setCursorOffset(0);
-      setOAuthStatus({
-        state: 'custom_config',
-        step: 'apiKey'
-      });
+        setOAuthStatus({
+          state: 'custom_config',
+          provider: oauthStatus.provider,
+          step: 'apiKey'
+        });
       return;
     }
     if (oauthStatus.step === 'apiKey') {
@@ -228,6 +247,7 @@ export function ConsoleOAuthFlow({
           message: 'API Key 不能为空',
           toRetry: {
             state: 'custom_config',
+            provider: oauthStatus.provider,
             step: 'apiKey'
           }
         });
@@ -235,10 +255,11 @@ export function ConsoleOAuthFlow({
       }
       setCustomApiKey(nextValue);
       setCursorOffset(0);
-      setOAuthStatus({
-        state: 'custom_config',
-        step: 'model'
-      });
+        setOAuthStatus({
+          state: 'custom_config',
+          provider: oauthStatus.provider,
+          step: 'model'
+        });
       return;
     }
     const nextValue = value.trim();
@@ -248,6 +269,7 @@ export function ConsoleOAuthFlow({
         message: '模型不能为空',
         toRetry: {
           state: 'custom_config',
+          provider: oauthStatus.provider,
           step: 'model'
         }
       });
@@ -259,7 +281,7 @@ export function ConsoleOAuthFlow({
       state: 'success'
     });
     void sendNotification({
-      message: 'Custom Anthropic-compatible endpoint saved',
+      message: oauthStatus.provider === 'openai' ? 'OpenAI-compatible endpoint saved' : 'Anthropic-compatible endpoint saved',
       notificationType: 'auth_success'
     }, terminal);
   }, [oauthStatus, persistCustomEndpoint, terminal]);
@@ -436,7 +458,7 @@ export function ConsoleOAuthFlow({
             </Box>
           </Box>}
       <Box paddingLeft={1} flexDirection="column" gap={1}>
-        <OAuthStatusMessage oauthStatus={oauthStatus} mode={mode} startingMessage={startingMessage} forcedMethodMessage={forcedMethodMessage} showPastePrompt={showPastePrompt} pastedCode={pastedCode} setPastedCode={setPastedCode} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} textInputColumns={textInputColumns} handleSubmitCode={handleSubmitCode} setOAuthStatus={setOAuthStatus} setLoginWithClaudeAi={setLoginWithClaudeAi} customBaseURL={customBaseURL} customApiKey={customApiKey} customModel={customModel} setCustomBaseURL={setCustomBaseURL} setCustomApiKey={setCustomApiKey} setCustomModel={setCustomModel} isCustomInputPasting={isCustomInputPasting} setIsCustomInputPasting={setIsCustomInputPasting} handleSubmitCustomConfig={handleSubmitCustomConfig} />
+        <OAuthStatusMessage oauthStatus={oauthStatus} mode={mode} startingMessage={startingMessage} forcedMethodMessage={forcedMethodMessage} showPastePrompt={showPastePrompt} pastedCode={pastedCode} setPastedCode={setPastedCode} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} textInputColumns={textInputColumns} handleSubmitCode={handleSubmitCode} setOAuthStatus={setOAuthStatus} setLoginWithClaudeAi={setLoginWithClaudeAi} customBaseURL={customBaseURL} customApiKey={customApiKey} customModel={customModel} setCustomBaseURL={setCustomBaseURL} setCustomApiKey={setCustomApiKey} setCustomModel={setCustomModel} isCustomInputPasting={isCustomInputPasting} setIsCustomInputPasting={setIsCustomInputPasting} handleSubmitCustomConfig={handleSubmitCustomConfig} startCompatibleApiConfig={startCompatibleApiConfig} compatibleApiProvider={compatibleApiProvider} />
       </Box>
     </Box>;
 }
@@ -463,6 +485,8 @@ type OAuthStatusMessageProps = {
   isCustomInputPasting: boolean;
   setIsCustomInputPasting: (value: boolean) => void;
   handleSubmitCustomConfig: (value: string) => void;
+  startCompatibleApiConfig: (provider: CompatibleApiProvider) => void;
+  compatibleApiProvider: CompatibleApiProvider;
 };
 function OAuthStatusMessage(t0) {
   const $ = _c(51);
@@ -488,17 +512,30 @@ function OAuthStatusMessage(t0) {
     setCustomModel,
     isCustomInputPasting,
     setIsCustomInputPasting,
-    handleSubmitCustomConfig
+    handleSubmitCustomConfig,
+    startCompatibleApiConfig,
+    compatibleApiProvider
   } = t0;
   switch (oauthStatus.state) {
+    case "provider_select":
+      {
+        return <Box flexDirection="column" gap={1} marginTop={1}><Text bold={true}>选择模型 API 格式</Text><Text>Claude Code 内部仍保持 Anthropic Messages 协议；如果你选择 OpenAI，这里会通过中间转接层把内部 Messages 请求转换成 Chat Completions 请求并把返回流再转回 Messages 事件。</Text><Box><Select options={[{
+          label: <Text>Anthropic API 格式 · <Text dimColor={true}>直接使用兼容 `/v1/messages` 的接口</Text></Text>,
+          value: "anthropic"
+        }, {
+          label: <Text>OpenAI API 格式 · <Text dimColor={true}>将 Anthropic Messages 转接为 Chat Completions</Text></Text>,
+          value: "openai"
+        }]} onChange={value_0 => startCompatibleApiConfig(value_0 as CompatibleApiProvider)} /></Box></Box>;
+      }
     case "custom_config":
       {
-        const label = oauthStatus.step === 'baseURL' ? 'Enter a Base URL compatible with the Anthropic API:' : oauthStatus.step === 'apiKey' ? 'Enter API Key:' : 'Input the default model:';
+        const isOpenAIProvider = oauthStatus.provider === 'openai';
+        const label = oauthStatus.step === 'baseURL' ? isOpenAIProvider ? '输入 OpenAI Chat Completions 兼容 Base URL：' : '输入 Anthropic Messages 兼容 Base URL：' : oauthStatus.step === 'apiKey' ? isOpenAIProvider ? '输入 OpenAI API Key：' : '输入 Anthropic API Key：' : '输入默认模型名称：';
         const value = oauthStatus.step === 'baseURL' ? customBaseURL : oauthStatus.step === 'apiKey' ? customApiKey : customModel;
         const onChange = oauthStatus.step === 'baseURL' ? setCustomBaseURL : oauthStatus.step === 'apiKey' ? setCustomApiKey : setCustomModel;
-        const placeholder = oauthStatus.step === 'baseURL' ? 'http(s)://your-compatible-endpoint.example.com' : oauthStatus.step === 'apiKey' ? 'sk-...' : 'claude-3-5-sonnet-latest';
+        const placeholder = oauthStatus.step === 'baseURL' ? isOpenAIProvider ? 'http(s)://your-openai-compatible-endpoint.example.com' : 'http(s)://your-anthropic-compatible-endpoint.example.com' : oauthStatus.step === 'apiKey' ? 'sk-...' : isOpenAIProvider ? 'gpt-4o-mini' : 'claude-3-5-sonnet-latest';
         const mask = oauthStatus.step === 'apiKey' ? '*' : undefined;
-        return <Box flexDirection="column" gap={1} marginTop={1}><Text bold={true}>Configure custom interface</Text><Text>[Wallet] No money, no honey. Such poor. Very sad.</Text><Text>{label}</Text><Box flexDirection="row"><TextInput value={value} onChange={onChange} onSubmit={handleSubmitCustomConfig} onIsPastingChange={setIsCustomInputPasting} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={oauthStatus.step === 'baseURL' ? Math.max(20, textInputColumns - 12) : textInputColumns} focus={true} showCursor={true} placeholder={placeholder} mask={mask} dimColor={oauthStatus.step === 'model' && value.length === 0} />{oauthStatus.step === 'baseURL' ? <Text dimColor={true}>/v1/messages</Text> : null}</Box><Text dimColor={true}>{isCustomInputPasting ? 'Press Enter to save the current item and continue.' : 'Press Enter to save the current item and continue.'}</Text></Box>;
+        return <Box flexDirection="column" gap={1} marginTop={1}><Text bold={true}>配置兼容接口</Text><Text>{compatibleApiProvider === 'openai' ? '当前选择：OpenAI Chat Completions 兼容格式' : '当前选择：Anthropic Messages 兼容格式'}</Text><Text>{label}</Text><Box flexDirection="row"><TextInput value={value} onChange={onChange} onSubmit={handleSubmitCustomConfig} onIsPastingChange={setIsCustomInputPasting} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={oauthStatus.step === 'baseURL' ? Math.max(20, textInputColumns - 12) : textInputColumns} focus={true} showCursor={true} placeholder={placeholder} mask={mask} dimColor={oauthStatus.step === 'model' && value.length === 0} />{oauthStatus.step === 'baseURL' ? <Text dimColor={true}>{isOpenAIProvider ? '/v1/chat/completions' : '/v1/messages'}</Text> : null}</Box><Text dimColor={true}>{isCustomInputPasting ? '按 Enter 保存当前项并继续。' : '按 Enter 保存当前项并继续。'}</Text></Box>;
       }
     case "idle":
       {

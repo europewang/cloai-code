@@ -24,6 +24,12 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
+import { readCustomApiStorage } from 'src/utils/customApiStorage.js'
+import {
+  convertAnthropicRequestToOpenAI,
+  createAnthropicStreamFromOpenAI,
+  createOpenAICompatStream,
+} from './openaiCompat.js'
 import {
   getAttributionHeader,
   getCLISyspromptPrefix,
@@ -1819,6 +1825,36 @@ async function* queryModel(
         // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
         // since we handle tool input accumulation ourselves
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
+        const compatProvider = readCustomApiStorage().provider ?? 'anthropic'
+        if (compatProvider === 'openai') {
+          const openAIRequest = convertAnthropicRequestToOpenAI({
+            model: params.model,
+            system: params.system,
+            messages: params.messages,
+            tools: params.tools,
+            tool_choice: params.tool_choice,
+            temperature: params.temperature,
+            max_tokens: params.max_tokens,
+          })
+          const reader = await createOpenAICompatStream(
+            {
+              apiKey: process.env.DOGE_API_KEY || '',
+              baseURL: process.env.ANTHROPIC_BASE_URL || '',
+              headers: clientRequestId
+                ? { [CLIENT_REQUEST_ID_HEADER]: clientRequestId }
+                : undefined,
+              fetch: globalThis.fetch,
+            },
+            openAIRequest,
+            signal,
+          )
+          queryCheckpoint('query_response_headers_received')
+          return createAnthropicStreamFromOpenAI({
+            reader,
+            model: params.model,
+          }) as unknown as Stream<BetaRawMessageStreamEvent>
+        }
+
         const result = await anthropic.beta.messages
           .create(
             { ...params, stream: true },

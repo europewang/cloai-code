@@ -16,6 +16,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
+import { readCustomApiStorage } from 'src/utils/customApiStorage.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
   getIsNonInteractiveSession,
@@ -98,6 +99,8 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
+  const customApiProvider =
+    readCustomApiStorage().provider ?? getGlobalCompatProvider()
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
@@ -312,7 +315,19 @@ export async function getAnthropicClient({
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
 
+  if (customApiProvider === 'openai') {
+    ;(clientConfig as ConstructorParameters<typeof Anthropic>[0] & {
+      __openaiCompat?: boolean
+    }).__openaiCompat = true
+  }
+
   return new Anthropic(clientConfig)
+}
+
+function getGlobalCompatProvider(): 'anthropic' | 'openai' {
+  return process.env.CLAUDE_CODE_COMPATIBLE_API_PROVIDER === 'openai'
+    ? 'openai'
+    : 'anthropic'
 }
 
 async function configureApiKeyHeaders(
