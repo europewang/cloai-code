@@ -3,6 +3,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { fileSuffixForOauthConfig } from '../constants/oauth.js'
 import { isRunningWithBun } from './bundledMode.js'
+import { getDogeConfigDir } from './dogeConfigDir.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { findExecutable } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -19,6 +20,10 @@ export const getGlobalClaudeFile = memoize((): string => {
     )
   ) {
     return join(getClaudeConfigHomeDir(), '.config.json')
+  }
+
+  if (!process.env.CLAUDE_CONFIG_DIR) {
+    return join(getDogeConfigDir(), '.claude.json')
   }
 
   const filename = `.claude${fileSuffixForOauthConfig()}.json`
