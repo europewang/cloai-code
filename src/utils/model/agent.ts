@@ -141,7 +141,12 @@ export function getAgentModelOptions(): AgentModelOption[] {
     .map(model => model.trim())
     .filter(Boolean)
 
-  if (customModels.length > 0) {
+  const customApiProvider =
+    readCustomApiStorage().provider ??
+    getGlobalConfig().customApiEndpoint?.provider ??
+    'anthropic'
+
+  if (customApiProvider === 'openai' || customModels.length > 0) {
     return [
       ...[...new Set(customModels)].map(model => ({
         value: model,

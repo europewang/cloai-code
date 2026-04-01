@@ -191,6 +191,7 @@ export function ConsoleOAuthFlow({
     const nextApiKey = customApiKey.trim();
     const nextModel = customModel.trim();
     const normalizedKey = nextApiKey ? normalizeApiKeyForConfig(nextApiKey) : null;
+    const nextSavedModels = nextModel ? [...new Set([...(persistedCustomApiEndpoint.savedModels ?? []), nextModel])] : persistedCustomApiEndpoint.savedModels ?? [];
     process.env.ANTHROPIC_BASE_URL = nextBaseURL;
     process.env.DOGE_API_KEY = nextApiKey;
     process.env.ANTHROPIC_MODEL = nextModel;
@@ -200,7 +201,8 @@ export function ConsoleOAuthFlow({
         provider: compatibleApiProvider,
         baseURL: nextBaseURL,
         apiKey: undefined,
-        model: nextModel
+        model: nextModel,
+        savedModels: nextSavedModels
       },
       customApiKeyResponses: normalizedKey ? {
         approved: [...new Set([...(current.customApiKeyResponses?.approved ?? []), normalizedKey])],
@@ -212,7 +214,7 @@ export function ConsoleOAuthFlow({
       baseURL: nextBaseURL,
       apiKey: nextApiKey,
       model: nextModel,
-      savedModels: persistedCustomApiEndpoint.savedModels ?? []
+      savedModels: nextSavedModels
     });
   }, [compatibleApiProvider, customApiKey, customBaseURL, customModel, persistedCustomApiEndpoint.savedModels]);
   const handleSubmitCustomConfig = useCallback((value: string) => {

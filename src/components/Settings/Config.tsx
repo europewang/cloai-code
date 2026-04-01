@@ -314,11 +314,13 @@ export function Config({
     type: 'managedEnum' as const,
     onChange(value: string) {
       const nextValue = value === 'Not set' ? '' : value;
+      const nextSavedModels = nextValue ? [...new Set([...(getGlobalConfig().customApiEndpoint?.savedModels ?? []), nextValue])] : getGlobalConfig().customApiEndpoint?.savedModels;
       saveGlobalConfig(current => ({
         ...current,
         customApiEndpoint: {
           ...current.customApiEndpoint,
-          model: nextValue
+          model: nextValue,
+          savedModels: nextSavedModels
         }
       }));
       if (nextValue) {
