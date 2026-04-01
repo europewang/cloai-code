@@ -2,18 +2,6 @@
 
 > Claude Code 的一个 Fork。不是官方正史，而是平行世界番外篇；不是萌豚整活仓库，而是“认真修、顺手发癫一点点”的工程分支。
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=HELPMEEADICE%2Fdoge-code&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=HELPMEEADICE/doge-code&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=HELPMEEADICE/doge-code&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=HELPMEEADICE/doge-code&type=date&legend=top-left" />
- </picture>
-</a>
-
-</div>
-
 [![Fork](https://img.shields.io/badge/Fork-Claude%20Code-f59e0b)](README.md)
 [![Status](https://img.shields.io/badge/status-restored%20%2B%20modded-10b981)](README.md)
 [![Runtime](https://img.shields.io/badge/runtime-Bun%20%2B%20Node-3b82f6)](README.md)
