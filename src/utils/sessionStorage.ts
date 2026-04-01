@@ -257,8 +257,54 @@ export function getAgentTranscriptPath(agentId: AgentId): string {
   return join(base, `agent-${agentId}.jsonl`)
 }
 
-function getAgentMetadataPath(agentId: AgentId): string {
-  return getAgentTranscriptPath(agentId).replace(/\.jsonl$/, '.meta.json')
+async function findNestedAgentFilePath(
+  rootDir: string,
+  filename: string,
+): Promise<string | null> {
+  let entries: Dirent[]
+  try {
+    entries = await readdir(rootDir, { withFileTypes: true })
+  } catch (e) {
+    if (isFsInaccessible(e)) return null
+    throw e
+  }
+
+  for (const entry of entries) {
+    const fullPath = join(rootDir, entry.name)
+    if (entry.isFile() && entry.name === filename) {
+      return fullPath
+    }
+    if (entry.isDirectory()) {
+      const nested = await findNestedAgentFilePath(fullPath, filename)
+      if (nested) return nested
+    }
+  }
+
+  return null
+}
+
+async function resolveAgentTranscriptPath(agentId: AgentId): Promise<string> {
+  const directPath = getAgentTranscriptPath(agentId)
+  try {
+    await stat(directPath)
+    return directPath
+  } catch (e) {
+    if (!isFsInaccessible(e)) throw e
+  }
+
+  const projectDir = getSessionProjectDir() ?? getProjectDir(getOriginalCwd())
+  const subagentsDir = join(projectDir, getSessionId(), 'subagents')
+  return (
+    (await findNestedAgentFilePath(subagentsDir, `agent-${agentId}.jsonl`)) ??
+    directPath
+  )
+}
+
+async function getAgentMetadataPath(agentId: AgentId): Promise<string> {
+  return (await resolveAgentTranscriptPath(agentId)).replace(
+    /\.jsonl$/,
+    '.meta.json',
+  )
 }
 
 export type AgentMetadata = {
@@ -284,7 +330,7 @@ export async function writeAgentMetadata(
   agentId: AgentId,
   metadata: AgentMetadata,
 ): Promise<void> {
-  const path = getAgentMetadataPath(agentId)
+  const path = await getAgentMetadataPath(agentId)
   await mkdir(dirname(path), { recursive: true })
   await writeFile(path, JSON.stringify(metadata))
 }
@@ -292,7 +338,7 @@ export async function writeAgentMetadata(
 export async function readAgentMetadata(
   agentId: AgentId,
 ): Promise<AgentMetadata | null> {
-  const path = getAgentMetadataPath(agentId)
+  const path = await getAgentMetadataPath(agentId)
   try {
     const raw = await readFile(path, 'utf-8')
     return JSON.parse(raw) as AgentMetadata
@@ -4191,7 +4237,7 @@ export async function getAgentTranscript(agentId: AgentId): Promise<{
   messages: Message[]
   contentReplacements: ContentReplacementRecord[]
 } | null> {
-  const agentFile = getAgentTranscriptPath(agentId)
+  const agentFile = await resolveAgentTranscriptPath(agentId)
 
   try {
     const { messages, agentContentReplacements } =

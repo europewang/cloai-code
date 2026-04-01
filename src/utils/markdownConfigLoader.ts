@@ -552,9 +552,7 @@ async function loadMarkdownFiles(dir: string): Promise<
 > {
   // File search strategy:
   // - Default: ripgrep (faster, battle-tested)
-  // - Fallback: native Node.js (when CLAUDE_CODE_USE_NATIVE_FILE_SEARCH is set)
-  //
-  // Why both? Ripgrep has poor startup performance in native builds.
+  // - Fallback: native Node.js when explicitly requested or when ripgrep is unavailable
   const useNative = isEnvTruthy(process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH)
   const signal = AbortSignal.timeout(3000)
   let files: string[]
@@ -567,11 +565,23 @@ async function loadMarkdownFiles(dir: string): Promise<
           signal,
         )
   } catch (e: unknown) {
-    // Handle missing/inaccessible dir directly instead of pre-checking
-    // existence (TOCTOU). findMarkdownFilesNative already catches internally;
-    // ripGrep rejects on inaccessible target paths.
-    if (isFsInaccessible(e)) return []
-    throw e
+    // In some reconstructed or partially-installed environments the bundled
+    // ripgrep binary may be missing. Fall back to native fs traversal so
+    // custom agents/commands/skills still load after restart instead of only
+    // existing in memory for the current process.
+    const code = e && typeof e === 'object' && 'code' in e ? e.code : undefined
+    if (!useNative && code === 'ENOENT') {
+      logForDebugging(
+        `ripgrep unavailable for ${dir}; falling back to native markdown search`,
+      )
+      files = await findMarkdownFilesNative(dir, signal)
+    } else {
+      // Handle missing/inaccessible dir directly instead of pre-checking
+      // existence (TOCTOU). findMarkdownFilesNative already catches internally;
+      // ripGrep rejects on inaccessible target paths.
+      if (isFsInaccessible(e)) return []
+      throw e
+    }
   }
 
   const results = await Promise.all(
