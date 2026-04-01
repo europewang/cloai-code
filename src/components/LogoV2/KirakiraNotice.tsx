@@ -1,7 +1,6 @@
 import { c as _c } from "react/compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { UP_ARROW } from '../../constants/figures.js';
 import { Box, Text } from '../../ink.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { isOpus1mMergeEnabled } from '../../utils/model/model.js';
@@ -45,7 +44,7 @@ export function KirakiraNotice() {
   }
   let t2;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Box paddingLeft={2}><AnimatedAsterisk char={UP_ARROW} /><Text dimColor={true}>{" "}キラキラ☆ドキドキ</Text></Box>;
+    t2 = <Box paddingLeft={2}><AnimatedAsterisk char="☆" /><Text dimColor={true}>{" "}KiraKiraDokiDoki!</Text></Box>;
     $[3] = t2;
   } else {
     t2 = $[3];
