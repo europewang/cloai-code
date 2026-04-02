@@ -28,7 +28,7 @@ function withoutSSHTunnelVars(
   const {
     ANTHROPIC_UNIX_SOCKET: _1,
     ANTHROPIC_BASE_URL: _2,
-    DOGE_API_KEY: _3,
+    CLOAI_API_KEY: _3,
     ANTHROPIC_AUTH_TOKEN: _4,
     CLAUDE_CODE_OAUTH_TOKEN: _5,
     ...rest
@@ -212,7 +212,7 @@ function applyPersistedCustomApiEndpointEnv(): void {
   }
 
   if (customApiEndpoint?.apiKey) {
-    process.env.DOGE_API_KEY = customApiEndpoint.apiKey
+    process.env.CLOAI_API_KEY = customApiEndpoint.apiKey
   }
 
   if (customApiEndpoint?.model) {

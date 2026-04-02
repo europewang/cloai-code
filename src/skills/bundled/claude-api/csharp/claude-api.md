@@ -4,7 +4,7 @@ Use the Messages API over HTTPS when you need a minimal C# integration.
 
 ## Prerequisites
 
-- Set `DOGE_API_KEY`
+- Set `CLOAI_API_KEY`
 - Use the Messages endpoint: `https://api.anthropic.com/v1/messages`
 - Send headers:
   - `x-api-key`
@@ -18,7 +18,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
-var apiKey = Environment.GetEnvironmentVariable("DOGE_API_KEY");
+var apiKey = Environment.GetEnvironmentVariable("CLOAI_API_KEY");
 using var http = new HttpClient();
 
 http.DefaultRequestHeaders.Add("x-api-key", apiKey);

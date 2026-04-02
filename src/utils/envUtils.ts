@@ -7,7 +7,7 @@ import { join } from 'path'
 export const getClaudeConfigHomeDir = memoize(
   (): string => {
     return (
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.doge')
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.cloai')
     ).normalize('NFC')
   },
   () => process.env.CLAUDE_CONFIG_DIR,
@@ -49,7 +49,7 @@ export function isEnvDefinedFalsy(
 /**
  * --bare / CLAUDE_CODE_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
  * attribution, background prefetches, and ALL keychain/credential reads.
- * Auth is strictly DOGE_API_KEY env or apiKeyHelper from --settings.
+ * Auth is strictly CLOAI_API_KEY env or apiKeyHelper from --settings.
  * Explicit CLI flags (--plugin-dir, --add-dir, --mcp-config) still honored.
  * ~30 gates across the codebase.
  *

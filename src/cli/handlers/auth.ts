@@ -236,7 +236,7 @@ export async function authStatus(opts: {
   const { source: authTokenSource, hasToken } = getAuthTokenSource()
   const { source: apiKeySource } = getAnthropicApiKeyWithSource()
   const hasApiKeyEnvVar =
-    !!process.env.DOGE_API_KEY && !isRunningOnHomespace()
+    !!process.env.CLOAI_API_KEY && !isRunningOnHomespace()
   const oauthAccount = getOauthAccountInfo()
   const subscriptionType = getSubscriptionType()
   const using3P = isUsing3PServices()
@@ -253,7 +253,7 @@ export async function authStatus(opts: {
     authMethod = 'api_key_helper'
   } else if (authTokenSource !== 'none') {
     authMethod = 'oauth_token'
-  } else if (apiKeySource === 'DOGE_API_KEY' || hasApiKeyEnvVar) {
+  } else if (apiKeySource === 'CLOAI_API_KEY' || hasApiKeyEnvVar) {
     authMethod = 'api_key'
   } else if (apiKeySource === '/login managed key') {
     authMethod = 'claude.ai'
@@ -283,7 +283,7 @@ export async function authStatus(opts: {
       }
     }
     if (!hasAuthProperty && hasApiKeyEnvVar) {
-      process.stdout.write('API key: DOGE_API_KEY\n')
+      process.stdout.write('API key: CLOAI_API_KEY\n')
     }
     if (!loggedIn) {
       process.stdout.write(
@@ -296,7 +296,7 @@ export async function authStatus(opts: {
       apiKeySource !== 'none'
         ? apiKeySource
         : hasApiKeyEnvVar
-          ? 'DOGE_API_KEY'
+          ? 'CLOAI_API_KEY'
           : null
     const output: Record<string, string | boolean | null> = {
       loggedIn,

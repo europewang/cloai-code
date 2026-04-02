@@ -34,7 +34,7 @@ import {
  * Environment variables for different client types:
  *
  * Direct API:
- * - DOGE_API_KEY: Required for direct API access
+ * - CLOAI_API_KEY: Required for direct API access
  *
  * AWS Bedrock:
  * - AWS credentials configured via aws-sdk defaults

@@ -1829,7 +1829,7 @@ async function* queryModel(
           }
           const reader = await createOpenAICompatStream(
             {
-              apiKey: process.env.DOGE_API_KEY || '',
+              apiKey: process.env.CLOAI_API_KEY || '',
               baseURL: process.env.ANTHROPIC_BASE_URL || '',
               headers: clientRequestId
                 ? { [CLIENT_REQUEST_ID_HEADER]: clientRequestId }
