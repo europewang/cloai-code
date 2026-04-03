@@ -17,6 +17,13 @@ type OpenAICompatConfig = {
   fetch?: typeof globalThis.fetch
 }
 
+type OpenAICodexConfig = {
+  apiKey: string
+  baseURL?: string
+  headers?: Record<string, string>
+  fetch?: typeof globalThis.fetch
+}
+
 type OpenAIToolCall = {
   id: string
   type: 'function'
@@ -50,6 +57,52 @@ export type OpenAIChatRequest = {
   max_tokens?: number
 }
 
+type OpenAICodexInputItem =
+  | {
+      role: 'user'
+      content: Array<{
+        type: 'input_text'
+        text: string
+      }>
+    }
+  | {
+      role: 'assistant'
+      content: Array<{
+        type: 'output_text'
+        text: string
+      }>
+    }
+  | {
+      type: 'function_call'
+      call_id: string
+      name: string
+      arguments: string
+    }
+  | {
+      type: 'function_call_output'
+      call_id: string
+      output: string
+    }
+
+export type OpenAICodexRequest = {
+  model: string
+  instructions?: string
+  input: OpenAICodexInputItem[]
+  store: false
+  stream: true
+  text: { verbosity: 'medium' }
+  include: ['reasoning.encrypted_content']
+  tool_choice: 'auto'
+  parallel_tool_calls: true
+  temperature?: number
+  tools?: Array<{
+    type: 'function'
+    name: string
+    description?: string
+    parameters?: unknown
+  }>
+}
+
 type OpenAIStreamChunk = {
   id?: string
   model?: string
@@ -77,8 +130,97 @@ type OpenAIStreamChunk = {
   }
 }
 
+type CodexResponseUsage = {
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  input_tokens_details?: {
+    cached_tokens?: number
+  }
+}
+
+type CodexResponseCompletedEvent = {
+  type: 'response.completed'
+  response?: {
+    id?: string
+    status?: string
+    usage?: CodexResponseUsage
+  }
+}
+
+type CodexOutputItemAddedEvent = {
+  type: 'response.output_item.added'
+  item: {
+    type: 'message' | 'function_call'
+    id?: string
+    call_id?: string
+    name?: string
+    arguments?: string
+  }
+}
+
+type CodexOutputTextDeltaEvent = {
+  type: 'response.output_text.delta'
+  delta: string
+}
+
+type CodexFunctionCallArgumentsDeltaEvent = {
+  type: 'response.function_call_arguments.delta'
+  delta: string
+}
+
+type CodexOutputItemDoneEvent = {
+  type: 'response.output_item.done'
+  item: {
+    type: 'message' | 'function_call'
+    id?: string
+    call_id?: string
+    name?: string
+    arguments?: string
+    content?: Array<{
+      type?: 'output_text' | 'refusal'
+      text?: string
+      refusal?: string
+    }>
+  }
+}
+
+type CodexErrorEvent = {
+  type: 'error' | 'response.failed'
+  code?: string
+  message?: string
+  response?: {
+    error?: {
+      message?: string
+    }
+  }
+}
+
+type CodexStreamEvent =
+  | CodexResponseCompletedEvent
+  | CodexOutputItemAddedEvent
+  | CodexOutputTextDeltaEvent
+  | CodexFunctionCallArgumentsDeltaEvent
+  | CodexOutputItemDoneEvent
+  | CodexErrorEvent
+  | { type: string; [key: string]: unknown }
+
 function joinBaseUrl(baseURL: string, path: string): string {
-  return `${baseURL.replace(/\/$/, '')}${path}`
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const normalizedBaseURL = baseURL.trim()
+  try {
+    return new URL(normalizedPath, `${normalizedBaseURL.replace(/\/$/, '')}/`).toString()
+  } catch {
+    throw new Error(`Invalid OpenAI-compatible base URL: ${normalizedBaseURL}`)
+  }
+}
+
+function resolveCodexUrl(baseURL?: string): string {
+  const raw = baseURL?.trim() ? baseURL : 'https://chatgpt.com/backend-api'
+  const normalized = raw.replace(/\/+$/, '')
+  if (normalized.endsWith('/codex/responses')) return normalized
+  if (normalized.endsWith('/codex')) return `${normalized}/responses`
+  return `${normalized}/codex/responses`
 }
 
 function contentToText(content: BetaMessageParam['content']): string {
@@ -117,6 +259,23 @@ function getToolDefinitions(tools?: BetaToolUnion[]): OpenAIChatRequest['tools']
           typeof record.description === 'string' ? record.description : undefined,
         parameters: record.input_schema,
       },
+    }]
+  })
+  return mapped.length > 0 ? mapped : undefined
+}
+
+function getCodexToolDefinitions(tools?: BetaToolUnion[]): OpenAICodexRequest['tools'] {
+  if (!tools || tools.length === 0) return undefined
+  const mapped = tools.flatMap(tool => {
+    const record = tool as unknown as Record<string, unknown>
+    const name = typeof record.name === 'string' ? record.name : undefined
+    if (!name) return []
+    return [{
+      type: 'function' as const,
+      name,
+      description:
+        typeof record.description === 'string' ? record.description : undefined,
+      parameters: record.input_schema,
     }]
   })
   return mapped.length > 0 ? mapped : undefined
@@ -217,6 +376,94 @@ export function convertAnthropicRequestToOpenAI(input: {
   }
 }
 
+export function convertAnthropicRequestToOpenAICodex(input: {
+  model: string
+  system?: string | Array<{ type?: string; text?: string }>
+  messages: BetaMessageParam[]
+  tools?: BetaToolUnion[]
+  temperature?: number
+}): OpenAICodexRequest {
+  const configuredModel = process.env.ANTHROPIC_MODEL?.trim()
+  const targetModel = configuredModel || input.model
+  const instructions = Array.isArray(input.system)
+    ? input.system.map(block => block.text ?? '').join('\n')
+    : input.system
+  const codexInput: OpenAICodexInputItem[] = []
+
+  for (const message of input.messages) {
+    if (message.role === 'user') {
+      const blocks = toBlocks(message.content)
+      const toolResults = blocks.filter(block => block.type === 'tool_result')
+      for (const result of toolResults) {
+        const toolUseId =
+          typeof result.tool_use_id === 'string' ? result.tool_use_id : undefined
+        if (!toolUseId) continue
+        const content = result.content
+        codexInput.push({
+          type: 'function_call_output',
+          call_id: toolUseId,
+          output:
+            typeof content === 'string' ? content : JSON.stringify(content),
+        })
+      }
+
+      const text = contentToText(
+        blocks.filter(block => block.type !== 'tool_result') as unknown as BetaMessageParam['content'],
+      )
+      if (text) {
+        codexInput.push({
+          role: 'user',
+          content: [{ type: 'input_text', text }],
+        })
+      }
+      continue
+    }
+
+    if (message.role === 'assistant') {
+      const blocks = Array.isArray(message.content)
+        ? (message.content as unknown as AnyBlock[])
+        : []
+      const text = blocks
+        .filter(block => block.type === 'text')
+        .map(block => (typeof block.text === 'string' ? block.text : ''))
+        .join('')
+      if (text) {
+        codexInput.push({
+          role: 'assistant',
+          content: [{ type: 'output_text', text }],
+        })
+      }
+      for (const block of blocks.filter(item => item.type === 'tool_use')) {
+        codexInput.push({
+          type: 'function_call',
+          call_id: String(block.id),
+          name: String(block.name),
+          arguments:
+            typeof block.input === 'string'
+              ? block.input
+              : JSON.stringify(block.input ?? {}),
+        })
+      }
+    }
+  }
+
+  return {
+    model: targetModel,
+    ...(instructions ? { instructions } : {}),
+    input: codexInput,
+    store: false,
+    stream: true,
+    text: { verbosity: 'medium' },
+    include: ['reasoning.encrypted_content'],
+    tool_choice: 'auto',
+    parallel_tool_calls: true,
+    ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+    ...(getCodexToolDefinitions(input.tools)
+      ? { tools: getCodexToolDefinitions(input.tools) }
+      : {}),
+  }
+}
+
 export async function createOpenAICompatStream(
   config: OpenAICompatConfig,
   request: OpenAIChatRequest,
@@ -245,6 +492,40 @@ export async function createOpenAICompatStream(
     }
     throw new Error(
       `OpenAI compatible request failed with status ${response.status}${responseText ? `: ${responseText}` : ''}`,
+    )
+  }
+
+  return response.body.getReader()
+}
+
+export async function createOpenAICodexStream(
+  config: OpenAICodexConfig,
+  request: OpenAICodexRequest,
+  signal?: AbortSignal,
+): Promise<ReadableStreamDefaultReader<Uint8Array>> {
+  const response = await (config.fetch ?? globalThis.fetch)(
+    resolveCodexUrl(config.baseURL),
+    {
+      method: 'POST',
+      signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
+        ...config.headers,
+      },
+      body: JSON.stringify(request),
+    },
+  )
+
+  if (!response.ok || !response.body) {
+    let responseText = ''
+    try {
+      responseText = await response.text()
+    } catch {
+      responseText = ''
+    }
+    throw new Error(
+      `OpenAI Codex request failed with status ${response.status}${responseText ? `: ${responseText}` : ''}`,
     )
   }
 
@@ -464,6 +745,194 @@ export async function* createAnthropicStreamFromOpenAI(input: {
 
   throw new Error(
     `[openaiCompat] stream ended unexpectedly before message_stop for model=${input.model}`,
+  )
+}
+
+export async function* createAnthropicStreamFromOpenAICodex(input: {
+  reader: ReadableStreamDefaultReader<Uint8Array>
+  model: string
+}): AsyncGenerator<BetaRawMessageStreamEvent, BetaMessage, void> {
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let started = false
+  let currentTextIndex: number | null = null
+  let currentToolIndex: number | null = null
+  let promptTokens = 0
+  let completionTokens = 0
+  let stopReason: BetaMessage['stop_reason'] = 'end_turn'
+  let currentToolState:
+    | {
+        id: string
+        name: string
+      }
+    | undefined
+
+  while (true) {
+    const { done, value } = await input.reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const parsed = parseSSEChunk(buffer)
+    buffer = parsed.remainder
+
+    for (const rawEvent of parsed.events) {
+      const dataLines = rawEvent
+        .split('\n')
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trim())
+
+      for (const data of dataLines) {
+        if (!data || data === '[DONE]') continue
+        const event = JSON.parse(data) as CodexStreamEvent
+        if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
+          continue
+        }
+
+        if (event.type === 'error') {
+          throw new Error(
+            `Codex error: ${event.message || event.code || JSON.stringify(event)}`,
+          )
+        }
+        if (event.type === 'response.failed') {
+          throw new Error(
+            event.response?.error?.message || event.message || 'Codex response failed',
+          )
+        }
+
+        if (!started) {
+          started = true
+          yield {
+            type: 'message_start',
+            message: {
+              id: 'openai-codex',
+              type: 'message',
+              role: 'assistant',
+              model: input.model,
+              content: [],
+              stop_reason: null,
+              stop_sequence: null,
+              usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+              },
+            },
+          } as BetaRawMessageStreamEvent
+        }
+
+        if (event.type === 'response.output_item.added') {
+          if (event.item.type === 'message') {
+            currentTextIndex = currentToolIndex === null ? 0 : currentToolIndex + 1
+            yield {
+              type: 'content_block_start',
+              index: currentTextIndex,
+              content_block: {
+                type: 'text',
+                text: '',
+              },
+            } as BetaRawMessageStreamEvent
+          }
+          if (event.item.type === 'function_call') {
+            currentToolIndex = currentTextIndex === null ? 0 : currentTextIndex + 1
+            currentToolState = {
+              id: event.item.call_id ?? event.item.id ?? 'toolu_codex',
+              name: event.item.name ?? '',
+            }
+            yield {
+              type: 'content_block_start',
+              index: currentToolIndex,
+              content_block: {
+                type: 'tool_use',
+                id: currentToolState.id,
+                name: currentToolState.name,
+                input: '',
+              },
+            } as BetaRawMessageStreamEvent
+          }
+          continue
+        }
+
+        if (event.type === 'response.output_text.delta' && currentTextIndex !== null) {
+          yield {
+            type: 'content_block_delta',
+            index: currentTextIndex,
+            delta: {
+              type: 'text_delta',
+              text: event.delta,
+            },
+          } as BetaRawMessageStreamEvent
+          continue
+        }
+
+        if (
+          event.type === 'response.function_call_arguments.delta' &&
+          currentToolIndex !== null
+        ) {
+          yield {
+            type: 'content_block_delta',
+            index: currentToolIndex,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: event.delta,
+            },
+          } as BetaRawMessageStreamEvent
+          stopReason = 'tool_use'
+          continue
+        }
+
+        if (event.type === 'response.output_item.done') {
+          if (event.item.type === 'message' && currentTextIndex !== null) {
+            yield {
+              type: 'content_block_stop',
+              index: currentTextIndex,
+            } as BetaRawMessageStreamEvent
+            currentTextIndex = null
+          }
+          if (event.item.type === 'function_call' && currentToolIndex !== null) {
+            yield {
+              type: 'content_block_stop',
+              index: currentToolIndex,
+            } as BetaRawMessageStreamEvent
+            currentToolIndex = null
+            currentToolState = undefined
+          }
+          continue
+        }
+
+        if (event.type === 'response.completed') {
+          promptTokens = event.response?.usage?.input_tokens ?? 0
+          completionTokens = event.response?.usage?.output_tokens ?? 0
+          yield {
+            type: 'message_delta',
+            delta: {
+              stop_reason: stopReason,
+              stop_sequence: null,
+            },
+            usage: {
+              output_tokens: completionTokens,
+            },
+          } as BetaRawMessageStreamEvent
+          yield {
+            type: 'message_stop',
+          } as BetaRawMessageStreamEvent
+          return {
+            id: event.response?.id ?? 'openai-codex',
+            type: 'message',
+            role: 'assistant',
+            model: input.model,
+            content: [],
+            stop_reason: stopReason,
+            stop_sequence: null,
+            usage: {
+              input_tokens: promptTokens,
+              output_tokens: completionTokens,
+            },
+          } as BetaMessage
+        }
+      }
+    }
+  }
+
+  throw new Error(
+    `[openaiCompat] codex stream ended unexpectedly before message_stop for model=${input.model}`,
   )
 }
 

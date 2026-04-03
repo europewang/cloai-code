@@ -39,6 +39,15 @@ export class OAuthService {
       loginHint?: string
       loginMethod?: string
       /**
+       * OAuth provider to use: 'anthropic' (default) or 'openai'.
+       * When 'openai', routes to OpenAI's OAuth endpoints instead of Anthropic's.
+       */
+      oauthProvider?: 'anthropic' | 'openai'
+      /**
+       * OAuth client ID for official OpenAI ChatGPT OAuth.
+       */
+      openaiClientId?: string
+      /**
        * Don't call openBrowser(). Caller takes both URLs via authURLHandler
        * and decides how/where to open them. Used by the SDK control protocol
        * (claude_authenticate) where the SDK client owns the user's display,
@@ -54,8 +63,8 @@ export class OAuthService {
     // Generate PKCE values and state
     const codeChallenge = crypto.generateCodeChallenge(this.codeVerifier)
     const state = crypto.generateState()
+    const oauthProvider = options?.oauthProvider ?? 'anthropic'
 
-    // Build auth URLs for both automatic and manual flows
     const opts = {
       codeChallenge,
       state,
@@ -65,6 +74,8 @@ export class OAuthService {
       orgUUID: options?.orgUUID,
       loginHint: options?.loginHint,
       loginMethod: options?.loginMethod,
+      oauthProvider,
+      openaiClientId: options?.openaiClientId,
     }
     const manualFlowUrl = client.buildAuthUrl({ ...opts, isManual: true })
     const automaticFlowUrl = client.buildAuthUrl({ ...opts, isManual: false })
@@ -98,13 +109,8 @@ export class OAuthService {
         this.port!,
         !isAutomaticFlow, // Pass isManual=true if it's NOT automatic flow
         options?.expiresIn,
-      )
-
-      // Fetch profile info (subscription type and rate limit tier) for the
-      // returned OAuthTokens. Logout and account storage are handled by the
-      // caller (installOAuthTokens in auth.ts).
-      const profileInfo = await client.fetchProfileInfo(
-        tokenResponse.access_token,
+        oauthProvider,
+        options?.openaiClientId,
       )
 
       // Handle success redirect for automatic flow
@@ -112,6 +118,16 @@ export class OAuthService {
         const scopes = client.parseScopes(tokenResponse.scope)
         this.authCodeListener?.handleSuccessRedirect(scopes)
       }
+
+      // For OpenAI OAuth, skip Anthropic profile fetch (no subscription/rate-limit info)
+      if (oauthProvider === 'openai') {
+        return this.formatTokens(tokenResponse, null, null, undefined)
+      }
+
+      // Fetch Anthropic profile info (subscription type and rate limit tier)
+      const profileInfo = await client.fetchProfileInfo(
+        tokenResponse.access_token,
+      )
 
       return this.formatTokens(
         tokenResponse,

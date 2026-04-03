@@ -31,6 +31,8 @@ import {
   validateForceLoginOrg,
 } from '../../utils/auth.js'
 import { saveGlobalConfig } from '../../utils/config.js'
+import { readCustomApiStorage, writeCustomApiStorage } from '../../utils/customApiStorage.js'
+import { normalizeApiKeyForConfig } from '../../utils/authPortable.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isRunningOnHomespace } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -46,11 +48,105 @@ import {
 /**
  * Shared post-token-acquisition logic. Saves tokens, fetches profile/roles,
  * and sets up the local auth state.
+ *
+ * @param oauthProvider - When 'openai', skips Anthropic-specific endpoints
+ *   and stores the access token as the API key for OpenAI-compatible endpoints.
  */
-export async function installOAuthTokens(tokens: OAuthTokens): Promise<void> {
+export async function installOAuthTokens(
+  tokens: OAuthTokens,
+  oauthProvider?: 'anthropic' | 'openai',
+): Promise<void> {
+  const existingCustomApiStorage =
+    oauthProvider === 'openai' ? readCustomApiStorage() : undefined
+
   // Clear old state before saving new credentials
   await performLogout({ clearOnboarding: false })
 
+  // Handle OpenAI OAuth separately — skip Anthropic-specific endpoints
+  if (oauthProvider === 'openai') {
+    const previousStorage = existingCustomApiStorage ?? {}
+    const providers = previousStorage.providers ?? []
+    const normalizedToken = normalizeApiKeyForConfig(tokens.accessToken)
+    const activeOpenAIProvider = providers.find(
+      p =>
+        p.kind === 'openai-like' &&
+        p.id === previousStorage.activeProvider &&
+        p.authMode === 'oauth',
+    )
+    const fallbackOpenAIProvider = providers.find(
+      p =>
+        p.kind === 'openai-like' &&
+        p.id === previousStorage.providerId &&
+        p.authMode === 'oauth',
+    )
+    const targetProvider =
+      activeOpenAIProvider ??
+      fallbackOpenAIProvider ??
+      providers.find(p => p.kind === 'openai-like' && p.authMode === 'oauth')
+    const updatedProviders = targetProvider
+      ? providers.map(p =>
+          p === targetProvider ? { ...p, apiKey: tokens.accessToken } : p,
+        )
+      : providers
+
+    const activeModel =
+      previousStorage.activeProvider === targetProvider?.id
+        ? previousStorage.activeModel
+        : targetProvider?.models[0]
+    const normalizedOpenAIStorage = {
+      ...previousStorage,
+      providers: updatedProviders,
+      activeProvider: targetProvider?.id ?? previousStorage.activeProvider,
+      activeModel,
+      provider: 'openai' as const,
+      providerKind: targetProvider?.kind ?? 'openai-like',
+      providerId: targetProvider?.id ?? previousStorage.providerId,
+      baseURL: targetProvider?.baseURL ?? previousStorage.baseURL,
+      apiKey: tokens.accessToken,
+      model: activeModel,
+      savedModels:
+        targetProvider?.models ??
+        (previousStorage.activeProvider === targetProvider?.id
+          ? previousStorage.savedModels
+          : undefined),
+    }
+
+    writeCustomApiStorage(normalizedOpenAIStorage)
+    saveGlobalConfig(current => ({
+      ...current,
+      customApiEndpoint: {
+        ...(current.customApiEndpoint ?? {}),
+        kind: normalizedOpenAIStorage.providerKind,
+        providerId: normalizedOpenAIStorage.providerId,
+        provider: 'openai',
+        baseURL: normalizedOpenAIStorage.baseURL,
+        apiKey: undefined,
+        model: normalizedOpenAIStorage.model,
+        savedModels: normalizedOpenAIStorage.savedModels,
+      },
+      customApiKeyResponses: {
+        approved: [
+          ...new Set([
+            ...(current.customApiKeyResponses?.approved ?? []),
+            normalizedToken,
+          ]),
+        ],
+        rejected: (current.customApiKeyResponses?.rejected ?? []).filter(
+          key => key !== normalizedToken,
+        ),
+      },
+    }))
+
+    // Also apply to current process env
+    process.env.CLOAI_API_KEY = tokens.accessToken
+    process.env.ANTHROPIC_BASE_URL = normalizedOpenAIStorage.baseURL ?? ''
+    process.env.ANTHROPIC_MODEL = normalizedOpenAIStorage.model ?? ''
+    clearOAuthTokenCache()
+    await clearAuthRelatedCaches()
+    return
+  }
+
+  // Anthropic OAuth flow
   // Reuse pre-fetched profile if available, otherwise fetch fresh
   const profile =
     tokens.profile ?? (await getOauthProfileFromOauthToken(tokens.accessToken))

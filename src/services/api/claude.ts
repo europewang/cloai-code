@@ -27,8 +27,11 @@ import {
 import { readCustomApiStorage } from 'src/utils/customApiStorage.js'
 import {
   convertAnthropicRequestToOpenAI,
+  convertAnthropicRequestToOpenAICodex,
   createAnthropicStreamFromOpenAI,
+  createAnthropicStreamFromOpenAICodex,
   createOpenAICompatStream,
+  createOpenAICodexStream,
 } from './openaiCompat.js'
 import {
   getAttributionHeader,
@@ -1811,8 +1814,52 @@ async function* queryModel(
         // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
         // since we handle tool input accumulation ourselves
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
-        const compatProvider = readCustomApiStorage().provider ?? 'anthropic'
+        const customApiStorage = readCustomApiStorage()
+        const compatProvider =
+          customApiStorage.providerKind === 'openai-like'
+            ? 'openai'
+            : customApiStorage.providerKind === 'anthropic-like'
+              ? 'anthropic'
+              : customApiStorage.provider ?? 'anthropic'
         if (compatProvider === 'openai') {
+          const isOfficialOpenAIOAuth =
+            customApiStorage.providerKind === 'openai-like' &&
+            customApiStorage.providerId === 'openai' &&
+            customApiStorage.providers?.some(
+              provider =>
+                provider.id === customApiStorage.providerId &&
+                provider.kind === 'openai-like' &&
+                provider.authMode === 'oauth' &&
+                provider.baseURL === customApiStorage.baseURL,
+            )
+
+          if (isOfficialOpenAIOAuth) {
+            const openAICodexRequest = convertAnthropicRequestToOpenAICodex({
+              model: params.model,
+              system: params.system,
+              messages: params.messages,
+              tools: params.tools,
+              temperature: params.temperature,
+            })
+            const reader = await createOpenAICodexStream(
+              {
+                apiKey: process.env.CLOAI_API_KEY || '',
+                baseURL: customApiStorage.baseURL,
+                headers: clientRequestId
+                  ? { [CLIENT_REQUEST_ID_HEADER]: clientRequestId }
+                  : undefined,
+                fetch: globalThis.fetch,
+              },
+              openAICodexRequest,
+              signal,
+            )
+            queryCheckpoint('query_response_headers_received')
+            return createAnthropicStreamFromOpenAICodex({
+              reader,
+              model: params.model,
+            }) as unknown as Stream<BetaRawMessageStreamEvent>
+          }
+
           const openAIRequest = convertAnthropicRequestToOpenAI({
             model: params.model,
             system: params.system,

@@ -116,7 +116,3 @@ if (missingImports.length > 0) {
   console.log('Use this workspace to continue restoration; once missing imports reach 0, this launcher will forward to src/main.tsx automatically.')
   process.exit(0)
 }
-
-// Route through the original CLI bootstrap so the exported `main()` is
-// actually invoked. Importing `main.tsx` directly only evaluates the module.
-await import('./entrypoints/cli.tsx')
