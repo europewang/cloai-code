@@ -1886,7 +1886,7 @@ async function* queryModel(
             const reader = await createOpenAIResponsesStream(
               {
                 apiKey: process.env.CLOAI_API_KEY || '',
-                baseURL: process.env.ANTHROPIC_BASE_URL || '',
+                baseURL: customApiStorage.baseURL,
                 headers: clientRequestId
                   ? { [CLIENT_REQUEST_ID_HEADER]: clientRequestId }
                   : undefined,
