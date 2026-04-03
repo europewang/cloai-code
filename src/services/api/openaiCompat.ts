@@ -554,7 +554,7 @@ export function convertAnthropicRequestToOpenAICodex(input: {
       ? {
           reasoning: {
             effort: reasoning.reasoningEffort as OpenAICodexRequest['reasoning']['effort'],
-            summary: (reasoning.reasoningSummary ?? 'auto') as OpenAICodexRequest['reasoning']['summary'],
+            summary: (reasoning.reasoningSummary ?? 'detailed') as OpenAICodexRequest['reasoning']['summary'],
           },
         }
       : {}),
@@ -667,7 +667,7 @@ export function convertAnthropicRequestToOpenAIResponses(input: {
       ? {
           reasoning: {
             effort: reasoning.reasoningEffort as OpenAIResponsesRequest['reasoning']['effort'],
-            summary: (reasoning.reasoningSummary ?? 'auto') as OpenAIResponsesRequest['reasoning']['summary'],
+            summary: (reasoning.reasoningSummary ?? 'detailed') as OpenAIResponsesRequest['reasoning']['summary'],
           },
         }
       : {}),

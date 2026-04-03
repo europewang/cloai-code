@@ -225,7 +225,7 @@ export function getReasoningSpec(input: {
       storedReasoning?.reasoningSummary === 'auto' ||
       storedReasoning?.reasoningSummary === null
         ? storedReasoning.reasoningSummary
-        : 'auto'
+        : 'detailed'
     return {
       mode,
       effortOptions: OPENAI_RESPONSES_EFFORTS,
@@ -236,7 +236,7 @@ export function getReasoningSpec(input: {
         isDefault:
           !storedReasoning?.reasoningEffort &&
           (storedReasoning?.reasoningSummary === undefined ||
-            storedReasoning.reasoningSummary === 'auto'),
+            storedReasoning.reasoningSummary === 'detailed'),
       },
       supportsAdjustment: true,
       sourceLabel: 'OpenAI Responses',
@@ -255,7 +255,7 @@ export function getReasoningSpec(input: {
       storedReasoning?.reasoningSummary === 'on' ||
       storedReasoning?.reasoningSummary === null
         ? storedReasoning.reasoningSummary
-        : 'auto'
+        : 'detailed'
     return {
       mode,
       effortOptions: OPENAI_CODEX_EFFORTS,
@@ -266,7 +266,7 @@ export function getReasoningSpec(input: {
         isDefault:
           !storedReasoning?.reasoningEffort &&
           (storedReasoning?.reasoningSummary === undefined ||
-            storedReasoning.reasoningSummary === 'auto'),
+            storedReasoning.reasoningSummary === 'detailed'),
       },
       supportsAdjustment: true,
       sourceLabel: 'Codex OAuth',
