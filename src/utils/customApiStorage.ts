@@ -1,9 +1,21 @@
 import { getSecureStorage } from './secureStorage/index.js'
 
-export type CompatibleProviderKind = 'anthropic-like' | 'openai-like'
+export type CompatibleProviderKind =
+  | 'anthropic-like'
+  | 'openai-like'
+  | 'gemini-like'
 export type OpenAIAuthMode = 'chat-completions' | 'responses' | 'oauth'
 export type AnthropicAuthMode = 'api-key'
-export type ProviderAuthMode = AnthropicAuthMode | OpenAIAuthMode
+export type GeminiAuthMode = 'vertex-compatible' | 'gemini-cli-oauth'
+export type ProviderAuthMode = AnthropicAuthMode | OpenAIAuthMode | GeminiAuthMode
+
+export type GeminiOAuthConfig = {
+  accessToken?: string
+  refreshToken?: string
+  expiresAt?: number
+  projectId?: string
+  email?: string
+}
 
 export type ActiveCustomApiEndpoint = {
   kind?: CompatibleProviderKind
@@ -29,14 +41,16 @@ export type ProviderConfig = {
   apiKey?: string
   models: string[]
   reasoning?: ProviderReasoningConfig
+  oauth?: GeminiOAuthConfig
 }
 
 export type CustomApiStorageData = {
+  activeProviderKey?: string
   activeProvider?: string
   activeModel?: string
   activeAuthMode?: ProviderAuthMode
   providers?: ProviderConfig[]
-  provider?: 'anthropic' | 'openai'
+  provider?: 'anthropic' | 'openai' | 'gemini'
   providerKind?: CompatibleProviderKind
   providerId?: string
   authMode?: ProviderAuthMode
@@ -48,6 +62,14 @@ export type CustomApiStorageData = {
 
 const CUSTOM_API_STORAGE_KEY = 'customApiEndpoint'
 
+export function getProviderKeyFromConfig(
+  provider:
+    | ProviderConfig
+    | Pick<ProviderConfig, 'id' | 'kind' | 'authMode' | 'baseURL'>,
+): string {
+  return `${provider.kind}::${provider.id}::${provider.authMode}::${provider.baseURL ?? ''}`
+}
+
 function dedupeModels(models: unknown): string[] {
   if (!Array.isArray(models)) return []
   return [...new Set(models.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean))]
@@ -58,7 +80,11 @@ export function deriveProviderId(
   kind: CompatibleProviderKind,
 ): string {
   if (!baseURL) {
-    return kind === 'openai-like' ? 'openai' : 'anthropic'
+    return kind === 'openai-like'
+      ? 'openai'
+      : kind === 'gemini-like'
+        ? 'gemini'
+        : 'anthropic'
   }
 
   try {
@@ -67,12 +93,14 @@ export function deriveProviderId(
       .replace(/^api[.-]/, '')
       .replace(/^openai[.-]/, '')
       .replace(/^claude[.-]/, '')
+      .replace(/^generativelanguage[.-]/, '')
+      .replace(/^googleapis[.-]/, '')
       .replace(/^www\./, '')
 
     const parts = host.split('.').filter(Boolean)
     const providerId = parts[0]?.toLowerCase()
 
-    return providerId || (kind === 'openai-like' ? 'openai' : 'anthropic')
+    return providerId || (kind === 'openai-like' ? 'openai' : kind === 'gemini-like' ? 'gemini' : 'anthropic')
   } catch {
     return (baseURL
       .replace(/^https?:\/\//, '')
@@ -80,19 +108,21 @@ export function deriveProviderId(
       .replace(/^api[.-]/, '')
       .replace(/^openai[.-]/, '')
       .replace(/^claude[.-]/, '')
+      .replace(/^generativelanguage[.-]/, '')
+      .replace(/^googleapis[.-]/, '')
       .replace(/^www\./, '')
       .split('.')[0] ||
-      (kind === 'openai-like' ? 'openai' : 'anthropic'))
+      (kind === 'openai-like' ? 'openai' : kind === 'gemini-like' ? 'gemini' : 'anthropic'))
       .toLowerCase()
   }
 }
 
 function normalizeProviderKind(value: unknown): CompatibleProviderKind | null {
-  return value === 'anthropic-like' || value === 'openai-like' ? value : null
+  return value === 'anthropic-like' || value === 'openai-like' || value === 'gemini-like' ? value : null
 }
 
 function normalizeLegacyProviderKind(value: unknown): CompatibleProviderKind {
-  return value === 'openai' ? 'openai-like' : 'anthropic-like'
+  return value === 'openai' ? 'openai-like' : value === 'gemini' ? 'gemini-like' : 'anthropic-like'
 }
 
 function normalizeProviderReasoning(value: unknown): ProviderReasoningConfig | undefined {
@@ -121,6 +151,36 @@ function normalizeProviderReasoning(value: unknown): ProviderReasoningConfig | u
   }
 }
 
+function normalizeGeminiOAuth(value: unknown): GeminiOAuthConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const accessToken =
+    typeof record.accessToken === 'string' ? record.accessToken : undefined
+  const refreshToken =
+    typeof record.refreshToken === 'string' ? record.refreshToken : undefined
+  const expiresAt =
+    typeof record.expiresAt === 'number' ? record.expiresAt : undefined
+  const projectId =
+    typeof record.projectId === 'string' ? record.projectId : undefined
+  const email = typeof record.email === 'string' ? record.email : undefined
+  if (
+    accessToken === undefined &&
+    refreshToken === undefined &&
+    expiresAt === undefined &&
+    projectId === undefined &&
+    email === undefined
+  ) {
+    return undefined
+  }
+  return {
+    ...(accessToken !== undefined ? { accessToken } : {}),
+    ...(refreshToken !== undefined ? { refreshToken } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(projectId !== undefined ? { projectId } : {}),
+    ...(email !== undefined ? { email } : {}),
+  }
+}
+
 function buildProviderSummary(
   provider: ProviderConfig | undefined,
   activeModel: string | undefined,
@@ -129,12 +189,23 @@ function buildProviderSummary(
   'provider' | 'providerKind' | 'providerId' | 'authMode' | 'baseURL' | 'apiKey' | 'model' | 'savedModels'
 > {
   return {
-    provider: provider?.kind === 'openai-like' ? 'openai' : provider?.kind === 'anthropic-like' ? 'anthropic' : undefined,
+    provider:
+      provider?.kind === 'openai-like'
+        ? 'openai'
+        : provider?.kind === 'anthropic-like'
+          ? 'anthropic'
+          : provider?.kind === 'gemini-like'
+            ? 'gemini'
+            : undefined,
     providerKind: provider?.kind,
     providerId: provider?.id,
     authMode: provider?.authMode,
     baseURL: provider?.baseURL,
-    apiKey: provider?.apiKey,
+    apiKey:
+      provider?.kind === 'gemini-like' &&
+      provider?.authMode === 'gemini-cli-oauth'
+        ? undefined
+        : provider?.apiKey,
     model: activeModel,
     savedModels: provider?.models,
   }
@@ -144,7 +215,14 @@ function normalizeProviderConfig(value: Record<string, unknown>): ProviderConfig
   const kind = normalizeProviderKind(value.kind) ?? normalizeProviderKind(value.id)
   if (!kind) return null
   const baseURL = typeof value.baseURL === 'string' ? value.baseURL : undefined
-  const authMode = typeof value.authMode === 'string' ? value.authMode : kind === 'openai-like' ? 'chat-completions' : 'api-key'
+  const authMode =
+    typeof value.authMode === 'string'
+      ? value.authMode
+      : kind === 'openai-like'
+        ? 'chat-completions'
+        : kind === 'gemini-like'
+          ? 'vertex-compatible'
+          : 'api-key'
   const id = typeof value.id === 'string' && value.id !== kind ? value.id : deriveProviderId(baseURL, kind)
   return {
     id,
@@ -154,6 +232,7 @@ function normalizeProviderConfig(value: Record<string, unknown>): ProviderConfig
     apiKey: typeof value.apiKey === 'string' ? value.apiKey : undefined,
     models: dedupeModels(value.models),
     reasoning: normalizeProviderReasoning(value.reasoning),
+    oauth: normalizeGeminiOAuth(value.oauth),
   }
 }
 
@@ -167,7 +246,7 @@ function migrateLegacyShape(value: Record<string, unknown>): CustomApiStorageDat
   const provider = {
     id: providerId,
     kind,
-    authMode: kind === 'openai-like' ? 'chat-completions' : 'api-key',
+    authMode: kind === 'openai-like' ? 'chat-completions' : kind === 'gemini-like' ? 'vertex-compatible' : 'api-key',
     baseURL,
     apiKey: typeof value.apiKey === 'string' ? value.apiKey : undefined,
     models,
@@ -194,6 +273,8 @@ export function readCustomApiStorage(): CustomApiStorageData {
     return migrateLegacyShape(value)
   }
   const providers = value.providers.map(item => item && typeof item === 'object' ? normalizeProviderConfig(item as Record<string, unknown>) : null).filter((item): item is ProviderConfig => item !== null)
+  const activeProviderKey =
+    typeof value.activeProviderKey === 'string' ? value.activeProviderKey : undefined
   const activeProvider = typeof value.activeProvider === 'string' ? value.activeProvider : typeof value.providerId === 'string' ? value.providerId : providers[0]?.id
   const activeModel = typeof value.activeModel === 'string' ? value.activeModel : typeof value.model === 'string' ? value.model : undefined
   const activeAuthMode = typeof value.activeAuthMode === 'string'
@@ -201,21 +282,73 @@ export function readCustomApiStorage(): CustomApiStorageData {
     : typeof value.authMode === 'string'
       ? value.authMode as ProviderAuthMode
       : undefined
+  const matchesActiveProvider = (provider: ProviderConfig) =>
+    provider.id === activeProvider
+  const matchesActiveAuthMode = (provider: ProviderConfig) =>
+    activeAuthMode === undefined || provider.authMode === activeAuthMode
+  const matchesActiveModel = (provider: ProviderConfig) =>
+    activeModel === undefined || provider.models.includes(activeModel)
   const currentProvider = providers.find(provider =>
-    provider.id === activeProvider &&
-    provider.authMode === activeAuthMode &&
-    provider.models.includes(activeModel ?? ''),
+    activeProviderKey !== undefined &&
+    getProviderKeyFromConfig(provider) === activeProviderKey,
   ) ?? providers.find(provider =>
-    provider.id === activeProvider &&
-    provider.models.includes(activeModel ?? ''),
-  ) ?? providers.find(provider => provider.id === activeProvider) ?? providers.find(provider => provider.models.includes(activeModel ?? '')) ?? providers[0]
+    matchesActiveProvider(provider) &&
+    matchesActiveAuthMode(provider) &&
+    matchesActiveModel(provider),
+  ) ?? providers.find(provider =>
+    matchesActiveProvider(provider) &&
+    matchesActiveAuthMode(provider),
+  ) ?? providers.find(provider =>
+    matchesActiveProvider(provider) &&
+    matchesActiveModel(provider),
+  ) ?? providers.find(provider => matchesActiveProvider(provider))
+    ?? providers.find(provider => matchesActiveModel(provider))
+    ?? providers[0]
   return {
+    activeProviderKey:
+      currentProvider !== undefined
+        ? getProviderKeyFromConfig(currentProvider)
+        : activeProviderKey,
     activeProvider: currentProvider?.id ?? activeProvider,
     activeModel,
     activeAuthMode: currentProvider?.authMode ?? activeAuthMode,
     providers,
     ...buildProviderSummary(currentProvider, activeModel),
   }
+}
+
+export function getActiveProviderConfig(
+  storage: CustomApiStorageData,
+): ProviderConfig | undefined {
+  const providers = storage.providers ?? []
+  if (storage.activeProviderKey) {
+    const exact = providers.find(
+      provider => getProviderKeyFromConfig(provider) === storage.activeProviderKey,
+    )
+    if (exact) return exact
+  }
+
+  const activeProviderId = storage.activeProvider ?? storage.providerId
+  const activeAuthMode = storage.activeAuthMode ?? storage.authMode
+  const activeModel = storage.activeModel ?? storage.model
+  const activeKind = storage.providerKind
+
+  return providers.find(
+    provider =>
+      provider.id === activeProviderId &&
+      (activeKind === undefined || provider.kind === activeKind) &&
+      (activeAuthMode === undefined || provider.authMode === activeAuthMode) &&
+      (activeModel === undefined || provider.models.includes(activeModel)),
+  ) ?? providers.find(
+    provider =>
+      provider.id === activeProviderId &&
+      (activeKind === undefined || provider.kind === activeKind) &&
+      (activeAuthMode === undefined || provider.authMode === activeAuthMode),
+  ) ?? providers.find(
+    provider =>
+      provider.id === activeProviderId &&
+      (activeKind === undefined || provider.kind === activeKind),
+  ) ?? providers[0]
 }
 
 export function writeCustomApiStorage(next: CustomApiStorageData): void {

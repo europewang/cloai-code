@@ -166,6 +166,9 @@ export function getReasoningMode(
     if (authMode === 'oauth') return 'openai-codex-oauth'
     return 'none'
   }
+  if (providerKind === 'gemini-like') {
+    return 'none'
+  }
   return modelSupportsEffort(model) ? 'anthropic-effort' : 'none'
 }
 

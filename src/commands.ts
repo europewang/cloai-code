@@ -170,7 +170,11 @@ import {
   clearPluginSkillsCache,
 } from './utils/plugins/loadPluginCommands.js'
 import memoize from 'lodash-es/memoize.js'
-import { isUsing3PServices, isClaudeAISubscriber } from './utils/auth.js'
+import {
+  isUsing3PServices,
+  isUsingManaged3PServices,
+  isClaudeAISubscriber,
+} from './utils/auth.js'
 import { isFirstPartyAnthropicBaseUrl } from './utils/model/providers.js'
 import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
@@ -340,7 +344,8 @@ const COMMANDS = memoize((): Command[] => [
   hooks,
   exportCommand,
   sandboxToggle,
-  ...(!isUsing3PServices() ? [logout, login()] : []),
+  ...(!isUsingManaged3PServices() ? [logout] : []),
+  login(),
   passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,

@@ -1,7 +1,7 @@
 import { isRemoteManagedSettingsEligible } from '../services/remoteManagedSettings/syncCache.js'
 import { clearCACertsCache } from './caCerts.js'
 import { getGlobalConfig } from './config.js'
-import { readCustomApiStorage } from './customApiStorage.js'
+import { getActiveProviderConfig, readCustomApiStorage } from './customApiStorage.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
   isProviderManagedEnvVar,
@@ -206,48 +206,42 @@ function applyPersistedCustomApiEndpointEnv(): void {
     ...(getGlobalConfig().customApiEndpoint ?? {}),
     ...readCustomApiStorage(),
   }
+  const activeProviderConfig = getActiveProviderConfig(customApiEndpoint)
 
-  const activeProviderId =
-    customApiEndpoint.activeProvider ?? customApiEndpoint.providerId
-  const activeProviderKind = customApiEndpoint.providerKind
-  const providerCandidates = (customApiEndpoint.providers ?? []).filter(
-    provider =>
-      provider.id === activeProviderId &&
-      (activeProviderKind === undefined || provider.kind === activeProviderKind),
-  )
-  const activeProviderConfig =
-    providerCandidates.find(
-      provider =>
-        (provider.baseURL ?? undefined) ===
-          (customApiEndpoint.baseURL ?? undefined) &&
-        (customApiEndpoint.activeModel === undefined ||
-          provider.models.includes(customApiEndpoint.activeModel)),
-    ) ??
-    providerCandidates.find(
-      provider =>
-        customApiEndpoint.activeModel !== undefined &&
-        provider.models.includes(customApiEndpoint.activeModel),
-    ) ??
-    providerCandidates.find(
-      provider =>
-        (provider.baseURL ?? undefined) ===
-        (customApiEndpoint.baseURL ?? undefined),
-    ) ??
-    providerCandidates[0]
   const resolvedBaseURL = activeProviderConfig?.baseURL ?? customApiEndpoint?.baseURL
   const resolvedApiKey = activeProviderConfig?.apiKey ?? customApiEndpoint?.apiKey
   const resolvedModel = customApiEndpoint.activeModel ?? customApiEndpoint?.model
 
+  if (
+    activeProviderConfig?.kind === 'gemini-like' &&
+    activeProviderConfig.authMode === 'gemini-cli-oauth'
+  ) {
+    delete process.env.ANTHROPIC_BASE_URL
+    delete process.env.CLOAI_API_KEY
+    if (resolvedModel) {
+      process.env.ANTHROPIC_MODEL = resolvedModel
+    } else {
+      delete process.env.ANTHROPIC_MODEL
+    }
+    return
+  }
+
   if (resolvedBaseURL) {
     process.env.ANTHROPIC_BASE_URL = resolvedBaseURL
+  } else {
+    delete process.env.ANTHROPIC_BASE_URL
   }
 
   if (resolvedApiKey) {
     process.env.CLOAI_API_KEY = resolvedApiKey
+  } else {
+    delete process.env.CLOAI_API_KEY
   }
 
   if (resolvedModel) {
     process.env.ANTHROPIC_MODEL = resolvedModel
+  } else {
+    delete process.env.ANTHROPIC_MODEL
   }
 }
 

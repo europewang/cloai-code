@@ -12,6 +12,7 @@ import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastMo
 import { MODEL_ALIASES } from '../../utils/model/aliases.js';
 import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1mAccess.js';
 import {
+  getProviderKeyFromConfig,
   readCustomApiStorage,
   writeCustomApiStorage,
   type ProviderAuthMode,
@@ -29,7 +30,7 @@ function extractAccountName(baseURL: string | undefined, providerId: string): st
   if (providerId === 'anthropic-like') {
     return baseURL ? tryExtractHost(baseURL) : 'Anthropic';
   }
-  if (!baseURL) return 'OpenAI-compatible';
+  if (!baseURL) return providerId === 'gemini-like' ? 'Gemini-compatible' : 'OpenAI-compatible';
   return tryExtractHost(baseURL);
 }
 
@@ -56,14 +57,14 @@ type ConfiguredModelOption = {
   description: string;
   model: string;
   providerId: string;
-  providerKind: 'anthropic-like' | 'openai-like';
+  providerKind: 'anthropic-like' | 'openai-like' | 'gemini-like';
   authMode: ProviderAuthMode;
   reasoning?: ProviderConfig['reasoning'];
   isCurrent?: boolean;
 };
 
 function makeConfiguredOptionValue(
-  providerKind: 'anthropic-like' | 'openai-like',
+  providerKind: 'anthropic-like' | 'openai-like' | 'gemini-like',
   providerId: string,
   baseURL: string | undefined,
   authMode: ProviderAuthMode,
@@ -74,11 +75,14 @@ function makeConfiguredOptionValue(
 
 function getConfiguredModelOptions(): ConfiguredModelOption[] {
   const storage = readCustomApiStorage();
+  const activeProviderId = storage.activeProvider ?? storage.providerId;
   const providers = storage.providers ?? [];
   return providers.flatMap(provider => {
     const providerLabel = provider.kind === 'openai-like'
       ? 'OpenAI-compatible'
-      : 'Anthropic-compatible';
+      : provider.kind === 'gemini-like'
+        ? 'Gemini-compatible'
+        : 'Anthropic-compatible';
     const authLabel = provider.authMode === 'api-key'
       ? 'API key'
       : provider.authMode === 'chat-completions'
@@ -87,7 +91,15 @@ function getConfiguredModelOptions(): ConfiguredModelOption[] {
           ? 'responses'
           : provider.authMode === 'oauth'
             ? 'OAuth'
-            : provider.kind === 'openai-like' ? 'chat-completions' : 'API key';
+            : provider.authMode === 'vertex-compatible'
+              ? 'Vertex-compatible'
+              : provider.authMode === 'gemini-cli-oauth'
+                ? 'Gemini CLI OAuth'
+                : provider.kind === 'openai-like'
+                  ? 'chat-completions'
+                  : provider.kind === 'gemini-like'
+                    ? 'Vertex-compatible'
+                    : 'API key';
     const accountName = provider.id || extractAccountName(provider.baseURL, provider.kind);
     return provider.models.map(model => ({
       value: makeConfiguredOptionValue(provider.kind, provider.id, provider.baseURL, provider.authMode, model),
@@ -100,7 +112,7 @@ function getConfiguredModelOptions(): ConfiguredModelOption[] {
       reasoning: provider.reasoning,
       isCurrent:
         provider.kind === storage.providerKind &&
-        provider.id === storage.providerId &&
+        provider.id === activeProviderId &&
         (provider.baseURL ?? undefined) === (storage.baseURL ?? undefined) &&
         provider.authMode === (storage.activeAuthMode ?? storage.authMode) &&
         model === storage.activeModel,
@@ -109,7 +121,7 @@ function getConfiguredModelOptions(): ConfiguredModelOption[] {
 }
 
 function parseConfiguredOptionValue(value: string): {
-  providerKind: 'anthropic-like' | 'openai-like';
+  providerKind: 'anthropic-like' | 'openai-like' | 'gemini-like';
   providerId: string;
   baseURL: string | undefined;
   authMode: ProviderAuthMode;
@@ -121,12 +133,23 @@ function parseConfiguredOptionValue(value: string): {
   const fourth = value.indexOf('::', third + 2);
   if (first === -1 || second === -1 || third === -1 || fourth === -1) return null;
   const providerKind = value.slice(0, first);
-  if (providerKind !== 'anthropic-like' && providerKind !== 'openai-like') return null;
+  if (
+    providerKind !== 'anthropic-like' &&
+    providerKind !== 'openai-like' &&
+    providerKind !== 'gemini-like'
+  ) return null;
   const providerId = value.slice(first + 2, second);
   if (!providerId) return null;
   const baseURL = value.slice(second + 2, third) || undefined;
   const authMode = value.slice(third + 2, fourth);
-  if (authMode !== 'api-key' && authMode !== 'chat-completions' && authMode !== 'responses' && authMode !== 'oauth') return null;
+  if (
+    authMode !== 'api-key' &&
+    authMode !== 'chat-completions' &&
+    authMode !== 'responses' &&
+    authMode !== 'oauth' &&
+    authMode !== 'vertex-compatible' &&
+    authMode !== 'gemini-cli-oauth'
+  ) return null;
   const model = value.slice(fourth + 2);
   if (!model) return null;
   return { providerKind, providerId, baseURL, authMode, model };
@@ -178,10 +201,16 @@ function persistSelectedConfiguredModel(
   writeCustomApiStorage({
     ...storage,
     providers: nextProviders,
+    activeProviderKey: getProviderKeyFromConfig(providerForModel),
     activeProvider: providerForModel.id,
     activeModel: parsed.model,
     activeAuthMode: providerForModel.authMode,
-    provider: providerForModel.kind === 'openai-like' ? 'openai' : 'anthropic',
+    provider:
+      providerForModel.kind === 'openai-like'
+        ? 'openai'
+        : providerForModel.kind === 'gemini-like'
+          ? 'gemini'
+          : 'anthropic',
     providerKind: providerForModel.kind,
     providerId: providerForModel.id,
     authMode: providerForModel.authMode,
@@ -190,8 +219,16 @@ function persistSelectedConfiguredModel(
     model: parsed.model,
     savedModels: providerForModel.models,
   });
-  process.env.ANTHROPIC_BASE_URL = providerForModel.baseURL ?? '';
-  process.env.CLOAI_API_KEY = providerForModel.apiKey ?? '';
+  if (
+    providerForModel.kind === 'gemini-like' &&
+    providerForModel.authMode === 'gemini-cli-oauth'
+  ) {
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.CLOAI_API_KEY;
+  } else {
+    process.env.ANTHROPIC_BASE_URL = providerForModel.baseURL ?? '';
+    process.env.CLOAI_API_KEY = providerForModel.apiKey ?? '';
+  }
   process.env.ANTHROPIC_MODEL = parsed.model;
   return parsed.model;
 }

@@ -26,12 +26,18 @@ import {
   getAuthTokenSource,
   getOauthAccountInfo,
   getSubscriptionType,
+  hasGeminiCustomAuth,
   isUsing3PServices,
   saveOAuthTokensIfNeeded,
   validateForceLoginOrg,
 } from '../../utils/auth.js'
 import { saveGlobalConfig } from '../../utils/config.js'
-import { readCustomApiStorage, writeCustomApiStorage } from '../../utils/customApiStorage.js'
+import {
+  getActiveProviderConfig,
+  getProviderKeyFromConfig,
+  readCustomApiStorage,
+  writeCustomApiStorage,
+} from '../../utils/customApiStorage.js'
 import { normalizeApiKeyForConfig } from '../../utils/authPortable.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isRunningOnHomespace } from '../../utils/envUtils.js'
@@ -49,15 +55,18 @@ import {
  * Shared post-token-acquisition logic. Saves tokens, fetches profile/roles,
  * and sets up the local auth state.
  *
- * @param oauthProvider - When 'openai', skips Anthropic-specific endpoints
- *   and stores the access token as the API key for OpenAI-compatible endpoints.
+ * @param oauthProvider - When 'openai' or 'gemini', skips Anthropic-specific
+ *   endpoints and stores provider-specific credentials back into custom provider
+ *   storage.
  */
 export async function installOAuthTokens(
   tokens: OAuthTokens,
-  oauthProvider?: 'anthropic' | 'openai',
+  oauthProvider?: 'anthropic' | 'openai' | 'gemini',
 ): Promise<void> {
   const existingCustomApiStorage =
-    oauthProvider === 'openai' ? readCustomApiStorage() : undefined
+    oauthProvider === 'openai' || oauthProvider === 'gemini'
+      ? readCustomApiStorage()
+      : undefined
 
   // Clear old state before saving new credentials
   await performLogout({ clearOnboarding: false })
@@ -67,12 +76,11 @@ export async function installOAuthTokens(
     const previousStorage = existingCustomApiStorage ?? {}
     const providers = previousStorage.providers ?? []
     const normalizedToken = normalizeApiKeyForConfig(tokens.accessToken)
-    const activeOpenAIProvider = providers.find(
-      p =>
-        p.kind === 'openai-like' &&
-        p.id === previousStorage.activeProvider &&
-        p.authMode === 'oauth',
-    )
+    const activeProvider = getActiveProviderConfig(previousStorage)
+    const activeOpenAIProvider =
+      activeProvider?.kind === 'openai-like' && activeProvider.authMode === 'oauth'
+        ? activeProvider
+        : undefined
     const fallbackOpenAIProvider = providers.find(
       p =>
         p.kind === 'openai-like' &&
@@ -95,6 +103,9 @@ export async function installOAuthTokens(
         : targetProvider?.models[0]
     const normalizedOpenAIStorage = {
       ...previousStorage,
+      activeProviderKey: targetProvider
+        ? getProviderKeyFromConfig(targetProvider)
+        : previousStorage.activeProviderKey,
       providers: updatedProviders,
       activeProvider: targetProvider?.id ?? previousStorage.activeProvider,
       activeModel,
@@ -141,6 +152,111 @@ export async function installOAuthTokens(
     process.env.CLOAI_API_KEY = tokens.accessToken
     process.env.ANTHROPIC_BASE_URL = normalizedOpenAIStorage.baseURL ?? ''
     process.env.ANTHROPIC_MODEL = normalizedOpenAIStorage.model ?? ''
+    clearOAuthTokenCache()
+    await clearAuthRelatedCaches()
+    return
+  }
+
+  // Handle Gemini OAuth separately — skip Anthropic-specific endpoints
+  if (oauthProvider === 'gemini') {
+    const previousStorage = existingCustomApiStorage ?? {}
+    const providers = previousStorage.providers ?? []
+    const activeProvider = getActiveProviderConfig(previousStorage)
+    const activeGeminiProvider =
+      activeProvider?.kind === 'gemini-like' &&
+      activeProvider.authMode === 'gemini-cli-oauth'
+        ? activeProvider
+        : undefined
+    const fallbackGeminiProvider = providers.find(
+      p =>
+        p.kind === 'gemini-like' &&
+        p.id === previousStorage.providerId &&
+        p.authMode === 'gemini-cli-oauth',
+    )
+    const targetProvider =
+      activeGeminiProvider ??
+      fallbackGeminiProvider ??
+      providers.find(
+        p => p.kind === 'gemini-like' && p.authMode === 'gemini-cli-oauth',
+      )
+    const updatedProviders = targetProvider
+      ? providers.map(p =>
+          p === targetProvider
+            ? {
+                ...p,
+                oauth: {
+                  ...p.oauth,
+                  accessToken:
+                    typeof tokens.accessToken === 'string'
+                      ? tokens.accessToken
+                      : p.oauth?.accessToken,
+                  refreshToken:
+                    typeof tokens.refreshToken === 'string'
+                      ? tokens.refreshToken
+                      : p.oauth?.refreshToken,
+                  expiresAt:
+                    typeof tokens.expiresAt === 'number'
+                      ? tokens.expiresAt
+                      : p.oauth?.expiresAt,
+                  projectId:
+                    typeof tokens.projectId === 'string'
+                      ? tokens.projectId
+                      : p.oauth?.projectId,
+                  email:
+                    typeof tokens.email === 'string'
+                      ? tokens.email
+                      : p.oauth?.email,
+                },
+              }
+            : p,
+        )
+      : providers
+
+    const activeModel =
+      previousStorage.activeProvider === targetProvider?.id
+        ? previousStorage.activeModel
+        : targetProvider?.models[0]
+    const normalizedGeminiStorage = {
+      ...previousStorage,
+      activeProviderKey: targetProvider
+        ? getProviderKeyFromConfig(targetProvider)
+        : previousStorage.activeProviderKey,
+      providers: updatedProviders,
+      activeProvider: targetProvider?.id ?? previousStorage.activeProvider,
+      activeModel,
+      activeAuthMode: targetProvider?.authMode ?? previousStorage.activeAuthMode,
+      provider: 'gemini' as const,
+      providerKind: targetProvider?.kind ?? 'gemini-like',
+      providerId: targetProvider?.id ?? previousStorage.providerId,
+      authMode: targetProvider?.authMode ?? 'gemini-cli-oauth',
+      baseURL: targetProvider?.baseURL ?? previousStorage.baseURL,
+      apiKey: undefined,
+      model: activeModel,
+      savedModels:
+        targetProvider?.models ??
+        (previousStorage.activeProvider === targetProvider?.id
+          ? previousStorage.savedModels
+          : undefined),
+    }
+
+    writeCustomApiStorage(normalizedGeminiStorage)
+    saveGlobalConfig(current => ({
+      ...current,
+      customApiEndpoint: {
+        ...(current.customApiEndpoint ?? {}),
+        kind: normalizedGeminiStorage.providerKind,
+        providerId: normalizedGeminiStorage.providerId,
+        provider: 'gemini',
+        baseURL: normalizedGeminiStorage.baseURL,
+        apiKey: undefined,
+        model: normalizedGeminiStorage.model,
+        savedModels: normalizedGeminiStorage.savedModels,
+      },
+    }))
+
+    delete process.env.CLOAI_API_KEY
+    delete process.env.ANTHROPIC_BASE_URL
+    process.env.ANTHROPIC_MODEL = normalizedGeminiStorage.model ?? ''
     clearOAuthTokenCache()
     await clearAuthRelatedCaches()
     return
@@ -336,8 +452,9 @@ export async function authStatus(opts: {
   const oauthAccount = getOauthAccountInfo()
   const subscriptionType = getSubscriptionType()
   const using3P = isUsing3PServices()
+  const hasGeminiAuth = hasGeminiCustomAuth()
   const loggedIn =
-    hasToken || apiKeySource !== 'none' || hasApiKeyEnvVar || using3P
+    hasToken || apiKeySource !== 'none' || hasApiKeyEnvVar || using3P || hasGeminiAuth
 
   // Determine auth method
   let authMethod: string = 'none'

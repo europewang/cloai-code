@@ -296,13 +296,14 @@ function resolveCodexUrl(baseURL?: string): string {
 
 function getActiveReasoningConfig(model: string) {
   const storage = readCustomApiStorage()
+  const activeProviderId = storage.activeProvider ?? storage.providerId
   return getOpenAIReasoningConfig(
     storage.providerKind,
     storage.activeAuthMode ?? storage.authMode,
     model,
     storage.providers?.find(provider =>
       provider.kind === storage.providerKind &&
-      provider.id === storage.providerId &&
+      provider.id === activeProviderId &&
       provider.authMode === (storage.activeAuthMode ?? storage.authMode),
     )?.reasoning,
   )

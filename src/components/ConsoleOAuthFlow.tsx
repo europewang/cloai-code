@@ -9,11 +9,12 @@ import { Box, Link, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { getSSLErrorHint } from '../services/api/errorUtils.js';
 import { sendNotification } from '../services/notifier.js';
+import { GeminiOAuthService } from '../services/oauth/geminiCli.js'
 import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js';
 import { normalizeApiKeyForConfig } from '../utils/authPortable.js';
-import { type ProviderConfig, deriveProviderId, readCustomApiStorage, writeCustomApiStorage } from '../utils/customApiStorage.js';
+import { type ProviderConfig, deriveProviderId, getProviderKeyFromConfig, readCustomApiStorage, writeCustomApiStorage } from '../utils/customApiStorage.js';
 import { logError } from '../utils/log.js';
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js';
 import { Select } from './CustomSelect/select.js';
@@ -25,10 +26,12 @@ type Props = {
   startingMessage?: string;
   mode?: 'login' | 'setup-token';
   forceLoginMethod?: 'claudeai' | 'console';
+  onTextInputActiveChange?: (active: boolean) => void;
 };
-type CompatibleApiProvider = 'anthropic-like' | 'openai-like';
+type CompatibleApiProvider = 'anthropic-like' | 'openai-like' | 'gemini-like';
 type OpenAICompatibleAuthMode = 'chat-completions' | 'responses' | 'oauth';
-type CompatibleAuthMode = 'api-key' | OpenAICompatibleAuthMode;
+type GeminiCompatibleAuthMode = 'vertex-compatible' | 'gemini-cli-oauth';
+type CompatibleAuthMode = 'api-key' | OpenAICompatibleAuthMode | GeminiCompatibleAuthMode;
 type CustomConfigStep = 'authMode' | 'baseURL' | 'apiKey' | 'models';
 type ProviderRecordKey = {
   kind: CompatibleApiProvider;
@@ -85,11 +88,25 @@ type OAuthStatus = {
 };
 
 function getDefaultAuthMode(provider: CompatibleApiProvider): CompatibleAuthMode {
-  return provider === 'openai-like' ? 'chat-completions' : 'api-key';
+  return provider === 'openai-like'
+    ? 'chat-completions'
+    : provider === 'gemini-like'
+      ? 'vertex-compatible'
+      : 'api-key';
 }
 
-function isOauthAuthMode(authMode: CompatibleAuthMode): authMode is 'oauth' {
+function isOpenAIOAuthMode(authMode: CompatibleAuthMode): authMode is 'oauth' {
   return authMode === 'oauth';
+}
+
+function isGeminiOAuthMode(authMode: CompatibleAuthMode): authMode is 'gemini-cli-oauth' {
+  return authMode === 'gemini-cli-oauth';
+}
+
+function isBrowserOAuthAuthMode(
+  authMode: CompatibleAuthMode,
+): authMode is 'oauth' | 'gemini-cli-oauth' {
+  return isOpenAIOAuthMode(authMode) || isGeminiOAuthMode(authMode);
 }
 
 /**
@@ -100,6 +117,9 @@ function isOauthAuthMode(authMode: CompatibleAuthMode): authMode is 'oauth' {
 function extractAccountNameFromUrl(baseURL: string | undefined, providerId: string): string {
   if (providerId === 'anthropic-like') {
     return baseURL ? extractHost(baseURL) : 'Anthropic';
+  }
+  if (providerId === 'gemini-like') {
+    return baseURL ? extractHost(baseURL) : 'Gemini-compatible';
   }
   if (!baseURL) return 'OpenAI-compatible';
   return extractHost(baseURL);
@@ -136,15 +156,6 @@ function getProviderKey(provider: ProviderRecordKey): string {
   return `${provider.kind}::${provider.id}::${provider.authMode}::${provider.baseURL ?? ''}`;
 }
 
-function getProviderKeyFromConfig(provider: ProviderConfig): string {
-  return getProviderKey({
-    kind: provider.kind,
-    id: provider.id,
-    authMode: provider.authMode,
-    baseURL: provider.baseURL,
-  });
-}
-
 function findProviderByKey(
   providers: ProviderConfig[],
   key: ProviderRecordKey | undefined,
@@ -158,7 +169,7 @@ function buildActiveSnapshot(
   activeModel: string | undefined,
 ): {
   kind?: CompatibleApiProvider;
-  provider?: 'anthropic' | 'openai';
+  provider?: 'anthropic' | 'openai' | 'gemini';
   providerId?: string;
   baseURL?: string;
   apiKey?: string;
@@ -172,10 +183,16 @@ function buildActiveSnapshot(
         ? 'openai'
         : provider?.kind === 'anthropic-like'
           ? 'anthropic'
-          : undefined,
+          : provider?.kind === 'gemini-like'
+            ? 'gemini'
+            : undefined,
     providerId: provider?.id,
     baseURL: provider?.baseURL,
-    apiKey: provider?.apiKey,
+    apiKey:
+      provider?.kind === 'gemini-like' &&
+      provider?.authMode === 'gemini-cli-oauth'
+        ? undefined
+        : provider?.apiKey,
     model: activeModel,
     savedModels: provider?.models,
   };
@@ -213,7 +230,8 @@ export function ConsoleOAuthFlow({
   onDone,
   startingMessage,
   mode = 'login',
-  forceLoginMethod: forceLoginMethodProp
+  forceLoginMethod: forceLoginMethodProp,
+  onTextInputActiveChange,
 }: Props): React.ReactNode {
   const settings = getSettings_DEPRECATED() || {};
   const forceLoginMethod = forceLoginMethodProp ?? settings.forceLoginMethod;
@@ -226,11 +244,18 @@ export function ConsoleOAuthFlow({
   const [persistedCustomApiEndpoint, setPersistedCustomApiEndpoint] = useState(readPersistedCustomApiEndpoint);
   const persistedProviders = persistedCustomApiEndpoint.providers ?? [];
   const persistedActiveProvider = persistedCustomApiEndpoint.activeProvider ?? persistedCustomApiEndpoint.providerId;
-  const persistedProviderConfig = persistedProviders.find(provider => provider.id === persistedActiveProvider) ?? persistedProviders[0];
+  const persistedProviderConfig = persistedProviders.find(provider =>
+    provider.id === persistedActiveProvider &&
+    provider.authMode === (persistedCustomApiEndpoint.activeAuthMode ?? persistedCustomApiEndpoint.authMode),
+  ) ?? persistedProviders.find(provider => provider.id === persistedActiveProvider) ?? persistedProviders[0];
   const persistedActiveProviderKey = persistedProviderConfig
     ? getProviderKeyFromConfig(persistedProviderConfig)
     : undefined;
-  const persistedProviderKind = persistedProviderConfig?.kind ?? persistedCustomApiEndpoint.kind ?? (persistedCustomApiEndpoint.provider === 'openai' ? 'openai-like' : 'anthropic-like');
+  const persistedProviderKind = persistedProviderConfig?.kind ?? persistedCustomApiEndpoint.kind ?? (persistedCustomApiEndpoint.provider === 'openai'
+    ? 'openai-like'
+    : persistedCustomApiEndpoint.provider === 'gemini'
+      ? 'gemini-like'
+      : 'anthropic-like');
   const persistedAuthMode = persistedProviderConfig?.authMode ?? getDefaultAuthMode(persistedProviderKind);
   const persistedModelsInput = formatModelsInput(persistedProviderConfig?.models, persistedCustomApiEndpoint.model ?? process.env.ANTHROPIC_MODEL ?? '');
   const persistedProviderKey = persistedProviderConfig ? {
@@ -273,6 +298,7 @@ export function ConsoleOAuthFlow({
   const [customApiKey, setCustomApiKey] = useState(persistedProviderConfig?.apiKey ?? persistedCustomApiEndpoint.apiKey ?? process.env.CLOAI_API_KEY ?? '');
   const [customModels, setCustomModels] = useState(persistedModelsInput);
   const [oauthService] = useState(() => new OAuthService());
+  const [geminiOAuthService] = useState(() => new GeminiOAuthService());
   const [loginWithClaudeAi, setLoginWithClaudeAi] = useState(() => {
     // Use Claude AI auth for setup-token mode to support user:inference scope
     return mode === 'setup-token' || forceLoginMethod === 'claudeai';
@@ -283,10 +309,14 @@ export function ConsoleOAuthFlow({
   const [showPastePrompt, setShowPastePrompt] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
   const [isCustomInputPasting, setIsCustomInputPasting] = useState(false);
+  const isEditingTextInput = safeOauthStatus.state === 'custom_config' || (safeOauthStatus.state === 'waiting_for_login' && showPastePrompt);
   const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
   const refreshPersistedCustomApiEndpoint = useCallback(() => {
     setPersistedCustomApiEndpoint(readPersistedCustomApiEndpoint());
   }, [readPersistedCustomApiEndpoint]);
+  useEffect(() => {
+    onTextInputActiveChange?.(isEditingTextInput);
+  }, [isEditingTextInput, onTextInputActiveChange]);
   const startCompatibleApiConfig = useCallback((provider: CompatibleApiProvider) => {
     const nextAuthMode = getDefaultAuthMode(provider);
     setCompatibleApiProvider(provider);
@@ -299,7 +329,7 @@ export function ConsoleOAuthFlow({
       state: 'custom_config',
       provider,
       authMode: nextAuthMode,
-      step: provider === 'openai-like' ? 'authMode' : 'baseURL'
+      step: provider === 'anthropic-like' ? 'baseURL' : 'authMode'
     });
   }, []);
 
@@ -400,6 +430,7 @@ export function ConsoleOAuthFlow({
     }
     writeCustomApiStorage({
       ...currentStorage,
+      activeProviderKey: next ? getProviderKeyFromConfig(next) : undefined,
       providers: remainingProviders.length > 0 ? remainingProviders : undefined,
       activeProvider: next?.id,
       activeModel: next?.models[0],
@@ -522,15 +553,21 @@ export function ConsoleOAuthFlow({
     const nextActiveModel = nextModels[0];
     const normalizedKey = nextApiKey ? normalizeApiKeyForConfig(nextApiKey) : null;
     const providerKind = compatibleApiProvider;
-    const providerId = isOauthAuthMode(compatibleAuthMode) && providerKind === 'openai-like'
+    const providerId = isOpenAIOAuthMode(compatibleAuthMode) && providerKind === 'openai-like'
       ? 'openai'
       : deriveProviderId(nextBaseURL || undefined, providerKind);
+    const shouldClearEndpointCredentials =
+      providerKind === 'gemini-like' &&
+      compatibleAuthMode === 'gemini-cli-oauth';
     const providerConfig = {
       id: providerId,
       kind: providerKind,
       authMode: compatibleAuthMode,
-      baseURL: nextBaseURL || undefined,
-      apiKey: isOauthAuthMode(compatibleAuthMode) ? undefined : nextApiKey || undefined,
+      baseURL: shouldClearEndpointCredentials ? undefined : nextBaseURL || undefined,
+      apiKey:
+        isBrowserOAuthAuthMode(compatibleAuthMode) || shouldClearEndpointCredentials
+          ? undefined
+          : nextApiKey || undefined,
       models: nextModels
     };
     const existingProviders = persistedCustomApiEndpoint.providers ?? [];
@@ -546,8 +583,13 @@ export function ConsoleOAuthFlow({
       authMode: providerConfig.authMode,
       baseURL: providerConfig.baseURL,
     });
-    process.env.ANTHROPIC_BASE_URL = providerConfig.baseURL ?? '';
-    process.env.CLOAI_API_KEY = providerConfig.apiKey ?? '';
+    if (shouldClearEndpointCredentials) {
+      delete process.env.ANTHROPIC_BASE_URL;
+      delete process.env.CLOAI_API_KEY;
+    } else {
+      process.env.ANTHROPIC_BASE_URL = providerConfig.baseURL ?? '';
+      process.env.CLOAI_API_KEY = providerConfig.apiKey ?? '';
+    }
     process.env.ANTHROPIC_MODEL = nextActiveModel ?? '';
     saveGlobalConfig(current => ({
       ...current,
@@ -558,8 +600,10 @@ export function ConsoleOAuthFlow({
       } : current.customApiKeyResponses
     }));
     writeCustomApiStorage({
+      activeProviderKey: getProviderKeyFromConfig(providerConfig),
       activeProvider: providerConfig.id,
       activeModel: nextActiveModel,
+      activeAuthMode: providerConfig.authMode,
       providers,
       ...activeSnapshot,
     });
@@ -577,7 +621,11 @@ export function ConsoleOAuthFlow({
         state: 'custom_config',
         provider: safeOauthStatus.provider,
         authMode: nextAuthMode,
-        step: isOauthAuthMode(nextAuthMode) ? 'models' : 'baseURL'
+        step: isBrowserOAuthAuthMode(nextAuthMode)
+          ? 'models'
+          : nextAuthMode === 'vertex-compatible'
+            ? 'baseURL'
+            : 'baseURL'
       });
       return;
     }
@@ -673,13 +721,18 @@ export function ConsoleOAuthFlow({
     setCustomModels(nextValue);
     persistCustomEndpoint({ models: nextValue });
     // For OAuth auth mode, initiate the OAuth browser flow instead of immediate success
-    if (isOauthAuthMode(safeOauthStatus.authMode)) {
+    if (isBrowserOAuthAuthMode(safeOauthStatus.authMode)) {
       setLoginWithClaudeAi(false); // Use console/non-Claude.ai path for OAuth
       setOAuthStatus({ state: 'ready_to_start' }); // Triggers startOAuth via useEffect
     } else {
       setOAuthStatus({ state: 'success' });
       void sendNotification({
-        message: safeOauthStatus.provider === 'openai-like' ? `OpenAI-compatible ${safeOauthStatus.authMode} endpoint saved` : 'Anthropic-compatible endpoint saved',
+        message:
+          safeOauthStatus.provider === 'openai-like'
+            ? `OpenAI-compatible ${safeOauthStatus.authMode} endpoint saved`
+            : safeOauthStatus.provider === 'gemini-like'
+              ? `Gemini-compatible ${safeOauthStatus.authMode} endpoint saved`
+              : 'Anthropic-compatible endpoint saved',
         notificationType: 'auth_success'
       }, terminal);
     }
@@ -702,10 +755,17 @@ export function ConsoleOAuthFlow({
 
       // Track which path the user is taking (manual code entry)
       logEvent('tengu_oauth_manual_entry', {});
-      oauthService.handleManualAuthCodeInput({
-        authorizationCode,
-        state
-      });
+      if (compatibleApiProvider === 'gemini-like') {
+        geminiOAuthService.handleManualAuthCodeInput({
+          authorizationCode,
+          state,
+        });
+      } else {
+        oauthService.handleManualAuthCodeInput({
+          authorizationCode,
+          state,
+        });
+      }
     } catch (err: unknown) {
       logError(err);
       setOAuthStatus({
@@ -720,26 +780,36 @@ export function ConsoleOAuthFlow({
   }
   const startOAuth = useCallback(async () => {
     try {
-      const isOpenAIOAuth = compatibleApiProvider === 'openai-like' && isOauthAuthMode(compatibleAuthMode);
+      const isOpenAIOAuth =
+        compatibleApiProvider === 'openai-like' && isOpenAIOAuthMode(compatibleAuthMode);
+      const isGeminiCliOAuth =
+        compatibleApiProvider === 'gemini-like' && isGeminiOAuthMode(compatibleAuthMode);
       logEvent('tengu_oauth_flow_start', {
-        loginWithClaudeAi: isOpenAIOAuth ? false : loginWithClaudeAi,
-        oauthProvider: isOpenAIOAuth ? 'openai' : 'anthropic',
+        loginWithClaudeAi: isOpenAIOAuth || isGeminiCliOAuth ? false : loginWithClaudeAi,
+        oauthProvider: isOpenAIOAuth ? 'openai' : isGeminiCliOAuth ? 'gemini' : 'anthropic',
       });
-      const result = await oauthService.startOAuthFlow(async url_0 => {
-        setOAuthStatus({
-          state: 'waiting_for_login',
-          url: url_0
-        });
-        setTimeout(setShowPastePrompt, 3000, true);
-      }, {
-        loginWithClaudeAi: isOpenAIOAuth ? false : loginWithClaudeAi,
-        oauthProvider: isOpenAIOAuth ? 'openai' : 'anthropic',
-        openaiClientId: undefined,
-        inferenceOnly: mode === 'setup-token',
-        expiresIn: mode === 'setup-token' ? 365 * 24 * 60 * 60 : undefined,
-        // 1 year for setup-token
-        orgUUID
-      }).catch(err_1 => {
+      const result = isGeminiCliOAuth
+        ? await geminiOAuthService.startOAuthFlow(async url_0 => {
+            setOAuthStatus({
+              state: 'waiting_for_login',
+              url: url_0
+            });
+            setTimeout(setShowPastePrompt, 3000, true);
+          })
+        : await oauthService.startOAuthFlow(async url_0 => {
+            setOAuthStatus({
+              state: 'waiting_for_login',
+              url: url_0
+            });
+            setTimeout(setShowPastePrompt, 3000, true);
+          }, {
+            loginWithClaudeAi: isOpenAIOAuth ? false : loginWithClaudeAi,
+            oauthProvider: isOpenAIOAuth ? 'openai' : 'anthropic',
+            openaiClientId: undefined,
+            inferenceOnly: mode === 'setup-token',
+            expiresIn: mode === 'setup-token' ? 365 * 24 * 60 * 60 : undefined,
+            orgUUID
+          }).catch(err_1 => {
         const isTokenExchangeError = err_1.message.includes('Token exchange failed');
         // Enterprise TLS proxies (Zscaler et al.) intercept the token
         // exchange POST and cause cryptic SSL errors. Surface an
@@ -768,9 +838,15 @@ export function ConsoleOAuthFlow({
           token: result.accessToken
         });
       } else {
-        await installOAuthTokens(result, isOpenAIOAuth ? 'openai' : 'anthropic');
+        await installOAuthTokens(
+          result,
+          isGeminiCliOAuth ? 'gemini' : isOpenAIOAuth ? 'openai' : 'anthropic',
+        );
         const updatedStorage = readCustomApiStorage();
-        const updatedProvider = updatedStorage.providers?.find(p => p.id === updatedStorage.activeProvider) ?? updatedStorage.providers?.[0];
+        const updatedProvider = updatedStorage.providers?.find(p =>
+          p.id === updatedStorage.activeProvider &&
+          p.authMode === (updatedStorage.activeAuthMode ?? updatedStorage.authMode),
+        ) ?? updatedStorage.providers?.find(p => p.id === updatedStorage.activeProvider) ?? updatedStorage.providers?.[0];
         if (updatedProvider) {
           setSelectedProviderKey({
             kind: updatedProvider.kind,
@@ -785,7 +861,7 @@ export function ConsoleOAuthFlow({
           setCustomModels(formatModelsInput(updatedProvider.models));
         }
         // Only validate Anthropic org for Anthropic OAuth; OpenAI OAuth skips this
-        if (!isOpenAIOAuth) {
+        if (!isOpenAIOAuth && !isGeminiCliOAuth) {
           const orgResult = await validateForceLoginOrg();
           if (!orgResult.valid) {
             throw new Error('Forced login organization validation failed');
@@ -795,9 +871,11 @@ export function ConsoleOAuthFlow({
           state: 'success'
         });
         void sendNotification({
-          message: isOpenAIOAuth
-            ? 'OpenAI OAuth successful'
-            : 'Claude Code login successful',
+          message: isGeminiCliOAuth
+            ? 'Gemini CLI OAuth successful'
+            : isOpenAIOAuth
+              ? 'OpenAI OAuth successful'
+              : 'Claude Code login successful',
           notificationType: 'auth_success'
         }, terminal);
       }
@@ -816,7 +894,7 @@ export function ConsoleOAuthFlow({
         ssl_error: sslHint !== null
       });
     }
-  }, [oauthService, setShowPastePrompt, loginWithClaudeAi, mode, orgUUID, compatibleApiProvider, compatibleAuthMode]);
+  }, [oauthService, geminiOAuthService, setShowPastePrompt, loginWithClaudeAi, mode, orgUUID, compatibleApiProvider, compatibleAuthMode]);
   const pendingOAuthStartRef = useRef(false);
   useEffect(() => {
     if (safeOauthStatus.state === 'ready_to_start' && !pendingOAuthStartRef.current) {
@@ -847,8 +925,9 @@ export function ConsoleOAuthFlow({
   useEffect(() => {
     return () => {
       oauthService.cleanup();
+      geminiOAuthService.cleanup();
     };
-  }, [oauthService]);
+  }, [oauthService, geminiOAuthService]);
   return <Box flexDirection="column" gap={1}>
       {safeOauthStatus.state === 'waiting_for_login' && showPastePrompt && <Box flexDirection="column" key="urlToCopy" gap={1} paddingBottom={1}>
           <Box paddingX={1}>
@@ -965,8 +1044,22 @@ function OAuthStatusMessage({
             options={[
               ...providers.map(provider => {
                 const accountName = provider.id || extractAccountNameFromUrl(provider.baseURL, provider.kind);
-                const typeLabel = provider.kind === 'openai-like' ? 'OpenAI-compatible' : 'Anthropic-compatible';
-                const authLabel = provider.authMode === 'oauth' ? 'OAuth' : provider.authMode === 'responses' ? 'responses' : provider.authMode === 'chat-completions' ? 'chat-completions' : 'API key';
+                const typeLabel = provider.kind === 'openai-like'
+                  ? 'OpenAI-compatible'
+                  : provider.kind === 'gemini-like'
+                    ? 'Gemini-compatible'
+                    : 'Anthropic-compatible';
+                const authLabel = provider.authMode === 'oauth'
+                  ? 'OAuth'
+                  : provider.authMode === 'responses'
+                    ? 'responses'
+                    : provider.authMode === 'chat-completions'
+                      ? 'chat-completions'
+                      : provider.authMode === 'gemini-cli-oauth'
+                        ? 'Gemini CLI OAuth'
+                        : provider.authMode === 'vertex-compatible'
+                          ? 'Vertex-compatible'
+                          : 'API key';
                 return {
                   label: (
                     <Text>
@@ -1084,6 +1177,14 @@ function OAuthStatusMessage({
                     </Text>
                   ),
                   value: 'openai-like'
+                },
+                {
+                  label: (
+                    <Text>
+                      Gemini-like API · <Text dimColor>Configure Vertex-compatible API or Gemini CLI OAuth</Text>
+                    </Text>
+                  ),
+                  value: 'gemini-like'
                 }
               ]}
               onChange={value => {
@@ -1099,7 +1200,11 @@ function OAuthStatusMessage({
       );
 
     case 'custom_config': {
-      const providerLabel = oauthStatus.provider === 'openai-like' ? 'OpenAI-compatible API' : 'Anthropic-compatible API';
+      const providerLabel = oauthStatus.provider === 'openai-like'
+        ? 'OpenAI-compatible API'
+        : oauthStatus.provider === 'gemini-like'
+          ? 'Gemini-compatible API'
+          : 'Anthropic-compatible API';
 
       if (oauthStatus.step === 'authMode') {
         return (
@@ -1109,32 +1214,51 @@ function OAuthStatusMessage({
             <Text>Select auth mode:</Text>
             <Box>
               <Select
-                options={[
-                  {
-                    label: (
-                      <Text>
-                        chat-completions · <Text dimColor>Use /v1/chat/completions with API key auth</Text>
-                      </Text>
-                    ),
-                    value: 'chat-completions'
-                  },
-                  {
-                    label: (
-                      <Text>
-                        responses · <Text dimColor>Use /v1/responses with API key auth</Text>
-                      </Text>
-                    ),
-                    value: 'responses'
-                  },
-                  {
-                    label: (
-                      <Text>
-                        oauth · <Text dimColor>Use OAuth login and keep models available in /model</Text>
-                      </Text>
-                    ),
-                    value: 'oauth'
-                  }
-                ]}
+                options={oauthStatus.provider === 'openai-like'
+                  ? [
+                      {
+                        label: (
+                          <Text>
+                            chat-completions · <Text dimColor>Use /v1/chat/completions with API key auth</Text>
+                          </Text>
+                        ),
+                        value: 'chat-completions'
+                      },
+                      {
+                        label: (
+                          <Text>
+                            responses · <Text dimColor>Use /v1/responses with API key auth</Text>
+                          </Text>
+                        ),
+                        value: 'responses'
+                      },
+                      {
+                        label: (
+                          <Text>
+                            oauth · <Text dimColor>Use OAuth login and keep models available in /model</Text>
+                          </Text>
+                        ),
+                        value: 'oauth'
+                      }
+                    ]
+                  : [
+                      {
+                        label: (
+                          <Text>
+                            vertex-compatible · <Text dimColor>Use Gemini GenerateContent-compatible endpoint with API key auth</Text>
+                          </Text>
+                        ),
+                        value: 'vertex-compatible'
+                      },
+                      {
+                        label: (
+                          <Text>
+                            gemini-cli-oauth · <Text dimColor>Use Gemini CLI / Cloud Code Assist OAuth</Text>
+                          </Text>
+                        ),
+                        value: 'gemini-cli-oauth'
+                      }
+                    ]}
                 onChange={value => handleSubmitCustomConfig(String(value))}
               />
             </Box>
@@ -1142,12 +1266,48 @@ function OAuthStatusMessage({
         );
       }
 
-      const oauthMode = isOauthAuthMode(oauthStatus.authMode);
-      const routeSuffix = oauthStatus.authMode === 'responses' ? '/v1/responses' : oauthStatus.provider === 'openai-like' ? '/v1/chat/completions' : '/v1/messages';
-      const label = oauthStatus.step === 'baseURL' ? oauthStatus.provider === 'openai-like' ? oauthStatus.authMode === 'responses' ? 'Enter the OpenAI-compatible Responses base URL:' : 'Enter the OpenAI-compatible Chat Completions base URL:' : 'Enter the Anthropic-compatible Messages base URL:' : oauthStatus.step === 'apiKey' ? oauthStatus.provider === 'openai-like' ? 'Enter API key:' : 'Enter Anthropic API key:' : oauthStatus.provider === 'openai-like' && oauthStatus.authMode === 'oauth' ? 'Enter one or more model names for OpenAI OAuth separated by spaces:' : 'Enter one or more model names separated by spaces:';
+      const oauthMode = isBrowserOAuthAuthMode(oauthStatus.authMode);
+      const routeSuffix = oauthStatus.provider === 'gemini-like'
+        ? '/v1beta/models/{model}:streamGenerateContent'
+        : oauthStatus.authMode === 'responses'
+          ? '/v1/responses'
+          : oauthStatus.provider === 'openai-like'
+            ? '/v1/chat/completions'
+            : '/v1/messages';
+      const label = oauthStatus.step === 'baseURL'
+        ? oauthStatus.provider === 'openai-like'
+          ? oauthStatus.authMode === 'responses'
+            ? 'Enter the OpenAI-compatible Responses base URL:'
+            : 'Enter the OpenAI-compatible Chat Completions base URL:'
+          : oauthStatus.provider === 'gemini-like'
+            ? 'Enter the Gemini Vertex-compatible base URL:'
+            : 'Enter the Anthropic-compatible Messages base URL:'
+        : oauthStatus.step === 'apiKey'
+          ? oauthStatus.provider === 'gemini-like'
+            ? 'Enter Gemini API key:'
+            : oauthStatus.provider === 'openai-like'
+              ? 'Enter API key:'
+              : 'Enter Anthropic API key:'
+          : oauthStatus.provider === 'openai-like' && oauthStatus.authMode === 'oauth'
+            ? 'Enter one or more model names for OpenAI OAuth separated by spaces:'
+            : oauthStatus.provider === 'gemini-like' && oauthStatus.authMode === 'gemini-cli-oauth'
+              ? 'Enter one or more model names for Gemini CLI OAuth separated by spaces:'
+              : 'Enter one or more model names separated by spaces:';
       const value = oauthStatus.step === 'baseURL' ? customBaseURL : oauthStatus.step === 'apiKey' ? customApiKey : customModels;
       const onChange = oauthStatus.step === 'baseURL' ? setCustomBaseURL : oauthStatus.step === 'apiKey' ? setCustomApiKey : setCustomModels;
-      const placeholder = oauthStatus.step === 'baseURL' ? oauthStatus.provider === 'openai-like' ? 'http(s)://your-openai-compatible-endpoint.example.com' : 'http(s)://your-anthropic-compatible-endpoint.example.com' : oauthStatus.step === 'apiKey' ? 'sk-...' : oauthStatus.provider === 'openai-like' ? 'gpt-5.4 gpt-4.1 gpt-4o-mini' : 'claude-sonnet-4-6 claude-opus-4-6';
+      const placeholder = oauthStatus.step === 'baseURL'
+        ? oauthStatus.provider === 'openai-like'
+          ? 'http(s)://your-openai-compatible-endpoint.example.com'
+          : oauthStatus.provider === 'gemini-like'
+            ? 'https://generativelanguage.googleapis.com/v1beta'
+            : 'http(s)://your-anthropic-compatible-endpoint.example.com'
+        : oauthStatus.step === 'apiKey'
+          ? 'sk-...'
+          : oauthStatus.provider === 'openai-like'
+            ? 'gpt-5.4 gpt-4.1 gpt-4o-mini'
+            : oauthStatus.provider === 'gemini-like'
+              ? 'gemini-2.5-pro gemini-2.5-flash'
+              : 'claude-sonnet-4-6 claude-opus-4-6';
 
       return (
         <Box flexDirection="column" gap={1} marginTop={1}>
@@ -1190,7 +1350,7 @@ function OAuthStatusMessage({
                     state: 'custom_config',
                     provider: oauthStatus.provider,
                     authMode: oauthStatus.authMode,
-                    step: isOauthAuthMode(oauthStatus.authMode) ? 'authMode' : 'apiKey',
+                    step: isBrowserOAuthAuthMode(oauthStatus.authMode) ? 'authMode' : 'apiKey',
                   });
                   return;
                 }

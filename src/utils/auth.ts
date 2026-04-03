@@ -76,7 +76,7 @@ import {
 import { sleep } from './sleep.js'
 import { jsonParse } from './slowOperations.js'
 import { clearToolSchemaCache } from './toolSchemaCache.js'
-import { readCustomApiStorage } from './customApiStorage.js'
+import { getActiveProviderConfig, readCustomApiStorage } from './customApiStorage.js'
 
 /** Default TTL for API key helper cache in milliseconds (5 minutes) */
 const DEFAULT_API_KEY_HELPER_TTL = 5 * 60 * 1000
@@ -96,11 +96,34 @@ function isManagedOAuthContext(): boolean {
   )
 }
 
+function getActiveGeminiProvider() {
+  const storage = readCustomApiStorage()
+  const provider = getActiveProviderConfig(storage)
+  return provider?.kind === 'gemini-like' ? provider : undefined
+}
+
+export function hasGeminiCustomAuth(): boolean {
+  const provider = getActiveGeminiProvider()
+  if (!provider) return false
+
+  if (provider.authMode === 'vertex-compatible') {
+    return !!provider.baseURL && !!provider.apiKey
+  }
+
+  if (provider.authMode === 'gemini-cli-oauth') {
+    return !!provider.oauth?.accessToken && !!provider.oauth?.projectId
+  }
+
+  return false
+}
+
 /** Whether we are supporting direct 1P auth. */
 // this code is closely related to getAuthTokenSource
 export function isAnthropicAuthEnabled(): boolean {
   // --bare: API-key-only, never OAuth.
   if (isBareMode()) return false
+
+  if (hasGeminiCustomAuth()) return false
 
   // `claude ssh` remote: ANTHROPIC_UNIX_SOCKET tunnels API calls through a
   // local auth-injecting proxy. The launcher sets CLAUDE_CODE_OAUTH_TOKEN as a
@@ -1734,12 +1757,16 @@ export function getSubscriptionName(): string {
 }
 
 /** Check if using third-party services (Bedrock or Vertex or Foundry) */
-export function isUsing3PServices(): boolean {
+export function isUsingManaged3PServices(): boolean {
   return !!(
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
   )
+}
+
+export function isUsing3PServices(): boolean {
+  return !!(isUsingManaged3PServices() || hasGeminiCustomAuth())
 }
 
 /**

@@ -24,7 +24,10 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
-import { readCustomApiStorage } from 'src/utils/customApiStorage.js'
+import {
+  getActiveProviderConfig,
+  readCustomApiStorage,
+} from 'src/utils/customApiStorage.js'
 import {
   convertAnthropicRequestToOpenAI,
   convertAnthropicRequestToOpenAICodex,
@@ -36,6 +39,13 @@ import {
   createOpenAICodexStream,
   createOpenAIResponsesStream,
 } from './openaiCompat.js'
+import {
+  convertAnthropicRequestToGemini,
+  createAnthropicStreamFromGemini,
+  createGeminiCliStreamWithEmptyRetry,
+  createGeminiVertexStream,
+  refreshGeminiProviderOAuthIfNeeded,
+} from './geminiLike.js'
 import {
   getAttributionHeader,
   getCLISyspromptPrefix,
@@ -1818,21 +1828,23 @@ async function* queryModel(
         // since we handle tool input accumulation ourselves
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
         const customApiStorage = readCustomApiStorage()
+        const activeProviderConfig = getActiveProviderConfig(customApiStorage)
         const compatProvider =
-          customApiStorage.providerKind === 'openai-like'
+          activeProviderConfig?.kind === 'openai-like'
             ? 'openai'
-            : customApiStorage.providerKind === 'anthropic-like'
+            : activeProviderConfig?.kind === 'gemini-like'
+              ? 'gemini'
+              : activeProviderConfig?.kind === 'anthropic-like'
               ? 'anthropic'
               : customApiStorage.provider ?? 'anthropic'
         if (compatProvider === 'openai') {
-          const activeOpenAIProvider = customApiStorage.providers?.find(
-            provider =>
-              provider.kind === 'openai-like' &&
-              provider.id === customApiStorage.providerId,
-          )
+          const activeOpenAIProvider =
+            activeProviderConfig?.kind === 'openai-like'
+              ? activeProviderConfig
+              : undefined
           const openAIAuthMode =
             activeOpenAIProvider?.authMode ??
-            (customApiStorage.providerId === 'openai' ? 'oauth' : 'chat-completions')
+            (activeProviderId === 'openai' ? 'oauth' : 'chat-completions')
 
           if (openAIAuthMode === 'oauth') {
             const openAICodexRequest = convertAnthropicRequestToOpenAICodex({
@@ -1918,6 +1930,71 @@ async function* queryModel(
           )
           queryCheckpoint('query_response_headers_received')
           return createAnthropicStreamFromOpenAI({
+            reader,
+            model: params.model,
+          }) as unknown as Stream<BetaRawMessageStreamEvent>
+        }
+
+        if (compatProvider === 'gemini') {
+          const activeGeminiProvider =
+            activeProviderConfig?.kind === 'gemini-like'
+              ? activeProviderConfig
+              : undefined
+          if (!activeGeminiProvider) {
+            throw new Error('Active Gemini-compatible provider not found')
+          }
+
+          const geminiRequest = convertAnthropicRequestToGemini({
+            model: params.model,
+            system: params.system,
+            messages: params.messages,
+            tools: params.tools,
+            tool_choice: params.tool_choice,
+            temperature: params.temperature,
+            max_tokens: params.max_tokens,
+          })
+
+          if (activeGeminiProvider.authMode === 'gemini-cli-oauth') {
+            const providerWithFreshTokens = await refreshGeminiProviderOAuthIfNeeded()
+            const reader = await createGeminiCliStreamWithEmptyRetry(
+              {
+                provider: providerWithFreshTokens,
+                model: params.model,
+                request: geminiRequest,
+                headers: clientRequestId
+                  ? { [CLIENT_REQUEST_ID_HEADER]: clientRequestId }
+                  : undefined,
+                fetch: globalThis.fetch,
+                signal,
+              },
+            )
+            queryCheckpoint('query_response_headers_received')
+            return createAnthropicStreamFromGemini({
+              reader,
+              model: params.model,
+            }) as unknown as Stream<BetaRawMessageStreamEvent>
+          }
+
+          const geminiApiKey = activeGeminiProvider.apiKey
+          const geminiBaseURL = activeGeminiProvider.baseURL
+          if (!geminiApiKey || !geminiBaseURL) {
+            throw new Error('Gemini Vertex-compatible provider is missing base URL or API key')
+          }
+          const reader = await createGeminiVertexStream(
+            {
+              apiKey: geminiApiKey,
+              baseURL: geminiBaseURL,
+              model: params.model,
+              request: geminiRequest,
+              headers: clientRequestId
+                ? { [CLIENT_REQUEST_ID_HEADER]: clientRequestId }
+                : undefined,
+              fetch: globalThis.fetch,
+              signal,
+            },
+          )
+          queryCheckpoint('query_response_headers_received')
+          return createAnthropicStreamFromGemini({
             reader,
             model: params.model,
           }) as unknown as Stream<BetaRawMessageStreamEvent>

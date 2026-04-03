@@ -184,7 +184,7 @@ export type GlobalConfig = {
   customApiEndpoint?: {
     kind?: import('./customApiStorage.js').CompatibleProviderKind
     providerId?: string
-    provider?: 'anthropic' | 'openai'
+    provider?: 'anthropic' | 'openai' | 'gemini'
     baseURL?: string
     apiKey?: string
     model?: string

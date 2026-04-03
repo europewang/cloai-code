@@ -18,6 +18,7 @@ import {
   getAnthropicApiKeyWithSource,
   getClaudeAIOAuthTokens,
   getOauthAccountInfo,
+  hasGeminiCustomAuth,
   isClaudeAISubscriber,
 } from 'src/utils/auth.js'
 import {
@@ -815,6 +816,13 @@ export function getAssistantMessageFromError(
     error instanceof Error &&
     error.message.toLowerCase().includes('x-api-key')
   ) {
+    if (hasGeminiCustomAuth()) {
+      return createAssistantAPIErrorMessage({
+        error: 'authentication_failed',
+        content: `${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+      })
+    }
+
     // In CCR mode, auth is via JWTs - this is likely a transient network issue
     if (isCCRMode()) {
       return createAssistantAPIErrorMessage({
@@ -867,6 +875,13 @@ export function getAssistantMessageFromError(
     error instanceof APIError &&
     (error.status === 401 || error.status === 403)
   ) {
+    if (hasGeminiCustomAuth()) {
+      return createAssistantAPIErrorMessage({
+        error: 'authentication_failed',
+        content: `${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+      })
+    }
+
     // In CCR mode, auth is via JWTs - this is likely a transient network issue
     if (isCCRMode()) {
       return createAssistantAPIErrorMessage({
