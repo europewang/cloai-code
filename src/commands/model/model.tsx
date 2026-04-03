@@ -12,7 +12,7 @@ import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { MODEL_ALIASES } from '../../utils/model/aliases.js';
 import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1mAccess.js';
-import { readCustomApiStorage, writeCustomApiStorage } from '../../utils/customApiStorage.js';
+import { readCustomApiStorage, writeCustomApiStorage, type ProviderAuthMode } from '../../utils/customApiStorage.js';
 import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
@@ -58,10 +58,18 @@ type ConfiguredModelOption = {
   model: string;
   providerId: string;
   providerKind: 'anthropic-like' | 'openai-like';
+  authMode: ProviderAuthMode;
+  isCurrent?: boolean;
 };
 
-function makeConfiguredOptionValue(providerKind: 'anthropic-like' | 'openai-like', providerId: string, baseURL: string | undefined, model: string): string {
-  return `${providerKind}::${providerId}::${baseURL ?? ''}::${model}`;
+function makeConfiguredOptionValue(
+  providerKind: 'anthropic-like' | 'openai-like',
+  providerId: string,
+  baseURL: string | undefined,
+  authMode: ProviderAuthMode,
+  model: string,
+): string {
+  return `${providerKind}::${providerId}::${baseURL ?? ''}::${authMode}::${model}`;
 }
 function getConfiguredModelOptions(): ConfiguredModelOption[] {
   const storage = readCustomApiStorage();
@@ -81,12 +89,19 @@ function getConfiguredModelOptions(): ConfiguredModelOption[] {
             : provider.kind === 'openai-like' ? 'chat-completions' : 'API key';
     const accountName = provider.id || extractAccountName(provider.baseURL, provider.kind);
     return provider.models.map(model => ({
-      value: makeConfiguredOptionValue(provider.kind, provider.id, provider.baseURL, model),
+      value: makeConfiguredOptionValue(provider.kind, provider.id, provider.baseURL, provider.authMode, model),
       label: `${model} (${accountName})`,
       description: `${providerLabel} · ${authLabel}`,
       model,
       providerId: provider.id,
       providerKind: provider.kind,
+      authMode: provider.authMode,
+      isCurrent:
+        provider.kind === storage.providerKind &&
+        provider.id === storage.providerId &&
+        (provider.baseURL ?? undefined) === (storage.baseURL ?? undefined) &&
+        provider.authMode === (storage.activeAuthMode ?? storage.authMode) &&
+        model === storage.activeModel,
     }));
   });
 }
@@ -95,20 +110,24 @@ function parseConfiguredOptionValue(value: string): {
   providerKind: 'anthropic-like' | 'openai-like';
   providerId: string;
   baseURL: string | undefined;
+  authMode: ProviderAuthMode;
   model: string;
 } | null {
   const first = value.indexOf('::');
   const second = value.indexOf('::', first + 2);
   const third = value.indexOf('::', second + 2);
-  if (first === -1 || second === -1 || third === -1) return null;
+  const fourth = value.indexOf('::', third + 2);
+  if (first === -1 || second === -1 || third === -1 || fourth === -1) return null;
   const providerKind = value.slice(0, first);
   if (providerKind !== 'anthropic-like' && providerKind !== 'openai-like') return null;
   const providerId = value.slice(first + 2, second);
   if (!providerId) return null;
   const baseURL = value.slice(second + 2, third) || undefined;
-  const model = value.slice(third + 2);
+  const authMode = value.slice(third + 2, fourth);
+  if (authMode !== 'api-key' && authMode !== 'chat-completions' && authMode !== 'responses' && authMode !== 'oauth') return null;
+  const model = value.slice(fourth + 2);
   if (!model) return null;
-  return { providerKind, providerId, baseURL, model };
+  return { providerKind, providerId, baseURL, authMode, model };
 }
 
 function persistSelectedConfiguredModel(value: string | null): string | null {
@@ -124,6 +143,7 @@ function persistSelectedConfiguredModel(value: string | null): string | null {
     provider.kind === parsed.providerKind &&
     provider.id === parsed.providerId &&
     (provider.baseURL ?? undefined) === parsed.baseURL &&
+    provider.authMode === parsed.authMode &&
     provider.models.includes(parsed.model),
   );
   if (!providerForModel) {
@@ -133,9 +153,11 @@ function persistSelectedConfiguredModel(value: string | null): string | null {
     ...storage,
     activeProvider: providerForModel.id,
     activeModel: parsed.model,
+    activeAuthMode: providerForModel.authMode,
     provider: providerForModel.kind === 'openai-like' ? 'openai' : 'anthropic',
     providerKind: providerForModel.kind,
     providerId: providerForModel.id,
+    authMode: providerForModel.authMode,
     baseURL: providerForModel.baseURL,
     apiKey: providerForModel.apiKey,
     model: parsed.model,
@@ -160,6 +182,7 @@ function ModelPickerWrapper({
   const isFastMode = useAppState(s => s.fastMode);
   const setAppState = useSetAppState();
   const configuredOptions = getConfiguredModelOptions();
+  const currentConfiguredValue = configuredOptions.find(option => option.isCurrent)?.value ?? mainLoopModel;
 
   function handleCancel(): void {
     logEvent('tengu_model_command_menu', {
@@ -232,7 +255,7 @@ function ModelPickerWrapper({
 
   return (
     <ModelPicker
-      initial={mainLoopModel}
+      initial={currentConfiguredValue}
       sessionModel={mainLoopModelForSession}
       onSelect={handleSelect}
       onCancel={handleCancel}

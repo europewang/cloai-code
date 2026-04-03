@@ -32,6 +32,7 @@ export type Props = {
     label: string;
     description: string;
     model?: string;
+    isCurrent?: boolean;
   }>;
 };
 type PickerOption = {
@@ -39,6 +40,7 @@ type PickerOption = {
   label: string;
   description: string;
   model?: string;
+  isCurrent?: boolean;
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
 export function ModelPicker(t0) {
@@ -82,7 +84,9 @@ export function ModelPicker(t0) {
   const initialValue = customOptions !== undefined
     ? (initial === null
         ? NO_PREFERENCE
-        : rawModelOptions.find(opt => (opt.model ?? opt.value) === initial)?.value ?? initialRawValue)
+        : rawModelOptions.find(opt => opt.value === initial)?.value
+          ?? rawModelOptions.find(opt => (opt.model ?? opt.value) === initial)?.value
+          ?? initialRawValue)
     : initialRawValue;
   const [focusedValue, setFocusedValue] = useState(initialValue);
   const modelOptions = rawModelOptions;
@@ -403,6 +407,7 @@ function _temp4() {}
 function _temp3(opt_0) {
   return {
     ...opt_0,
+    label: opt_0.isCurrent ? `${opt_0.label} current` : opt_0.label,
     value: opt_0.value === null ? NO_PREFERENCE : opt_0.value
   };
 }

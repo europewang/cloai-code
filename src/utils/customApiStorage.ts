@@ -8,6 +8,7 @@ export type ProviderAuthMode = AnthropicAuthMode | OpenAIAuthMode
 export type ActiveCustomApiEndpoint = {
   kind?: CompatibleProviderKind
   providerId?: string
+  authMode?: ProviderAuthMode
   baseURL?: string
   apiKey?: string
   model?: string
@@ -26,10 +27,12 @@ export type ProviderConfig = {
 export type CustomApiStorageData = {
   activeProvider?: string
   activeModel?: string
+  activeAuthMode?: ProviderAuthMode
   providers?: ProviderConfig[]
   provider?: 'anthropic' | 'openai'
   providerKind?: CompatibleProviderKind
   providerId?: string
+  authMode?: ProviderAuthMode
   baseURL?: string
   apiKey?: string
   model?: string
@@ -90,12 +93,13 @@ function buildProviderSummary(
   activeModel: string | undefined,
 ): Pick<
   CustomApiStorageData,
-  'provider' | 'providerKind' | 'providerId' | 'baseURL' | 'apiKey' | 'model' | 'savedModels'
+  'provider' | 'providerKind' | 'providerId' | 'authMode' | 'baseURL' | 'apiKey' | 'model' | 'savedModels'
 > {
   return {
     provider: provider?.kind === 'openai-like' ? 'openai' : provider?.kind === 'anthropic-like' ? 'anthropic' : undefined,
     providerKind: provider?.kind,
     providerId: provider?.id,
+    authMode: provider?.authMode,
     baseURL: provider?.baseURL,
     apiKey: provider?.apiKey,
     model: activeModel,
@@ -137,6 +141,7 @@ function migrateLegacyShape(value: Record<string, unknown>): CustomApiStorageDat
   return {
     activeProvider: providerId,
     activeModel: legacyModel,
+    activeAuthMode: provider.authMode,
     providers: [provider],
     ...buildProviderSummary(provider, legacyModel),
   }
@@ -157,10 +162,23 @@ export function readCustomApiStorage(): CustomApiStorageData {
   const providers = value.providers.map(item => item && typeof item === 'object' ? normalizeProviderConfig(item as Record<string, unknown>) : null).filter((item): item is ProviderConfig => item !== null)
   const activeProvider = typeof value.activeProvider === 'string' ? value.activeProvider : typeof value.providerId === 'string' ? value.providerId : providers[0]?.id
   const activeModel = typeof value.activeModel === 'string' ? value.activeModel : typeof value.model === 'string' ? value.model : undefined
-  const currentProvider = providers.find(provider => provider.id === activeProvider) ?? providers.find(provider => provider.models.includes(activeModel ?? '')) ?? providers[0]
+  const activeAuthMode = typeof value.activeAuthMode === 'string'
+    ? value.activeAuthMode as ProviderAuthMode
+    : typeof value.authMode === 'string'
+      ? value.authMode as ProviderAuthMode
+      : undefined
+  const currentProvider = providers.find(provider =>
+    provider.id === activeProvider &&
+    provider.authMode === activeAuthMode &&
+    provider.models.includes(activeModel ?? ''),
+  ) ?? providers.find(provider =>
+    provider.id === activeProvider &&
+    provider.models.includes(activeModel ?? ''),
+  ) ?? providers.find(provider => provider.id === activeProvider) ?? providers.find(provider => provider.models.includes(activeModel ?? '')) ?? providers[0]
   return {
     activeProvider: currentProvider?.id ?? activeProvider,
     activeModel,
+    activeAuthMode: currentProvider?.authMode ?? activeAuthMode,
     providers,
     ...buildProviderSummary(currentProvider, activeModel),
   }
