@@ -164,6 +164,18 @@ function findProviderByKey(
   return providers.find(provider => getProviderKeyFromConfig(provider) === getProviderKey(key));
 }
 
+function getProviderModelsInput(
+  providers: ProviderConfig[] | undefined,
+  key: ProviderRecordKey | undefined,
+  fallback?: string,
+): string {
+  if (!providers || providers.length === 0) {
+    return fallback ?? '';
+  }
+  const provider = findProviderByKey(providers, key);
+  return formatModelsInput(provider?.models, fallback);
+}
+
 function buildActiveSnapshot(
   provider: ProviderConfig | undefined,
   activeModel: string | undefined,
@@ -257,13 +269,17 @@ export function ConsoleOAuthFlow({
       ? 'gemini-like'
       : 'anthropic-like');
   const persistedAuthMode = persistedProviderConfig?.authMode ?? getDefaultAuthMode(persistedProviderKind);
-  const persistedModelsInput = formatModelsInput(persistedProviderConfig?.models, persistedCustomApiEndpoint.model ?? process.env.ANTHROPIC_MODEL ?? '');
   const persistedProviderKey = persistedProviderConfig ? {
     kind: persistedProviderConfig.kind,
     id: persistedProviderConfig.id,
     authMode: persistedProviderConfig.authMode,
     baseURL: persistedProviderConfig.baseURL,
   } : undefined;
+  const persistedModelsInput = getProviderModelsInput(
+    persistedProviders,
+    persistedProviderKey,
+    persistedCustomApiEndpoint.model ?? process.env.ANTHROPIC_MODEL ?? '',
+  );
   const terminal = useTerminalNotification();
   const [selectedProviderKey, setSelectedProviderKey] = useState<ProviderRecordKey | undefined>(persistedProviderKey);
   const [oauthStatus, setOAuthStatus] = useState<OAuthStatus>(() => {
@@ -319,19 +335,27 @@ export function ConsoleOAuthFlow({
   }, [isEditingTextInput, onTextInputActiveChange]);
   const startCompatibleApiConfig = useCallback((provider: CompatibleApiProvider) => {
     const nextAuthMode = getDefaultAuthMode(provider);
+    const nextProviderKey = {
+      kind: provider,
+      id: provider === 'openai-like' ? 'openai' : deriveProviderId(undefined, provider),
+      authMode: nextAuthMode,
+      baseURL: undefined,
+    };
     setCompatibleApiProvider(provider);
     setCompatibleAuthMode(nextAuthMode);
     setSelectedProviderKey(undefined);
     if (provider === 'openai-like') {
       setCustomBaseURL('');
     }
+    setCustomApiKey('');
+    setCustomModels(getProviderModelsInput(persistedProviders, nextProviderKey));
     setOAuthStatus({
       state: 'custom_config',
       provider,
       authMode: nextAuthMode,
       step: provider === 'anthropic-like' ? 'baseURL' : 'authMode'
     });
-  }, []);
+  }, [persistedProviders]);
 
   // Account management: open submenu for an existing saved provider
   const handleOpenProviderActions = useCallback((providerId: string) => {
@@ -615,7 +639,19 @@ export function ConsoleOAuthFlow({
     }
     if (safeOauthStatus.step === 'authMode') {
       const nextAuthMode = value as CompatibleAuthMode;
+      const nextProviderKey = {
+        kind: safeOauthStatus.provider,
+        id: nextAuthMode === 'oauth' && safeOauthStatus.provider === 'openai-like'
+          ? 'openai'
+          : deriveProviderId(customBaseURL.trim() || undefined, safeOauthStatus.provider),
+        authMode: nextAuthMode,
+        baseURL: nextAuthMode === 'oauth' || nextAuthMode === 'gemini-cli-oauth'
+          ? undefined
+          : customBaseURL.trim() || undefined,
+      };
       setCompatibleAuthMode(nextAuthMode);
+      setCustomApiKey('');
+      setCustomModels(getProviderModelsInput(persistedCustomApiEndpoint.providers, nextProviderKey));
       setCursorOffset(0);
       setOAuthStatus({
         state: 'custom_config',
@@ -736,7 +772,7 @@ export function ConsoleOAuthFlow({
         notificationType: 'auth_success'
       }, terminal);
     }
-  }, [safeOauthStatus, persistCustomEndpoint, terminal, setLoginWithClaudeAi]);
+  }, [safeOauthStatus, persistCustomEndpoint, terminal, setLoginWithClaudeAi, persistedCustomApiEndpoint.providers, customBaseURL]);
   async function handleSubmitCode(value: string, url: string) {
     try {
       const parsedInput = parseManualOAuthInput(value);
@@ -848,6 +884,12 @@ export function ConsoleOAuthFlow({
           p.authMode === (updatedStorage.activeAuthMode ?? updatedStorage.authMode),
         ) ?? updatedStorage.providers?.find(p => p.id === updatedStorage.activeProvider) ?? updatedStorage.providers?.[0];
         if (updatedProvider) {
+          const updatedProviderKey = {
+            kind: updatedProvider.kind,
+            id: updatedProvider.id,
+            authMode: updatedProvider.authMode,
+            baseURL: updatedProvider.baseURL,
+          };
           setSelectedProviderKey({
             kind: updatedProvider.kind,
             id: updatedProvider.id,
@@ -858,7 +900,7 @@ export function ConsoleOAuthFlow({
           setCompatibleAuthMode(updatedProvider.authMode);
           setCustomBaseURL(updatedProvider.baseURL ?? '');
           setCustomApiKey(updatedProvider.apiKey ?? '');
-          setCustomModels(formatModelsInput(updatedProvider.models));
+          setCustomModels(getProviderModelsInput(updatedStorage.providers, updatedProviderKey));
         }
         // Only validate Anthropic org for Anthropic OAuth; OpenAI OAuth skips this
         if (!isOpenAIOAuth && !isGeminiCliOAuth) {
