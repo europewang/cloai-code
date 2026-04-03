@@ -159,7 +159,6 @@ export type OpenAICodexRequest = {
   text: { verbosity: 'low' | 'medium' | 'high' }
   include: ['reasoning.encrypted_content']
   tool_choice: 'auto'
-  parallel_tool_calls: true
   temperature?: number
   tools?: Array<{
     type: 'function'
@@ -550,7 +549,6 @@ export function convertAnthropicRequestToOpenAICodex(input: {
     text: { verbosity: reasoning?.textVerbosity === 'low' || reasoning?.textVerbosity === 'high' ? reasoning.textVerbosity : 'medium' },
     include: ['reasoning.encrypted_content'],
     tool_choice: 'auto',
-    parallel_tool_calls: true,
     ...(reasoning?.reasoningEffort
       ? {
           reasoning: {
@@ -680,7 +678,6 @@ export function convertAnthropicRequestToOpenAIResponses(input: {
       ? {
           tools: getResponsesToolDefinitions(input.tools),
           tool_choice: 'auto' as const,
-          parallel_tool_calls: true as const,
           include: ['reasoning.encrypted_content'] as const,
         }
       : {
