@@ -7,6 +7,8 @@ import type {
   BetaToolUnion,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import { readCustomApiStorage } from '../../utils/customApiStorage.js'
+import { getOpenAIReasoningConfig } from '../../utils/modelReasoning.js'
 
 type AnyBlock = Record<string, unknown>
 
@@ -40,6 +42,8 @@ type OpenAIChatMessage = {
   tool_calls?: OpenAIToolCall[]
 }
 
+type OpenAIChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 export type OpenAIChatRequest = {
   model: string
   messages: OpenAIChatMessage[]
@@ -55,6 +59,7 @@ export type OpenAIChatRequest = {
   }>
   tool_choice?: 'auto' | { type: 'function'; function: { name: string } }
   max_tokens?: number
+  reasoning_effort?: OpenAIChatReasoningEffort
 }
 
 type OpenAICodexInputItem =
@@ -128,6 +133,10 @@ export type OpenAIResponsesRequest = {
   temperature?: number
   max_output_tokens?: number
   include?: ['reasoning.encrypted_content']
+  reasoning?: {
+    effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    summary?: 'auto' | 'detailed' | 'concise' | null
+  }
 }
 
 type ResponsesStreamEvent =
@@ -141,14 +150,13 @@ type ResponsesStreamEvent =
   | CodexErrorEvent
   | { type: string; [key: string]: unknown }
 
-
 export type OpenAICodexRequest = {
   model: string
   instructions?: string
   input: OpenAICodexInputItem[]
   store: false
   stream: true
-  text: { verbosity: 'medium' }
+  text: { verbosity: 'low' | 'medium' | 'high' }
   include: ['reasoning.encrypted_content']
   tool_choice: 'auto'
   parallel_tool_calls: true
@@ -159,6 +167,10 @@ export type OpenAICodexRequest = {
     description?: string
     parameters?: unknown
   }>
+  reasoning?: {
+    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    summary?: 'auto' | 'concise' | 'detailed' | 'off' | 'on' | null
+  }
 }
 
 type OpenAIStreamChunk = {
@@ -170,6 +182,8 @@ type OpenAIStreamChunk = {
       role?: 'assistant'
       content?: string | null
       reasoning_content?: string | null
+      reasoning?: string | null
+      reasoning_text?: string | null
       tool_calls?: Array<{
         index?: number
         id?: string
@@ -280,6 +294,20 @@ function resolveCodexUrl(baseURL?: string): string {
   return `${normalized}/codex/responses`
 }
 
+function getActiveReasoningConfig(model: string) {
+  const storage = readCustomApiStorage()
+  return getOpenAIReasoningConfig(
+    storage.providerKind,
+    storage.activeAuthMode ?? storage.authMode,
+    model,
+    storage.providers?.find(provider =>
+      provider.kind === storage.providerKind &&
+      provider.id === storage.providerId &&
+      provider.authMode === (storage.activeAuthMode ?? storage.authMode),
+    )?.reasoning,
+  )
+}
+
 function contentToText(content: BetaMessageParam['content']): string {
   if (typeof content === 'string') return content
   return content
@@ -349,6 +377,7 @@ export function convertAnthropicRequestToOpenAI(input: {
 }): OpenAIChatRequest {
   const configuredModel = process.env.ANTHROPIC_MODEL?.trim()
   const targetModel = configuredModel || input.model
+  const reasoning = getActiveReasoningConfig(targetModel)
   const messages: OpenAIChatMessage[] = []
 
   if (input.system) {
@@ -417,6 +446,12 @@ export function convertAnthropicRequestToOpenAI(input: {
     messages,
     temperature: input.temperature,
     max_tokens: input.max_tokens,
+    ...(reasoning?.reasoningEffort
+      ? {
+          reasoning_effort:
+            reasoning.reasoningEffort as OpenAIChatRequest['reasoning_effort'],
+        }
+      : {}),
     ...(getToolDefinitions(input.tools)
       ? { tools: getToolDefinitions(input.tools) }
       : {}),
@@ -442,6 +477,7 @@ export function convertAnthropicRequestToOpenAICodex(input: {
 }): OpenAICodexRequest {
   const configuredModel = process.env.ANTHROPIC_MODEL?.trim()
   const targetModel = configuredModel || input.model
+  const reasoning = getActiveReasoningConfig(targetModel)
   const instructions = Array.isArray(input.system)
     ? input.system.map(block => block.text ?? '').join('\n')
     : input.system
@@ -510,10 +546,18 @@ export function convertAnthropicRequestToOpenAICodex(input: {
     input: codexInput,
     store: false,
     stream: true,
-    text: { verbosity: 'medium' },
+    text: { verbosity: reasoning?.textVerbosity === 'low' || reasoning?.textVerbosity === 'high' ? reasoning.textVerbosity : 'medium' },
     include: ['reasoning.encrypted_content'],
     tool_choice: 'auto',
     parallel_tool_calls: true,
+    ...(reasoning?.reasoningEffort
+      ? {
+          reasoning: {
+            effort: reasoning.reasoningEffort as OpenAICodexRequest['reasoning']['effort'],
+            summary: (reasoning.reasoningSummary ?? 'auto') as OpenAICodexRequest['reasoning']['summary'],
+          },
+        }
+      : {}),
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(getCodexToolDefinitions(input.tools)
       ? { tools: getCodexToolDefinitions(input.tools) }
@@ -551,6 +595,7 @@ export function convertAnthropicRequestToOpenAIResponses(input: {
 }): OpenAIResponsesRequest {
   const configuredModel = process.env.ANTHROPIC_MODEL?.trim()
   const targetModel = configuredModel || input.model
+  const reasoning = getActiveReasoningConfig(targetModel)
   const instructions = Array.isArray(input.system)
     ? input.system.map(block => block.text ?? '').join('\n')
     : input.system
@@ -618,6 +663,14 @@ export function convertAnthropicRequestToOpenAIResponses(input: {
     input: responseInput,
     store: false,
     stream: true,
+    ...(reasoning?.reasoningEffort
+      ? {
+          reasoning: {
+            effort: reasoning.reasoningEffort as OpenAIResponsesRequest['reasoning']['effort'],
+            summary: (reasoning.reasoningSummary ?? 'auto') as OpenAIResponsesRequest['reasoning']['summary'],
+          },
+        }
+      : {}),
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(input.max_tokens !== undefined
       ? { max_output_tokens: input.max_tokens }
@@ -702,7 +755,6 @@ export async function createOpenAICodexStream(
 
   return response.body.getReader()
 }
-
 
 export async function createOpenAIResponsesStream(
   config: OpenAICompatConfig,
@@ -852,7 +904,13 @@ export async function* createAnthropicStreamFromOpenAI(input: {
           emittedAnyContent = true
         }
 
-        if (delta?.reasoning_content) {
+        const reasoningDelta = [
+          delta?.reasoning_content,
+          delta?.reasoning,
+          delta?.reasoning_text,
+        ].find(value => typeof value === 'string' && value.length > 0)
+
+        if (reasoningDelta) {
           if (thinkingContentIndex === null) {
             thinkingContentIndex = allocateContentIndex()
             markContentIndexOpen(thinkingContentIndex)
@@ -872,7 +930,7 @@ export async function* createAnthropicStreamFromOpenAI(input: {
             index: thinkingContentIndex,
             delta: {
               type: 'thinking_delta',
-              thinking: delta.reasoning_content,
+              thinking: reasoningDelta,
             },
           } as BetaRawMessageStreamEvent
           emittedAnyContent = true

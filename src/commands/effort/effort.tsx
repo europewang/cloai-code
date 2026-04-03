@@ -4,16 +4,46 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, toPersistableEffort } from '../../utils/effort.js';
+import {
+  type EffortValue,
+  getDisplayedEffortLevel,
+  getEffortEnvOverride,
+  getEffortValueDescription,
+  isEffortLevel,
+  toPersistableEffort,
+} from '../../utils/effort.js';
+import { readCustomApiStorage } from '../../utils/customApiStorage.js';
+import { getReasoningMode } from '../../utils/modelReasoning.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
+
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
+
 type EffortCommandResult = {
   message: string;
   effortUpdate?: {
     value: EffortValue | undefined;
   };
 };
+
+function getOpenAINativeReasoningMessage(): string | null {
+  const storage = readCustomApiStorage();
+  const mode = getReasoningMode(storage.providerKind, storage.activeAuthMode ?? storage.authMode, storage.activeModel ?? storage.model ?? '');
+  if (
+    mode === 'openai-chat-completions' ||
+    mode === 'openai-responses' ||
+    mode === 'openai-codex-oauth'
+  ) {
+    return 'This model uses native OpenAI reasoning controls. Use /model and adjust with ← →.';
+  }
+  return null;
+}
+
 function setEffortValue(effortValue: EffortValue): EffortCommandResult {
+  const nativeReasoningMessage = getOpenAINativeReasoningMessage();
+  if (nativeReasoningMessage) {
+    return { message: nativeReasoningMessage };
+  }
+
   const persistable = toPersistableEffort(effortValue);
   if (persistable !== undefined) {
     const result = updateSettingsForSource('userSettings', {
@@ -29,9 +59,6 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
     effort: effortValue as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
 
-  // Env var wins at resolveAppliedEffort time. Only flag it when it actually
-  // conflicts — if env matches what the user just asked for, the outcome is
-  // the same, so "Set effort to X" is true and the note is noise.
   const envOverride = getEffortEnvOverride();
   if (envOverride !== undefined && envOverride !== effortValue) {
     const envRaw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
@@ -59,7 +86,13 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
     }
   };
 }
+
 export function showCurrentEffort(appStateEffort: EffortValue | undefined, model: string): EffortCommandResult {
+  const nativeReasoningMessage = getOpenAINativeReasoningMessage();
+  if (nativeReasoningMessage) {
+    return { message: nativeReasoningMessage };
+  }
+
   const envOverride = getEffortEnvOverride();
   const effectiveValue = envOverride === null ? undefined : envOverride ?? appStateEffort;
   if (effectiveValue === undefined) {
@@ -73,7 +106,13 @@ export function showCurrentEffort(appStateEffort: EffortValue | undefined, model
     message: `Current effort level: ${effectiveValue} (${description})`
   };
 }
+
 function unsetEffortLevel(): EffortCommandResult {
+  const nativeReasoningMessage = getOpenAINativeReasoningMessage();
+  if (nativeReasoningMessage) {
+    return { message: nativeReasoningMessage };
+  }
+
   const result = updateSettingsForSource('userSettings', {
     effortLevel: undefined
   });
@@ -85,8 +124,6 @@ function unsetEffortLevel(): EffortCommandResult {
   logEvent('tengu_effort_command', {
     effort: 'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
-  // env=auto/unset (null) matches what /effort auto asks for, so only warn
-  // when env is pinning a specific level that will keep overriding.
   const envOverride = getEffortEnvOverride();
   if (envOverride !== undefined && envOverride !== null) {
     const envRaw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
@@ -104,6 +141,7 @@ function unsetEffortLevel(): EffortCommandResult {
     }
   };
 }
+
 export function executeEffort(args: string): EffortCommandResult {
   const normalized = args.toLowerCase();
   if (normalized === 'auto' || normalized === 'unset') {
@@ -116,58 +154,30 @@ export function executeEffort(args: string): EffortCommandResult {
   }
   return setEffortValue(normalized);
 }
-function ShowCurrentEffort(t0) {
-  const {
-    onDone
-  } = t0;
-  const effortValue = useAppState(_temp);
+
+function ShowCurrentEffort({ onDone }: { onDone: LocalJSXCommandOnDone }) {
+  const effortValue = useAppState(s => s.effortValue);
   const model = useMainLoopModel();
-  const {
-    message
-  } = showCurrentEffort(effortValue, model);
+  const { message } = showCurrentEffort(effortValue, model);
   onDone(message);
   return null;
 }
-function _temp(s) {
-  return s.effortValue;
-}
-function ApplyEffortAndClose(t0) {
-  const $ = _c(6);
-  const {
-    result,
-    onDone
-  } = t0;
+
+function ApplyEffortAndClose({ result, onDone }: { result: EffortCommandResult; onDone: LocalJSXCommandOnDone }) {
   const setAppState = useSetAppState();
-  const {
-    effortUpdate,
-    message
-  } = result;
-  let t1;
-  let t2;
-  if ($[0] !== effortUpdate || $[1] !== message || $[2] !== onDone || $[3] !== setAppState) {
-    t1 = () => {
-      if (effortUpdate) {
-        setAppState(prev => ({
-          ...prev,
-          effortValue: effortUpdate.value
-        }));
-      }
-      onDone(message);
-    };
-    t2 = [setAppState, effortUpdate, message, onDone];
-    $[0] = effortUpdate;
-    $[1] = message;
-    $[2] = onDone;
-    $[3] = setAppState;
-    $[4] = t1;
-    $[5] = t2;
-  } else {
-    t1 = $[4];
-    t2 = $[5];
-  }
-  React.useEffect(t1, t2);
+  const { effortUpdate, message } = result;
+  React.useEffect(() => {
+    if (effortUpdate) {
+      setAppState(prev => ({
+        ...prev,
+        effortValue: effortUpdate.value
+      }));
+    }
+    onDone(message);
+  }, [setAppState, effortUpdate, message, onDone]);
   return null;
 }
+
 export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, args?: string): Promise<React.ReactNode> {
   args = args?.trim() || '';
   if (COMMON_HELP_ARGS.includes(args)) {

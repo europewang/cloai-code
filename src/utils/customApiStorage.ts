@@ -15,6 +15,12 @@ export type ActiveCustomApiEndpoint = {
   savedModels?: string[]
 }
 
+export type ProviderReasoningConfig = {
+  reasoningEffort?: string
+  reasoningSummary?: string | null
+  textVerbosity?: string | null
+}
+
 export type ProviderConfig = {
   id: string
   kind: CompatibleProviderKind
@@ -22,6 +28,7 @@ export type ProviderConfig = {
   baseURL?: string
   apiKey?: string
   models: string[]
+  reasoning?: ProviderReasoningConfig
 }
 
 export type CustomApiStorageData = {
@@ -88,6 +95,32 @@ function normalizeLegacyProviderKind(value: unknown): CompatibleProviderKind {
   return value === 'openai' ? 'openai-like' : 'anthropic-like'
 }
 
+function normalizeProviderReasoning(value: unknown): ProviderReasoningConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const reasoningEffort = typeof record.reasoningEffort === 'string' ? record.reasoningEffort : undefined
+  const reasoningSummary =
+    typeof record.reasoningSummary === 'string' || record.reasoningSummary === null
+      ? (record.reasoningSummary as string | null)
+      : undefined
+  const textVerbosity =
+    typeof record.textVerbosity === 'string' || record.textVerbosity === null
+      ? (record.textVerbosity as string | null)
+      : undefined
+  if (
+    reasoningEffort === undefined &&
+    reasoningSummary === undefined &&
+    textVerbosity === undefined
+  ) {
+    return undefined
+  }
+  return {
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    ...(reasoningSummary !== undefined ? { reasoningSummary } : {}),
+    ...(textVerbosity !== undefined ? { textVerbosity } : {}),
+  }
+}
+
 function buildProviderSummary(
   provider: ProviderConfig | undefined,
   activeModel: string | undefined,
@@ -120,6 +153,7 @@ function normalizeProviderConfig(value: Record<string, unknown>): ProviderConfig
     baseURL,
     apiKey: typeof value.apiKey === 'string' ? value.apiKey : undefined,
     models: dedupeModels(value.models),
+    reasoning: normalizeProviderReasoning(value.reasoning),
   }
 }
 

@@ -7,21 +7,24 @@ import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import type { EffortLevel } from '../../utils/effort.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { MODEL_ALIASES } from '../../utils/model/aliases.js';
 import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1mAccess.js';
-import { readCustomApiStorage, writeCustomApiStorage, type ProviderAuthMode } from '../../utils/customApiStorage.js';
+import {
+  readCustomApiStorage,
+  writeCustomApiStorage,
+  type ProviderAuthMode,
+  type ProviderConfig,
+} from '../../utils/customApiStorage.js';
+import {
+  type ReasoningSelection,
+  getReasoningMode,
+} from '../../utils/modelReasoning.js';
 import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
 
-/**
- * Extracts a short account/provider name from a baseURL.
- * e.g. "https://sub2api.hackins.club/v1" → "sub2api"
- *       "https://api.anthropic.com" → "Anthropic"
- */
 function extractAccountName(baseURL: string | undefined, providerId: string): string {
   if (providerId === 'anthropic-like') {
     return baseURL ? tryExtractHost(baseURL) : 'Anthropic';
@@ -33,16 +36,12 @@ function extractAccountName(baseURL: string | undefined, providerId: string): st
 function tryExtractHost(url: string): string {
   try {
     const u = new URL(url);
-    // Strip common prefixes: api, openai, claude, v1
     let host = u.hostname
       .replace(/^api[.-]/, '')
       .replace(/^openai[.-]/, '')
       .replace(/^claude[.-]/, '');
-    // Strip TLD suffix if it looks like a public cloud
     if (host.includes('.')) {
       const parts = host.split('.');
-      // Keep first two parts for subdomains: sub2api.hackins → sub2api
-      // Keep first for short: api.openai → api
       host = parts[0];
     }
     return host || url;
@@ -59,6 +58,7 @@ type ConfiguredModelOption = {
   providerId: string;
   providerKind: 'anthropic-like' | 'openai-like';
   authMode: ProviderAuthMode;
+  reasoning?: ProviderConfig['reasoning'];
   isCurrent?: boolean;
 };
 
@@ -71,6 +71,7 @@ function makeConfiguredOptionValue(
 ): string {
   return `${providerKind}::${providerId}::${baseURL ?? ''}::${authMode}::${model}`;
 }
+
 function getConfiguredModelOptions(): ConfiguredModelOption[] {
   const storage = readCustomApiStorage();
   const providers = storage.providers ?? [];
@@ -96,6 +97,7 @@ function getConfiguredModelOptions(): ConfiguredModelOption[] {
       providerId: provider.id,
       providerKind: provider.kind,
       authMode: provider.authMode,
+      reasoning: provider.reasoning,
       isCurrent:
         provider.kind === storage.providerKind &&
         provider.id === storage.providerId &&
@@ -130,7 +132,10 @@ function parseConfiguredOptionValue(value: string): {
   return { providerKind, providerId, baseURL, authMode, model };
 }
 
-function persistSelectedConfiguredModel(value: string | null): string | null {
+function persistSelectedConfiguredModel(
+  value: string | null,
+  reasoning?: ReasoningSelection,
+): string | null {
   if (!value) {
     return value;
   }
@@ -139,18 +144,40 @@ function persistSelectedConfiguredModel(value: string | null): string | null {
     return value;
   }
   const storage = readCustomApiStorage();
-  const providerForModel = storage.providers?.find(provider =>
+  const providers = storage.providers ?? [];
+  const providerIndex = providers.findIndex(provider =>
     provider.kind === parsed.providerKind &&
     provider.id === parsed.providerId &&
     (provider.baseURL ?? undefined) === parsed.baseURL &&
     provider.authMode === parsed.authMode &&
     provider.models.includes(parsed.model),
   );
+  const providerForModel = providerIndex >= 0 ? providers[providerIndex] : undefined;
   if (!providerForModel) {
     return parsed.model;
   }
+
+  const nextProviders = [...providers];
+  if (
+    reasoning?.mode === 'openai-chat-completions' ||
+    reasoning?.mode === 'openai-responses' ||
+    reasoning?.mode === 'openai-codex-oauth'
+  ) {
+    nextProviders[providerIndex] = {
+      ...providerForModel,
+      reasoning: {
+        ...providerForModel.reasoning,
+        reasoningEffort: reasoning.effort,
+        ...(reasoning.mode === 'openai-chat-completions'
+          ? {}
+          : { reasoningSummary: reasoning.summary }),
+      },
+    };
+  }
+
   writeCustomApiStorage({
     ...storage,
+    providers: nextProviders,
     activeProvider: providerForModel.id,
     activeModel: parsed.model,
     activeAuthMode: providerForModel.authMode,
@@ -167,6 +194,22 @@ function persistSelectedConfiguredModel(value: string | null): string | null {
   process.env.CLOAI_API_KEY = providerForModel.apiKey ?? '';
   process.env.ANTHROPIC_MODEL = parsed.model;
   return parsed.model;
+}
+
+function formatReasoningMessage(model: string | null, reasoning: ReasoningSelection | undefined): string {
+  let message = `Set model to ${chalk.bold(renderModelLabel(model))}`;
+  if (!reasoning) return message;
+  if (reasoning.mode === 'anthropic-effort') {
+    return `${message} with ${chalk.bold(reasoning.effort)} effort`;
+  }
+  if (
+    reasoning.mode === 'openai-chat-completions' ||
+    reasoning.mode === 'openai-responses' ||
+    reasoning.mode === 'openai-codex-oauth'
+  ) {
+    return `${message} with ${chalk.bold(reasoning.effort)} reasoning`;
+  }
+  return message;
 }
 
 function ModelPickerWrapper({
@@ -194,8 +237,8 @@ function ModelPickerWrapper({
     });
   }
 
-  function handleSelect(model: string | null, effort: EffortLevel | undefined): void {
-    const persistedModel = persistSelectedConfiguredModel(model);
+  function handleSelect(model: string | null, reasoning: ReasoningSelection | undefined): void {
+    const persistedModel = persistSelectedConfiguredModel(model, reasoning);
     const selectedModel = persistedModel ?? model;
     logEvent('tengu_model_command_menu', {
       action: selectedModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -208,10 +251,7 @@ function ModelPickerWrapper({
       mainLoopModel: selectedModel,
       mainLoopModelForSession: null,
     }));
-    let message = `Set model to ${chalk.bold(renderModelLabel(selectedModel))}`;
-    if (effort !== undefined) {
-      message += ` with ${chalk.bold(effort)} effort`;
-    }
+    let message = formatReasoningMessage(selectedModel, reasoning);
 
     let wasFastModeToggledOn = undefined;
     if (isFastModeEnabled()) {
@@ -293,7 +333,6 @@ function SetModelAndClose({
         return;
       }
 
-      // @[MODEL LAUNCH]: Update check for 1M access.
       if (model && isOpus1mUnavailable(model)) {
         onDone(`Opus 4.6 with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m`, {
           display: 'system'
@@ -307,22 +346,17 @@ function SetModelAndClose({
         return;
       }
 
-      // Skip validation for default model
       if (!model) {
         setModel(null);
         return;
       }
 
-      // Skip validation for known aliases - they're predefined and should work
       if (isKnownAlias(model)) {
         setModel(model);
         return;
       }
 
-      // Validate and set custom model
       try {
-        // Don't use parseUserSpecifiedModel for non-aliases since it lowercases the input
-        // and model names are case-sensitive
         const {
           valid,
           error: error_0
@@ -357,7 +391,6 @@ function SetModelAndClose({
             fastMode: false
           }));
           wasFastModeToggledOn = false;
-          // Do not update fast mode in settings since this is an automatic downgrade
         } else if (isFastModeSupportedByModel(modelValue) && isFastMode) {
           message += ` · Fast mode ON`;
           wasFastModeToggledOn = true;
@@ -367,7 +400,6 @@ function SetModelAndClose({
         message += ` · Billed as extra usage`;
       }
       if (wasFastModeToggledOn === false) {
-        // Fast mode was toggled off, show suffix after extra usage billing
         message += ` · Fast mode OFF`;
       }
       onDone(message);
@@ -376,6 +408,7 @@ function SetModelAndClose({
   }, [model, onDone, setAppState]);
   return null;
 }
+
 function isKnownAlias(model: string): boolean {
   return (MODEL_ALIASES as readonly string[]).includes(model.toLowerCase().trim());
 }
@@ -385,8 +418,6 @@ function isOpus1mUnavailable(model: string): boolean {
 }
 function isSonnet1mUnavailable(model: string): boolean {
   const m = model.toLowerCase();
-  // Warn about Sonnet and Sonnet 4.6, but not Sonnet 4.5 since that had
-  // a different access criteria.
   return !checkSonnet1mAccess() && (m.includes('sonnet[1m]') || m.includes('sonnet-4-6[1m]'));
 }
 function ShowModelAndClose(t0) {
