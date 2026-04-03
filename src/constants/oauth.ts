@@ -113,6 +113,15 @@ const PROD_OAUTH_CONFIG = {
 export const MCP_CLIENT_METADATA_URL =
   'https://claude.ai/oauth/claude-code-client-metadata'
 
+// OpenAI official ChatGPT/Codex OAuth
+export const OPENAI_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
+export const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token'
+export const OPENAI_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+export const OPENAI_REDIRECT_URL = 'http://localhost:1455/auth/callback'
+export const OPENAI_SCOPES = 'openid profile email offline_access'
+export const OPENAI_ORIGINATOR = 'pi'
+
+
 // Staging OAuth configuration - only included in ant builds with staging flag
 // Uses literal check for dead code elimination
 const STAGING_OAUTH_CONFIG =

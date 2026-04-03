@@ -9,6 +9,12 @@ import {
   CLAUDE_AI_INFERENCE_SCOPE,
   CLAUDE_AI_OAUTH_SCOPES,
   getOauthConfig,
+  OPENAI_AUTHORIZE_URL,
+  OPENAI_CLIENT_ID,
+  OPENAI_ORIGINATOR,
+  OPENAI_REDIRECT_URL,
+  OPENAI_SCOPES,
+  OPENAI_TOKEN_URL,
 } from '../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
@@ -53,6 +59,8 @@ export function buildAuthUrl({
   orgUUID,
   loginHint,
   loginMethod,
+  oauthProvider,
+  openaiClientId,
 }: {
   codeChallenge: string
   state: string
@@ -63,13 +71,33 @@ export function buildAuthUrl({
   orgUUID?: string
   loginHint?: string
   loginMethod?: string
+  oauthProvider?: 'anthropic' | 'openai'
+  openaiClientId?: string
 }): string {
+  // Handle official OpenAI ChatGPT OAuth separately
+  if (oauthProvider === 'openai') {
+    const clientId = openaiClientId ?? OPENAI_CLIENT_ID
+    const authUrl = new URL(OPENAI_AUTHORIZE_URL)
+    authUrl.searchParams.append('response_type', 'code')
+    authUrl.searchParams.append('client_id', clientId)
+    authUrl.searchParams.append('redirect_uri', OPENAI_REDIRECT_URL)
+    authUrl.searchParams.append('scope', OPENAI_SCOPES)
+    authUrl.searchParams.append('code_challenge', codeChallenge)
+    authUrl.searchParams.append('code_challenge_method', 'S256')
+    authUrl.searchParams.append('state', state)
+    authUrl.searchParams.append('id_token_add_organizations', 'true')
+    authUrl.searchParams.append('codex_cli_simplified_flow', 'true')
+    authUrl.searchParams.append('originator', OPENAI_ORIGINATOR)
+    return authUrl.toString()
+  }
+
+  // Anthropic OAuth flow
   const authUrlBase = loginWithClaudeAi
     ? getOauthConfig().CLAUDE_AI_AUTHORIZE_URL
     : getOauthConfig().CONSOLE_AUTHORIZE_URL
 
   const authUrl = new URL(authUrlBase)
-  authUrl.searchParams.append('code', 'true') // this tells the login page to show Claude Max upsell
+  authUrl.searchParams.append('code', 'true')
   authUrl.searchParams.append('client_id', getOauthConfig().CLIENT_ID)
   authUrl.searchParams.append('response_type', 'code')
   authUrl.searchParams.append(
@@ -79,30 +107,18 @@ export function buildAuthUrl({
       : `http://localhost:${port}/callback`,
   )
   const scopesToUse = inferenceOnly
-    ? [CLAUDE_AI_INFERENCE_SCOPE] // Long-lived inference-only tokens
+    ? [CLAUDE_AI_INFERENCE_SCOPE]
     : ALL_OAUTH_SCOPES
   authUrl.searchParams.append('scope', scopesToUse.join(' '))
   authUrl.searchParams.append('code_challenge', codeChallenge)
   authUrl.searchParams.append('code_challenge_method', 'S256')
   authUrl.searchParams.append('state', state)
-
-  // Add orgUUID as URL param if provided
-  if (orgUUID) {
-    authUrl.searchParams.append('orgUUID', orgUUID)
-  }
-
-  // Pre-populate email on the login form (standard OIDC parameter)
-  if (loginHint) {
-    authUrl.searchParams.append('login_hint', loginHint)
-  }
-
-  // Request a specific login method (e.g. 'sso', 'magic_link', 'google')
-  if (loginMethod) {
-    authUrl.searchParams.append('login_method', loginMethod)
-  }
-
+  if (orgUUID) authUrl.searchParams.append('orgUUID', orgUUID)
+  if (loginHint) authUrl.searchParams.append('login_hint', loginHint)
+  if (loginMethod) authUrl.searchParams.append('login_method', loginMethod)
   return authUrl.toString()
 }
+
 
 export async function exchangeCodeForTokens(
   authorizationCode: string,
@@ -111,7 +127,43 @@ export async function exchangeCodeForTokens(
   port: number,
   useManualRedirect: boolean = false,
   expiresIn?: number,
+  oauthProvider?: 'anthropic' | 'openai',
+  openaiClientId?: string,
 ): Promise<OAuthTokenExchangeResponse> {
+  if (oauthProvider === 'openai') {
+    const clientId = openaiClientId ?? OPENAI_CLIENT_ID
+    const requestBody = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      code: authorizationCode,
+      code_verifier: codeVerifier,
+      redirect_uri: OPENAI_REDIRECT_URL,
+    })
+
+    const response = await axios.post(OPENAI_TOKEN_URL, requestBody.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 15000,
+    })
+
+    if (response.status !== 200) {
+      throw new Error(
+        response.status === 401
+          ? 'Authentication failed: Invalid authorization code'
+          : `Token exchange failed (${response.status}): ${response.statusText}`,
+      )
+    }
+    logEvent('tengu_oauth_token_exchange_success', { oauthProvider: 'openai' })
+    const data = response.data
+    return {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_in: data.expires_in ?? 3600,
+      scope: data.scope ?? OPENAI_SCOPES,
+      id_token: data.id_token,
+    }
+  }
+
+  // Anthropic OAuth token exchange
   const requestBody: Record<string, string | number> = {
     grant_type: 'authorization_code',
     code: authorizationCode,
@@ -142,6 +194,7 @@ export async function exchangeCodeForTokens(
   logEvent('tengu_oauth_token_exchange_success', {})
   return response.data
 }
+
 
 export async function refreshOAuthToken(
   refreshToken: string,

@@ -207,15 +207,47 @@ function applyPersistedCustomApiEndpointEnv(): void {
     ...readCustomApiStorage(),
   }
 
-  if (customApiEndpoint?.baseURL) {
-    process.env.ANTHROPIC_BASE_URL = customApiEndpoint.baseURL
+  const activeProviderId =
+    customApiEndpoint.activeProvider ?? customApiEndpoint.providerId
+  const activeProviderKind = customApiEndpoint.providerKind
+  const providerCandidates = (customApiEndpoint.providers ?? []).filter(
+    provider =>
+      provider.id === activeProviderId &&
+      (activeProviderKind === undefined || provider.kind === activeProviderKind),
+  )
+  const activeProviderConfig =
+    providerCandidates.find(
+      provider =>
+        (provider.baseURL ?? undefined) ===
+          (customApiEndpoint.baseURL ?? undefined) &&
+        (customApiEndpoint.activeModel === undefined ||
+          provider.models.includes(customApiEndpoint.activeModel)),
+    ) ??
+    providerCandidates.find(
+      provider =>
+        customApiEndpoint.activeModel !== undefined &&
+        provider.models.includes(customApiEndpoint.activeModel),
+    ) ??
+    providerCandidates.find(
+      provider =>
+        (provider.baseURL ?? undefined) ===
+        (customApiEndpoint.baseURL ?? undefined),
+    ) ??
+    providerCandidates[0]
+  const resolvedBaseURL = activeProviderConfig?.baseURL ?? customApiEndpoint?.baseURL
+  const resolvedApiKey = activeProviderConfig?.apiKey ?? customApiEndpoint?.apiKey
+  const resolvedModel = customApiEndpoint.activeModel ?? customApiEndpoint?.model
+
+  if (resolvedBaseURL) {
+    process.env.ANTHROPIC_BASE_URL = resolvedBaseURL
   }
 
-  if (customApiEndpoint?.apiKey) {
-    process.env.CLOAI_API_KEY = customApiEndpoint.apiKey
+  if (resolvedApiKey) {
+    process.env.CLOAI_API_KEY = resolvedApiKey
   }
 
-  if (customApiEndpoint?.model) {
-    process.env.ANTHROPIC_MODEL = customApiEndpoint.model
+  if (resolvedModel) {
+    process.env.ANTHROPIC_MODEL = resolvedModel
   }
 }
+
