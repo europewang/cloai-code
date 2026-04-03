@@ -1,146 +1,135 @@
-# Cloai Code
+# cloaiCode
 
-> Claude Code 的一个 Fork。不是官方正史，而是平行世界番外篇；不是萌豚整活仓库，而是“认真修、顺手发癫一点点”的工程分支。
+<div align="center">
 
-[![Fork](https://img.shields.io/badge/Fork-Claude%20Code-f59e0b)](README.md)
-[![Status](https://img.shields.io/badge/status-restored%20%2B%20modded-10b981)](README.md)
+![ClOAI-Code Preview](preview.png)
+
+# cloaiCode
+
+**面向多 Provider 原生接入增强的代码助手 CLI。🚀**
+
+专业、务实、可落地。适合需要稳定接入第三方模型、代理服务与自定义网关的开发环境。🚀
+
 [![Runtime](https://img.shields.io/badge/runtime-Bun%20%2B%20Node-3b82f6)](README.md)
 [![Config](https://img.shields.io/badge/config-~%2F.cloai-8b5cf6)](README.md)
-[![License](https://img.shields.io/badge/license-see%20upstream%20notice-lightgrey)](README.md)
-[![Issues](https://img.shields.io/badge/issues-welcome-ef4444)](README.md)
+[![Providers](https://img.shields.io/badge/providers-Anthropic%20%2F%20OpenAI%20compatible-10b981)](README.md)
+[![Status](https://img.shields.io/badge/status-active%20fork-f59e0b)](README.md)
 
-![Preview](preview.png)
+</div>
 
-## 这是什么
+---
 
-[`Cloai Code`](README.md) 基于一份还原后的 [`Claude Code`](README.md) 源码树继续修改而来。
+## ✨ 项目简介
 
-可以把它理解为：
+`cloaiCode` 是一个面向实际开发场景持续演进的 CLI 分支，重点不是“表面兼容”，而是让**第三方模型接入、代理转发、自定义鉴权与非官方部署环境**真正做到可用、好用、易维护。
 
-- 基底仍然是“通过 source map 逆向还原 + 缺失模块补齐”得到的可运行代码树
-- 但在此之上，加入了这个 Fork 自己的目标和行为调整
-- 目标不是“100% 忠于上游”，而是“让它更适合折腾、适合代理转接、适合自定义模型接入”
+它不是外围套壳，也不是单纯通过外部切换器接管模型，而是在原版代码基础上直接扩展原生接入能力。
 
-如果用 ACG 比喻，大概属于：
+它适合这些场景：
 
-- 原作：[`Claude Code`](README.md)
-- 本作：[`Cloai Code`](README.md)
-- 定位：不是官方 BD 修正集，而是高强度民间魔改但努力保持剧情逻辑自洽的外传 OVA
+- 🖥️ 在本地终端中直接使用自定义模型与自定义 Provider
+- 🌐 通过 Anthropic 兼容网关或 OpenAI 兼容网关接入模型
+- 🔐 在 API Key、OAuth、不同 Provider 鉴权模式之间切换
+- 🧱 在无桌面、无图形界面的服务器终端中完成配置与使用
+- ⚙️ 希望把配置、登录态、模型选择等行为统一收口到独立目录进行管理
 
-## 当前定位
+---
 
-这个仓库当前强调的是以下方向：
+## 🎯 这个项目解决了什么问题
 
-- 支持自定义 Anthropic 兼容接口地址
-- 正在加入 OpenAI Chat Completions ↔ Anthropic Messages 转接能力
-- 支持自定义 API Key
-- 支持自定义模型与模型列表管理
-- 尽量把自定义接入数据收口到 [`~/.cloai`](README.md) 路径体系
-- 在保留 CLI/TUI 主体结构的前提下，降低对官方登录流的绑定
+很多用户会通过 **CC Switch** 把第三方模型接入到现有工具链中，这种方式当然可行；但本项目更进一步，选择了**原生支持**。
 
-换句话说，它现在更像一个“可自托管 / 可代理 / 可转接”的 [`Claude Code`](README.md) 变体。
+原生支持的价值主要在于：
 
-## 与原版 Claude Code 的数据隔离
+- ⚡ **更快**：少一层中间切换与转接，路径更短
+- 🧭 **更直接**：Provider、鉴权方式、模型选择都在工具内部完成
+- 🛠️ **更方便**：不需要依赖额外切换器才能完成基础接入
+- 🖥️ **更适合服务器环境**：在没有屏幕的终端、远程 SSH、容器环境里配置更省事
+- 🔄 **更容易维护**：配置语义更统一，问题排查更直接
 
-[`Cloai Code`](README.md) 默认**不应**与原版 [`Claude Code`](README.md) 共用配置和缓存目录。
+如果你的环境是：
 
-当前 Fork 已明确把默认用户目录收口到：
+- 云主机
+- 跳板机
+- 远程开发容器
+- 无 GUI 的 Linux / Windows Server 终端
 
-- 配置目录：[`~/.cloai`](README.md)
-- 全局配置文件：[`~/.cloai/.claude.json`](README.md)
+那么这类“原生接入”的体验优势会非常明显。✅
 
-这样做的目的，是避免以下问题：
+---
 
-- 原版 [`Claude Code`](README.md) 的登录态污染 [`Cloai Code`](README.md)
-- 原版保存的 endpoint / token / model 配置影响 Cloai 的代理转接逻辑
-- 两边共用 [`.claude.json`](README.md) 或 [`.claude/`](README.md) 导致奇怪的网络、认证、模型或 UI 异常
+## 🚀 相比上游，多了什么
 
-如果用户以前装过原版 [`Claude Code`](README.md)，再运行 [`Cloai Code`](README.md) 时出现“明明没这么配却读到了旧配置”的现象，通常就是历史数据混用导致的。
+本项目目前重点增强了以下能力：
 
-建议：
+### 1. 原生 Provider 接入能力
 
-- 原版继续使用它自己的 [`.claude`](README.md) / [`.claude.json`](README.md)
-- [`Cloai Code`](README.md) 使用 [`.cloai`](README.md) 目录
-- 如需手动指定，也可以通过 [`CLAUDE_CONFIG_DIR`](README.md) 为 [`Cloai Code`](README.md) 指向独立目录
+支持在程序内部直接配置和切换不同 Provider，而不是只依赖外部切换层。
 
-一句话总结：
+### 2. 原生多鉴权模式
 
-> 原版走原版的窝，Cloai 住 Cloai 的窝，别把缓存、认证和配置炖成一锅。
+针对不同 Provider，可持久化并区分不同鉴权方式，避免“同一个 Provider 但不同 authMode 被错误复用”的问题。
 
-## OpenAI 兼容接口说明
+### 3. 自定义模型与模型列表管理
 
-[`Cloai Code`](README.md) 正在加入一个“中间转接层”模式，用来让内部仍按 Anthropic Messages 结构工作的主逻辑，转发到 OpenAI Chat Completions 接口。
+你可以更方便地接入非默认模型、维护模型列表，并在交互过程中直接选择。
 
-目标行为是：
+### 4. OpenAI 兼容协议支持持续增强
 
-- 内部程序仍按 Anthropic Messages 模式组织请求
-- 当选择 OpenAI API 格式时，由中间层把 Messages 请求改写成 Chat Completions 请求
-- 远端返回 Chat Completions 流后，再由中间层回转成内部可消费的 Messages 风格流事件
+除了 Anthropic 兼容路径，本项目也在持续完善 OpenAI 侧的协议能力与路由能力，包括：
 
-这意味着它不是简单改一个 Base URL，而是协议级别的输入输出流转接。
+- Chat Completions
+- Responses
+- OAuth
 
-当前状态：
+### 5. 独立配置目录与数据隔离
 
-- API 格式选择界面与配置持久化已加入
-- OpenAI 兼容转接模块正在迭代中
-- 目前仍属于开发中功能，可能出现流式事件不完整、消息映射异常、部分工具调用兼容不足等情况
+默认使用 `~/.cloai` 作为配置根目录，避免和其他同类工具的配置、缓存、登录态混用。
 
-如果你只是想稳定使用，建议优先走 Anthropic 兼容接口模式；如果你在测试 OpenAI 格式，请把它视为实验功能。
+---
 
-## 和原始还原仓库的关系
+## ✅ 已验证模型与接入方式
 
-这个仓库**不是**上游官方源码仓库，也**不是** pristine 状态的 Claude Code。
+以下模型 / 接入路径已经过实际测试：
 
-它有两层历史：
+### Anthropic API 路径
 
-1. 第一层：还原后的源码树
-2. 第二层：基于该源码树继续进行的 Fork 改造
+- `minimax-m2.7-highspeed`
 
-因此你会看到两类差异同时存在：
+### OpenAI 路径
 
-- 来自恢复过程的 shim、fallback、兼容层
-- 来自 Cloai Code 的主动魔改
+- `gpt-5.4` via **Chat Completions**
+- `gpt-5.4` via **Responses**
+- `gpt-5.4` via **OAuth**
 
-这两类改动都是真实存在的，不建议把当前代码误判成“官方上游源码镜像”。
+这意味着，本项目当前不仅支持“理论可配”，而是这些关键组合已经被实际跑通过。🧪
 
-## 当前状态
+---
 
-- 该源码树已经可以在本地开发流程中恢复并运行
-- [`bun install`](README.md) 可用于安装依赖
-- [`bun run dev`](README.md) 可用于启动恢复后的 CLI/TUI
-- [`bun run version`](README.md) 可用于输出当前版本信息
-- 项目已被继续改造成 [`Cloai Code`](README.md) 分支，部分行为和 UI 已不再与原始 Claude Code 一致
-- 部分区域仍保留恢复期 fallback，因此行为可能与上游实现不同
-- OpenAI API 格式转接功能仍在开发中，当前并非完全稳定
+## 🧩 配置目录与数据隔离
 
-## 为什么会有这个仓库
+本项目默认将用户数据收口到：
 
-因为 source map 并不能召唤完整原仓库，最多只能说“把灵魂碎片召回来一部分”。
+- 配置目录：`~/.cloai`
+- 全局配置文件：`~/.cloai/.claude.json`
 
-常见缺口包括：
+这样做的好处：
 
-- 类型专用文件缺失
-- 构建产物和中间文件缺失
-- 私有包包装层无法恢复
-- 原生绑定无法恢复
-- 动态导入资源不完整
+- 避免历史登录态互相污染
+- 避免不同网关 / Provider 的 endpoint 配置串用
+- 避免模型列表、鉴权方式、缓存状态彼此干扰
+- 更方便你在不同环境下做独立配置与备份
 
-因此这个仓库的目标从一开始就不是考古式供奉，而是：
+如果你长期维护多套环境，这种隔离会明显降低排障成本。🧰
 
-- 先恢复到可运行
-- 再恢复到可维护
-- 最后在能跑的基础上，按需求继续 Fork
+---
 
-简而言之：
+## 📦 环境要求
 
-> 先让它活，再让它能打，再让它变成 Cloai。
+在开始前，请确保本机环境满足以下要求：
 
-## 运行方式
-
-环境要求：
-
-- Bun 1.3.5 或更高版本
-- Node.js 24 或更高版本
+- `Bun >= 1.3.5`
+- `Node.js >= 24`
 
 安装依赖：
 
@@ -148,11 +137,11 @@
 bun install
 ```
 
-## 快速安装（推荐开发者直接源码使用）
+---
 
-如果你是直接拉这个仓库源码来用，最快的方式是用 [`bun link`](README.md) 把它注册成全局命令。
+## 🛠️ 安装方式
 
-### 方式一：源码目录内直接注册
+### 方式一：直接从源码使用
 
 在仓库根目录执行：
 
@@ -161,26 +150,24 @@ bun install
 bun link
 ```
 
-注册成功后：
-
-- 全局包名是 [`@cloai-code/cli`](package.json:2)
-- 命令名是 [`cloai`](package.json:24)
-
-此后可直接运行：
+完成后即可通过全局命令启动：
 
 ```bash
 cloai
 ```
 
-### 方式二：在其他项目中引用 link 包
+当前包名与命令名：
 
-如果你要在别的工程里依赖它，可以使用：
+- 包名：`@cloai-code/cli`
+- 命令名：`cloai`
+
+### 方式二：作为 link 包在其他项目中使用
 
 ```bash
 bun link @cloai-code/cli
 ```
 
-或者在 [`package.json`](package.json) 中写：
+或在 `package.json` 中引用：
 
 ```json
 {
@@ -190,78 +177,184 @@ bun link @cloai-code/cli
 }
 ```
 
-## 使用 Git 直接源码级更新
+---
 
-这个 Fork 很适合直接通过 Git 拉取更新，而不是走传统已发布包升级。
+## ▶️ 启动方式
 
-典型更新流程：
-
-```bash
-git pull
-bun install
-bun link
-```
-
-含义分别是：
-
-- [`git pull`](README.md)：拉取最新源码改动
-- [`bun install`](README.md)：同步依赖变化
-- [`bun link`](README.md)：刷新全局 link 注册，确保命令入口与当前源码一致
-
-如果你本地就是长期用源码目录跑 [`Cloai Code`](README.md)，这基本就是“源码级更新”的标准姿势。
-
-### 一个推荐工作流
-
-首次安装：
-
-```bash
-git clone <your-fork-or-repo-url>
-cd claude-code-rev
-bun install
-bun link
-cloai
-```
-
-后续更新：
-
-```bash
-git pull
-bun install
-bun link
-cloai
-```
-
-## 命令与包名
-
-运行 [`Cloai Code`](README.md) CLI：
+### 开发模式启动
 
 ```bash
 bun run dev
 ```
 
-安装为全局命令后，默认命令名为：
+### 全局命令启动
 
 ```bash
 cloai
 ```
 
-也就是说，这个 Fork 现在的目标入口名是 [`cloai`](README.md)，而不是 [`claude`](README.md)。
-
-如果你使用 [`bun link`](README.md) 进行全局注册链接，那么现在注册出来的包名也不再是原版名，而是：
-
-```bash
-@cloai-code/cli
-```
-
-输出版本号：
+### 查看版本
 
 ```bash
 bun run version
 ```
 
-## 说明与免责声明
+---
 
-- 本仓库是 [`Claude Code`](README.md) 的 Fork：[`Cloai Code`](README.md)
-- 它包含恢复期代码与后续 Fork 改动，不代表官方立场
-- 如果某些行为看起来“很像官方，但又不完全像”，那通常不是你看错了，而是这确实是恢复版 + 魔改版的叠加态
-- 如果某些文案偶尔带一点 ACG 味，那是彩蛋，不是类型系统坏掉了（至少不全是）
+## 🔐 如何登录 / 配置鉴权
+
+本项目的重点之一，就是让登录与鉴权在实际使用中更灵活。
+
+根据你所使用的 Provider，不同场景通常会用到以下几种方式：
+
+### 1. API Key
+
+适用于：
+
+- Anthropic 兼容服务
+- OpenAI 兼容服务
+- 各类代理 / 网关 / 第三方模型平台
+
+适合服务器、容器、远程终端等无图形界面的环境。通常也是最稳定、最容易自动化的一种方式。🔑
+
+### 2. OAuth
+
+适用于部分支持 OAuth 的 Provider 或接入路径。
+
+如果你所在环境已经具备相应登录条件，OAuth 可以作为 API Key 之外的另一种可选方案。
+
+### 3. 不同 Provider 的独立鉴权模式
+
+本项目会尽量把 **Provider 与 authMode 的组合关系**做持久化处理，避免：
+
+- 切换 Provider 后沿用错误鉴权方式
+- 同 Provider 下不同鉴权模式互相覆盖
+- 重新启动后初始选项识别错误
+
+这对于需要经常在多家服务之间来回切换的用户尤其重要。🧠
+
+---
+
+## 🧭 如何选择 Provider
+
+本项目的设计目标之一，就是让 Provider 选择变得更自然、更明确。
+
+实际使用时，你通常会面临三类选择：
+
+### 1. Anthropic 兼容 Provider
+
+适合：
+
+- 自建网关
+- 代理服务
+- 第三方 Anthropic 兼容平台
+- 已验证的 `minimax-m2.7-highspeed` 接入路径
+
+如果你追求稳定、路径简单，Anthropic 兼容模式通常是非常实用的选择。
+
+### 2. OpenAI 兼容 Provider
+
+适合：
+
+- 提供 Chat Completions / Responses 接口的平台
+- 需要接入 `gpt-5.4` 等模型的场景
+- 需要兼容 OAuth 或 OpenAI 风格协议的场景
+
+### 3. 按鉴权方式区分同一 Provider
+
+对于同一个 Provider，如果同时支持多种鉴权模式，本项目会尽量把它们当作**不同的实际配置路径**来处理，而不是粗暴混成一个状态。
+
+这能明显减少“配置看起来没错，但为什么总是走错登录态”的问题。🔍
+
+---
+
+## 🔄 OpenAI 协议支持说明
+
+本项目并不只是在界面上加一个 Base URL 输入框，而是在持续补足更完整的协议支持能力。
+
+当前重点包括：
+
+- OpenAI Chat Completions 路由
+- OpenAI Responses 路由
+- 对应模型选择与鉴权处理
+- 不同协议路径下的请求转发与行为适配
+
+这也是为什么本项目在多模型接入场景下，比“仅靠外部切换器转接”的方案更进一步。它的目标是把这件事做成工具自身的一等能力，而不是外围补丁。🧱
+
+---
+
+## 📚 推荐使用流程
+
+### 首次使用
+
+```bash
+git clone <your-repo-url>
+cd cloai-code
+bun install
+bun link
+cloai
+```
+
+### 后续更新
+
+```bash
+git pull
+bun install
+bun link
+cloai
+```
+
+这套流程适合长期用源码方式跟进更新的用户，也方便你快速验证新模型、新 Provider 或新协议能力。
+
+---
+
+## 🖥️ 为什么说它更适合无屏幕终端
+
+对于服务器环境，很多“外部切换器 + 图形登录 + 多层转发”的方案，真正落地时往往会遇到这些问题：
+
+- 需要额外安装和维护切换组件
+- 登录流依赖图形界面或较繁琐的人工操作
+- 配置文件分散，排障路径长
+- 在 SSH / tmux / 容器中切换 Provider 不够直接
+
+本项目强调把这些关键操作尽量放回 CLI 自身完成，因此在以下环境会更友好：
+
+- 远程 Linux 服务器
+- Windows Server 终端
+- WSL
+- Docker / Dev Container
+- 纯 SSH 运维工作流
+
+一句话概括：**少一层折腾，就少一层不确定性。** 🧩
+
+---
+
+## ⚠️ 说明
+
+- 本项目是一个持续演进的分支，不代表任何官方立场
+- 某些能力已经稳定可用，某些协议与 Provider 适配仍在迭代中
+- 如果你需要高度可控的第三方模型接入体验，这个方向会比“尽量复刻默认行为”更有价值
+
+---
+
+## 🙏 致谢
+
+感谢 **doge-code** 项目以及其作者提供的启发与参考。这个方向上的探索非常有价值。
+
+项目地址：
+
+- https://github.com/HELPMEEADICE/doge-code.git
+
+---
+
+## 📌 总结
+
+`cloaiCode` 的核心价值，不是简单“能不能接第三方模型”，而是：
+
+- ✅ 原生支持多 Provider
+- ✅ 原生支持多鉴权模式
+- ✅ 原生支持更多协议路径
+- ✅ 已验证关键模型组合可用
+- ✅ 更适合服务器与无屏幕终端环境
+
+如果你希望得到一个**更直接、更灵活、更适合复杂接入环境**的 CLI 方案，这个项目就是为此而生。🔥
