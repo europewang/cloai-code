@@ -114,19 +114,11 @@ export async function getAnthropicClient({
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
   const customHeaders = getCustomHeaders()
-  const customAnthropicAuthToken = isCustomAnthropicCompatibleProvider(
-    activeProviderConfig,
-  )
-    ? apiKey || activeProviderConfig?.apiKey || getAnthropicApiKey()
-    : undefined
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(),
     'X-Claude-Code-Session-Id': getSessionId(),
     ...customHeaders,
-    ...(customAnthropicAuthToken
-      ? { Authorization: `Bearer ${customAnthropicAuthToken}` }
-      : {}),
     ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
     ...(remoteSessionId
       ? { 'x-claude-remote-session-id': remoteSessionId }
@@ -152,10 +144,7 @@ export async function getAnthropicClient({
   await checkAndRefreshOAuthTokenIfNeeded()
   logForDebugging('[API:auth] OAuth token check complete')
 
-  if (
-    !isClaudeAISubscriber() &&
-    !isCustomAnthropicCompatibleProvider(activeProviderConfig)
-  ) {
+  if (!isClaudeAISubscriber()) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
@@ -322,15 +311,10 @@ export async function getAnthropicClient({
 
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey:
-      isClaudeAISubscriber() || isCustomAnthropicCompatibleProvider(activeProviderConfig)
-        ? null
-        : apiKey || getAnthropicApiKey(),
+    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
     authToken: isClaudeAISubscriber()
       ? getClaudeAIOAuthTokens()?.accessToken
-      : isCustomAnthropicCompatibleProvider(activeProviderConfig)
-        ? customAnthropicAuthToken
-        : undefined,
+      : undefined,
     // Set baseURL from OAuth config when using staging OAuth
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)
@@ -354,15 +338,6 @@ function getGlobalCompatProvider(): 'anthropic' | 'openai' {
   return process.env.CLAUDE_CODE_COMPATIBLE_API_PROVIDER === 'openai'
     ? 'openai'
     : 'anthropic'
-}
-
-function isCustomAnthropicCompatibleProvider(
-  activeProviderConfig: ReturnType<typeof getActiveProviderConfig>,
-): boolean {
-  return (
-    activeProviderConfig?.kind === 'anthropic-like' &&
-    !!activeProviderConfig.baseURL
-  )
 }
 
 async function configureApiKeyHeaders(
