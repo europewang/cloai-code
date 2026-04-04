@@ -38,6 +38,7 @@ import {
   createOpenAICompatStream,
   createOpenAICodexStream,
   createOpenAIResponsesStream,
+  refreshOpenAIProviderOAuthIfNeeded,
 } from './openaiCompat.js'
 import {
   convertAnthropicRequestToGemini,
@@ -1847,6 +1848,8 @@ async function* queryModel(
             (activeProviderId === 'openai' ? 'oauth' : 'chat-completions')
 
           if (openAIAuthMode === 'oauth') {
+            // Refresh OpenAI OAuth token if expired (like Gemini OAuth pattern)
+            await refreshOpenAIProviderOAuthIfNeeded()
             const openAICodexRequest = convertAnthropicRequestToOpenAICodex({
               model: params.model,
               system: params.system,

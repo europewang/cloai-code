@@ -12,7 +12,9 @@ import { getSSLErrorHint } from '../../services/api/errorUtils.js'
 import { fetchAndStoreClaudeCodeFirstTokenDate } from '../../services/api/firstTokenDate.js'
 import {
   createAndStoreApiKey,
+  extractAccountIdFromToken,
   fetchAndStoreUserRoles,
+  fetchOpenAICodexModels,
   refreshOAuthToken,
   shouldUseClaudeAIAuth,
   storeOAuthAccountInfo,
@@ -91,33 +93,90 @@ export async function installOAuthTokens(
       activeOpenAIProvider ??
       fallbackOpenAIProvider ??
       providers.find(p => p.kind === 'openai-like' && p.authMode === 'oauth')
+
+    // Extract account ID from JWT and fetch available models
+    const accountId = extractAccountIdFromToken(tokens.accessToken ?? '')
+    let fetchedModels: string[] | undefined
+    if (accountId && tokens.accessToken) {
+      try {
+        fetchedModels = await fetchOpenAICodexModels({
+          accessToken: tokens.accessToken,
+          accountId,
+        })
+      } catch {
+        // Non-fatal: fall back to existing models
+      }
+    }
+
+    const oauthData = {
+      accessToken: tokens.accessToken,
+      refreshToken:
+        typeof tokens.refreshToken === 'string'
+          ? tokens.refreshToken
+          : undefined,
+      expiresAt:
+        typeof tokens.expiresAt === 'number'
+          ? tokens.expiresAt
+          : undefined,
+      accountId,
+    }
     const updatedProviders = targetProvider
       ? providers.map(p =>
-          p === targetProvider ? { ...p, apiKey: tokens.accessToken } : p,
+          p === targetProvider
+            ? {
+                ...p,
+                apiKey: tokens.accessToken,
+                models: fetchedModels ?? p.models,
+                oauth: {
+                  ...oauthData,
+                  refreshToken: oauthData.refreshToken
+                    ?? (p.oauth as { refreshToken?: string } | undefined)?.refreshToken,
+                  expiresAt: oauthData.expiresAt
+                    ?? (p.oauth as { expiresAt?: number } | undefined)?.expiresAt,
+                  accountId: oauthData.accountId
+                    ?? (p.oauth as { accountId?: string } | undefined)?.accountId,
+                },
+              }
+            : p,
         )
-      : providers
+      : [
+          ...providers,
+          {
+            id: 'openai',
+            kind: 'openai-like' as const,
+            authMode: 'oauth' as const,
+            apiKey: tokens.accessToken,
+            models: fetchedModels ?? [],
+            oauth: oauthData,
+          },
+        ]
 
+    const resolvedModels = fetchedModels ?? targetProvider?.models
+    const effectiveProvider = targetProvider ?? {
+      id: 'openai',
+      kind: 'openai-like' as const,
+      authMode: 'oauth' as const,
+    }
     const activeModel =
-      previousStorage.activeProvider === targetProvider?.id
+      previousStorage.activeProvider === effectiveProvider.id
         ? previousStorage.activeModel
-        : targetProvider?.models[0]
+        : resolvedModels?.[0]
     const normalizedOpenAIStorage = {
       ...previousStorage,
-      activeProviderKey: targetProvider
-        ? getProviderKeyFromConfig(targetProvider)
-        : previousStorage.activeProviderKey,
+      activeProviderKey: getProviderKeyFromConfig(effectiveProvider),
       providers: updatedProviders,
-      activeProvider: targetProvider?.id ?? previousStorage.activeProvider,
+      activeProvider: effectiveProvider.id,
       activeModel,
       provider: 'openai' as const,
-      providerKind: targetProvider?.kind ?? 'openai-like',
-      providerId: targetProvider?.id ?? previousStorage.providerId,
+      providerKind: effectiveProvider.kind,
+      providerId: effectiveProvider.id,
+      authMode: effectiveProvider.authMode,
       baseURL: targetProvider?.baseURL ?? previousStorage.baseURL,
       apiKey: tokens.accessToken,
       model: activeModel,
       savedModels:
-        targetProvider?.models ??
-        (previousStorage.activeProvider === targetProvider?.id
+        resolvedModels ??
+        (previousStorage.activeProvider === effectiveProvider.id
           ? previousStorage.savedModels
           : undefined),
     }
