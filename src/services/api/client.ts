@@ -16,7 +16,10 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
-import { readCustomApiStorage } from 'src/utils/customApiStorage.js'
+import {
+  getActiveProviderConfig,
+  readCustomApiStorage,
+} from 'src/utils/customApiStorage.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
   getIsNonInteractiveSession,
@@ -99,21 +102,31 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
+  const customApiStorage = readCustomApiStorage()
+  const activeProviderConfig = getActiveProviderConfig(customApiStorage)
   const customApiProvider =
-    readCustomApiStorage().providerKind === 'openai-like'
+    customApiStorage.providerKind === 'openai-like'
       ? 'openai'
-      : readCustomApiStorage().providerKind === 'anthropic-like'
+      : customApiStorage.providerKind === 'anthropic-like'
         ? 'anthropic'
-        : readCustomApiStorage().provider ?? getGlobalCompatProvider()
+        : customApiStorage.provider ?? getGlobalCompatProvider()
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
   const customHeaders = getCustomHeaders()
+  const customAnthropicAuthToken = isCustomAnthropicCompatibleProvider(
+    activeProviderConfig,
+  )
+    ? apiKey || activeProviderConfig?.apiKey || getAnthropicApiKey()
+    : undefined
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(),
     'X-Claude-Code-Session-Id': getSessionId(),
     ...customHeaders,
+    ...(customAnthropicAuthToken
+      ? { Authorization: `Bearer ${customAnthropicAuthToken}` }
+      : {}),
     ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
     ...(remoteSessionId
       ? { 'x-claude-remote-session-id': remoteSessionId }
@@ -139,7 +152,10 @@ export async function getAnthropicClient({
   await checkAndRefreshOAuthTokenIfNeeded()
   logForDebugging('[API:auth] OAuth token check complete')
 
-  if (!isClaudeAISubscriber()) {
+  if (
+    !isClaudeAISubscriber() &&
+    !isCustomAnthropicCompatibleProvider(activeProviderConfig)
+  ) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
@@ -306,15 +322,21 @@ export async function getAnthropicClient({
 
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
+    apiKey:
+      isClaudeAISubscriber() || isCustomAnthropicCompatibleProvider(activeProviderConfig)
+        ? null
+        : apiKey || getAnthropicApiKey(),
     authToken: isClaudeAISubscriber()
       ? getClaudeAIOAuthTokens()?.accessToken
-      : undefined,
+      : isCustomAnthropicCompatibleProvider(activeProviderConfig)
+        ? customAnthropicAuthToken
+        : undefined,
     // Set baseURL from OAuth config when using staging OAuth
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)
       ? { baseURL: getOauthConfig().BASE_API_URL }
       : {}),
+    ...(activeProviderConfig?.baseURL ? { baseURL: activeProviderConfig.baseURL } : {}),
     ...ARGS,
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
@@ -332,6 +354,15 @@ function getGlobalCompatProvider(): 'anthropic' | 'openai' {
   return process.env.CLAUDE_CODE_COMPATIBLE_API_PROVIDER === 'openai'
     ? 'openai'
     : 'anthropic'
+}
+
+function isCustomAnthropicCompatibleProvider(
+  activeProviderConfig: ReturnType<typeof getActiveProviderConfig>,
+): boolean {
+  return (
+    activeProviderConfig?.kind === 'anthropic-like' &&
+    !!activeProviderConfig.baseURL
+  )
 }
 
 async function configureApiKeyHeaders(
