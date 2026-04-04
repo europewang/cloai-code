@@ -1986,9 +1986,15 @@ function relocateToolReferenceSiblings(
   return result
 }
 
+type NormalizeMessagesForAPIOptions = {
+  preserveUserMessageBoundaries?: boolean
+  preserveAssistantMessageBoundaries?: boolean
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
+  options: NormalizeMessagesForAPIOptions = {},
 ): (UserMessage | AssistantMessage)[] {
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
@@ -2084,7 +2090,7 @@ export function normalizeMessagesForAPI(
             timestamp: message.timestamp,
           })
           const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
+          if (!options.preserveUserMessageBoundaries && lastMessage?.type === 'user') {
             result[result.length - 1] = mergeUserMessages(lastMessage, userMsg)
             return
           }
@@ -2186,7 +2192,7 @@ export function normalizeMessagesForAPI(
 
           // If the last message is also a user message, merge them
           const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
+          if (!options.preserveUserMessageBoundaries && lastMessage?.type === 'user') {
             result[result.length - 1] = mergeUserMessages(
               lastMessage,
               normalizedMessage,
@@ -2247,19 +2253,21 @@ export function normalizeMessagesForAPI(
           // Walk backwards, skipping tool results and different-ID assistants,
           // since concurrent agents (teammates) can interleave streaming content
           // blocks from multiple API responses with different message IDs.
-          for (let i = result.length - 1; i >= 0; i--) {
-            const msg = result[i]!
+          if (!options.preserveAssistantMessageBoundaries) {
+            for (let i = result.length - 1; i >= 0; i--) {
+              const msg = result[i]!
 
-            if (msg.type !== 'assistant' && !isToolResultMessage(msg)) {
-              break
-            }
-
-            if (msg.type === 'assistant') {
-              if (msg.message.id === normalizedMessage.message.id) {
-                result[i] = mergeAssistantMessages(msg, normalizedMessage)
-                return
+              if (msg.type !== 'assistant' && !isToolResultMessage(msg)) {
+                break
               }
-              continue
+
+              if (msg.type === 'assistant') {
+                if (msg.message.id === normalizedMessage.message.id) {
+                  result[i] = mergeAssistantMessages(msg, normalizedMessage)
+                  return
+                }
+                continue
+              }
             }
           }
 
@@ -2278,7 +2286,7 @@ export function normalizeMessagesForAPI(
 
           // If the last message is also a user message, merge them
           const lastMessage = last(result)
-          if (lastMessage?.type === 'user') {
+          if (!options.preserveUserMessageBoundaries && lastMessage?.type === 'user') {
             result[result.length - 1] = attachmentMessage.reduce(
               (p, c) => mergeUserMessagesAndToolResults(p, c),
               lastMessage,

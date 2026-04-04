@@ -6,7 +6,7 @@ import type { Attachment } from 'src/utils/attachments.js';
 import type { NullRenderingAttachmentType } from './nullRenderingAttachments.js';
 import { useAppState } from '../../state/AppState.js';
 import { getDisplayPath } from 'src/utils/file.js';
-import { formatFileSize } from 'src/utils/format.js';
+import { formatFileSize, formatNumber } from 'src/utils/format.js';
 import { MessageResponse } from '../MessageResponse.js';
 import { basename, sep } from 'path';
 import { UserTextMessage } from './UserTextMessage.js';
@@ -255,6 +255,13 @@ export function AttachmentMessage({
       }
     case 'diagnostics':
       return <DiagnosticsDisplay attachment={attachment} verbose={verbose} />;
+    case 'openai_prefix_debug':
+      if (!attachment.usage || attachment.usage.cachedTokens <= 0) {
+        return null;
+      }
+      return <Box flexDirection="column" marginTop={addMargin ? 1 : 0} backgroundColor={bg} paddingLeft={2}>
+          <Text dimColor={true}>cached {formatNumber(attachment.usage.cachedTokens)} tokens</Text>
+        </Box>;
     case 'mcp_resource':
       return <Line>
           Read MCP resource <Text bold>{attachment.name}</Text> from{' '}

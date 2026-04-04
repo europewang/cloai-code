@@ -93,6 +93,7 @@ import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
 import { executeStopFailureHooks } from './utils/hooks.js'
 import type { QuerySource } from './constants/querySource.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
+import { consumeOpenAIPrefixDebugAttachments } from './services/api/openaiCompat.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
 import { runTools } from './services/tools/toolOrchestration.js'
@@ -1587,6 +1588,24 @@ async function* queryLoop(
     )) {
       yield attachment
       toolResults.push(attachment)
+    }
+
+    for (const debugAttachment of consumeOpenAIPrefixDebugAttachments()) {
+      if (debugAttachment.requestShape !== 'responses') continue
+      const msg = createAttachmentMessage({
+        type: 'openai_prefix_debug',
+        model: debugAttachment.model,
+        sharedPrefixItems: debugAttachment.sharedPrefixItems,
+        totalItems: debugAttachment.totalItems,
+        usage: debugAttachment.usage
+          ? {
+              inputTokens: debugAttachment.usage.inputTokens,
+              outputTokens: debugAttachment.usage.outputTokens,
+              cachedTokens: debugAttachment.usage.cachedTokens,
+            }
+          : undefined,
+      })
+      yield msg
     }
 
     // Memory prefetch consume: only if settled and not already consumed on

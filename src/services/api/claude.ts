@@ -1271,8 +1271,34 @@ async function* queryModel(
     preNormalizedMessageCount: messages.length,
   })
 
+  const customApiStorageForNormalize = readCustomApiStorage()
+  const activeProviderConfigForNormalize =
+    getActiveProviderConfig(customApiStorageForNormalize)
+  const compatProviderForNormalize =
+    activeProviderConfigForNormalize?.kind === 'openai-like'
+      ? 'openai'
+      : activeProviderConfigForNormalize?.kind === 'gemini-like'
+        ? 'gemini'
+        : activeProviderConfigForNormalize?.kind === 'anthropic-like'
+          ? 'anthropic'
+          : customApiStorageForNormalize.provider ?? 'anthropic'
+  const openAIAuthModeForNormalize =
+    activeProviderConfigForNormalize?.kind === 'openai-like'
+      ? activeProviderConfigForNormalize.authMode
+      : undefined
+
   queryCheckpoint('query_message_normalization_start')
-  let messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
+  let messagesForAPI = normalizeMessagesForAPI(
+    messages,
+    filteredTools,
+    compatProviderForNormalize === 'openai' &&
+      openAIAuthModeForNormalize === 'responses'
+      ? {
+          preserveUserMessageBoundaries: true,
+          preserveAssistantMessageBoundaries: true,
+        }
+      : {},
+  )
   queryCheckpoint('query_message_normalization_end')
 
   // Model-specific post-processing: strip tool-search-specific fields if the
@@ -1880,7 +1906,7 @@ async function* queryModel(
             const openAIResponsesRequest = convertAnthropicRequestToOpenAIResponses({
               model: params.model,
               system: params.system,
-              messages: params.messages,
+              messages: messagesForAPI.map(msg => msg.message as MessageParam),
               tools: params.tools,
               tool_choice: params.tool_choice,
               temperature: params.temperature,

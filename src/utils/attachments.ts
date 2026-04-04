@@ -522,6 +522,17 @@ export type Attachment =
       }[]
     }
   | {
+      type: 'openai_prefix_debug'
+      model: string
+      sharedPrefixItems: number
+      totalItems: number
+      usage?: {
+        inputTokens: number
+        outputTokens: number
+        cachedTokens: number
+      }
+    }
+  | {
       type: 'dynamic_skill'
       skillDir: string
       skillNames: string[]
