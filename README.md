@@ -21,9 +21,20 @@
 
 ## 2026 年 4 月 4 日最新更新
 
-- 支持 Responses API 的缓存命中
+<img width="1872" height="643" alt="image" src="https://github.com/user-attachments/assets/d34682db-88be-49f0-af6f-c1e249f1a8fe" />
+
+
+- ⭐**支持 Responses API 的缓存命中，成本降低 90%** 
 - 修复上下文穿插造成的回复不连续问题
 - 针对部分 OpenAI 兼容路由补充更稳的缓存键支持
+- 支持多模态以及图像粘贴到对话框
+
+
+## 2026 年 4 月 3 日更新
+
+- Codex OAuth、Responses API、Gemini OAuth 和 Vertex API 支持
+- 支持设定推理强度
+- 支持思维链流式输出
 
 ---
 
