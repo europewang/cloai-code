@@ -39,6 +39,8 @@ export type UseTextInputProps = {
   value: string
   onChange: (value: string) => void
   onSubmit?: (value: string) => void
+  onCancel?: () => void
+  cancelOnEscape?: boolean
   onExit?: () => void
   onExitMessage?: (show: boolean, key?: string) => void
   onHistoryUp?: () => void
@@ -62,6 +64,7 @@ export type UseTextInputProps = {
   ) => void
   disableCursorMovementForUpDownKeys?: boolean
   disableEscapeDoublePress?: boolean
+  exitOnCtrlC?: boolean
   maxVisibleLines?: number
   externalOffset: number
   onOffsetChange: (offset: number) => void
@@ -74,7 +77,10 @@ export function useTextInput({
   value: originalValue,
   onChange,
   onSubmit,
+  onCancel,
+  cancelOnEscape = false,
   onExit,
+  exitOnCtrlC = false,
   onExitMessage,
   onHistoryUp,
   onHistoryDown,
