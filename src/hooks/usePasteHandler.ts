@@ -10,7 +10,6 @@ import {
   tryReadImageFromPath,
 } from '../utils/imagePaste.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
-import { getPlatform } from '../utils/platform.js'
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
@@ -51,8 +50,6 @@ export function usePasteHandler({
   // reads stale pasteState.timeoutId (null) and takes the onInput path. If
   // that key is Enter, it submits the old input and the paste is lost.
   const pastePendingRef = React.useRef(false)
-
-  const isMacOS = React.useMemo(() => getPlatform() === 'macos', [])
 
   React.useEffect(() => {
     return () => {
@@ -103,7 +100,6 @@ export function usePasteHandler({
           onPaste,
           setIsPasting,
           checkClipboardForImage,
-          isMacOS,
           pastePendingRef,
         ) => {
           pastePendingRef.current = false
@@ -163,7 +159,7 @@ export function usePasteHandler({
                     onPaste(nonImageLines.join('\n'))
                   }
                   setIsPasting(false)
-                } else if (isTempScreenshot && isMacOS) {
+                } else if (isTempScreenshot) {
                   // For temporary screenshot files that no longer exist, try clipboard
                   checkClipboardForImage()
                 } else {
@@ -176,9 +172,10 @@ export function usePasteHandler({
               return { chunks: [], timeoutId: null }
             }
 
-            // If paste is empty (common when trying to paste images with Cmd+V),
-            // check if clipboard has an image (macOS only)
-            if (isMacOS && onImagePaste && pastedText.length === 0) {
+            // If paste is empty, try treating it as a clipboard image paste.
+            // Some terminals/platforms emit an empty bracketed paste sequence
+            // for image clipboard pastes rather than a file path or text.
+            if (onImagePaste && pastedText.length === 0) {
               checkClipboardForImage()
               return { chunks: [], timeoutId: null }
             }
@@ -198,11 +195,10 @@ export function usePasteHandler({
         onPaste,
         setIsPasting,
         checkClipboardForImage,
-        isMacOS,
         pastePendingRef,
       )
     },
-    [checkClipboardForImage, isMacOS, onImagePaste, onPaste],
+    [checkClipboardForImage, onImagePaste, onPaste],
   )
 
   // Paste detection is now done via the InputEvent's keypress.isPasted flag,
@@ -238,11 +234,12 @@ export function usePasteHandler({
       .flatMap(part => part.split('\n'))
       .some(line => isImageFilePath(line.trim()))
 
-    // Handle empty paste (clipboard image on macOS)
-    // When the user pastes an image with Cmd+V, the terminal sends an empty
+    // Handle empty paste (clipboard image across platforms)
+    // Some terminals send an empty bracketed paste sequence when the clipboard
+    // contains an image rather than text.
     // bracketed paste sequence. The keypress parser emits this as isPasted=true
     // with empty input.
-    if (isFromPaste && input.length === 0 && isMacOS && onImagePaste) {
+    if (isFromPaste && input.length === 0 && onImagePaste) {
       checkClipboardForImage()
       // Reset isPasting since there's no text content to process
       setIsPasting(false)

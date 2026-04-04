@@ -41,6 +41,10 @@ type GeminiPart = {
   text?: string
   thought?: boolean
   thoughtSignature?: string
+  inlineData?: {
+    mimeType: string
+    data: string
+  }
   functionCall?: {
     name?: string
     args?: Record<string, unknown>
@@ -115,26 +119,34 @@ type GeminiCliChunkEnvelope = {
   response?: GeminiChunk
 }
 
-function contentToText(content: BetaMessageParam['content']): string {
-  if (typeof content === 'string') return content
-  return content
-    .map(block => {
-      if (block.type === 'text') return typeof block.text === 'string' ? block.text : ''
-      if (block.type === 'tool_result') {
-        return typeof block.content === 'string'
-          ? block.content
-          : JSON.stringify(block.content)
-      }
-      return ''
-    })
-    .filter(Boolean)
-    .join('\n')
-}
-
 function toBlocks(content: BetaMessageParam['content']): AnyBlock[] {
   return Array.isArray(content)
     ? (content as unknown as AnyBlock[])
     : [{ type: 'text', text: content }]
+}
+
+function mapAnthropicUserBlocksToGeminiParts(blocks: AnyBlock[]): GeminiPart[] {
+  return blocks.flatMap(block => {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
+      return [{ text: sanitizeText(block.text) }]
+    }
+    if (
+      block.type === 'image' &&
+      block.source &&
+      typeof block.source === 'object' &&
+      (block.source as Record<string, unknown>).type === 'base64' &&
+      typeof (block.source as Record<string, unknown>).media_type === 'string' &&
+      typeof (block.source as Record<string, unknown>).data === 'string'
+    ) {
+      return [{
+        inlineData: {
+          mimeType: String((block.source as Record<string, unknown>).media_type),
+          data: String((block.source as Record<string, unknown>).data),
+        },
+      }]
+    }
+    return []
+  })
 }
 
 function sanitizeText(text: string): string {
@@ -218,11 +230,10 @@ export function convertAnthropicRequestToGemini(input: {
           },
         }))
 
-      const text = contentToText(
-        blocks.filter(block => block.type !== 'tool_result') as unknown as BetaMessageParam['content'],
+      const userParts = mapAnthropicUserBlocksToGeminiParts(
+        blocks.filter(block => block.type !== 'tool_result') as AnyBlock[],
       )
-      const textParts = text ? [{ text: sanitizeText(text) }] : []
-      const parts = [...toolParts, ...textParts]
+      const parts = [...toolParts, ...userParts]
       if (parts.length > 0) {
         contents.push({ role: 'user', parts })
       }

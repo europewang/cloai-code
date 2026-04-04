@@ -112,9 +112,13 @@ type OpenAIToolCall = {
   }
 }
 
+type OpenAIChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 type OpenAIChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null
+  content?: string | OpenAIChatContentPart[] | null
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
 }
@@ -142,10 +146,7 @@ export type OpenAIChatRequest = {
 type OpenAICodexInputItem =
   | {
       role: 'user'
-      content: Array<{
-        type: 'input_text'
-        text: string
-      }>
+      content: OpenAIUserInputPart[]
     }
   | {
       role: 'assistant'
@@ -169,10 +170,7 @@ type OpenAICodexInputItem =
 type OpenAIResponsesInputItem =
   | {
       role: 'user'
-      content: Array<{
-        type: 'input_text'
-        text: string
-      }>
+      content: OpenAIUserInputPart[]
     }
   | {
       role: 'assistant'
@@ -215,6 +213,16 @@ export type OpenAIResponsesRequest = {
     summary?: 'auto' | 'detailed' | 'concise' | null
   }
 }
+
+type OpenAIUserInputPart =
+  | {
+      type: 'input_text'
+      text: string
+    }
+  | {
+      type: 'input_image'
+      image_url: string
+    }
 
 type ResponsesStreamEvent =
   | CodexResponseCompletedEvent
@@ -385,26 +393,70 @@ function getActiveReasoningConfig(model: string) {
   )
 }
 
-function contentToText(content: BetaMessageParam['content']): string {
-  if (typeof content === 'string') return content
-  return content
-    .map(block => {
-      if (block.type === 'text') return typeof block.text === 'string' ? block.text : ''
-      if (block.type === 'tool_result') {
-        return typeof block.content === 'string'
-          ? block.content
-          : JSON.stringify(block.content)
-      }
-      return ''
-    })
-    .filter(Boolean)
-    .join('\n')
-}
-
 function toBlocks(content: BetaMessageParam['content']): AnyBlock[] {
   return Array.isArray(content)
     ? (content as unknown as AnyBlock[])
     : [{ type: 'text', text: content }]
+}
+
+function toDataUrl(mediaType: string, data: string): string {
+  return `data:${mediaType};base64,${data}`
+}
+
+function mapAnthropicUserBlocksToOpenAIChatContent(
+  blocks: AnyBlock[],
+): OpenAIChatContentPart[] {
+  return blocks.flatMap(block => {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
+      return [{ type: 'text', text: block.text }]
+    }
+    if (
+      block.type === 'image' &&
+      block.source &&
+      typeof block.source === 'object' &&
+      (block.source as Record<string, unknown>).type === 'base64' &&
+      typeof (block.source as Record<string, unknown>).media_type === 'string' &&
+      typeof (block.source as Record<string, unknown>).data === 'string'
+    ) {
+      return [{
+        type: 'image_url',
+        image_url: {
+          url: toDataUrl(
+            String((block.source as Record<string, unknown>).media_type),
+            String((block.source as Record<string, unknown>).data),
+          ),
+        },
+      }]
+    }
+    return []
+  })
+}
+
+function mapAnthropicUserBlocksToOpenAIInputContent(
+  blocks: AnyBlock[],
+): OpenAIUserInputPart[] {
+  return blocks.flatMap(block => {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
+      return [{ type: 'input_text', text: block.text }]
+    }
+    if (
+      block.type === 'image' &&
+      block.source &&
+      typeof block.source === 'object' &&
+      (block.source as Record<string, unknown>).type === 'base64' &&
+      typeof (block.source as Record<string, unknown>).media_type === 'string' &&
+      typeof (block.source as Record<string, unknown>).data === 'string'
+    ) {
+      return [{
+        type: 'input_image',
+        image_url: toDataUrl(
+          String((block.source as Record<string, unknown>).media_type),
+          String((block.source as Record<string, unknown>).data),
+        ),
+      }]
+    }
+    return []
+  })
 }
 
 function getToolDefinitions(tools?: BetaToolUnion[]): OpenAIChatRequest['tools'] {
@@ -480,10 +532,10 @@ export function convertAnthropicRequestToOpenAI(input: {
         })
       }
 
-      const text = contentToText(
-        blocks.filter(block => block.type !== 'tool_result') as unknown as BetaMessageParam['content'],
+      const userContent = mapAnthropicUserBlocksToOpenAIChatContent(
+        blocks.filter(block => block.type !== 'tool_result') as AnyBlock[],
       )
-      if (text) messages.push({ role: 'user', content: text })
+      if (userContent.length > 0) messages.push({ role: 'user', content: userContent })
       continue
     }
 
@@ -577,13 +629,13 @@ export function convertAnthropicRequestToOpenAICodex(input: {
         })
       }
 
-      const text = contentToText(
-        blocks.filter(block => block.type !== 'tool_result') as unknown as BetaMessageParam['content'],
+      const userContent = mapAnthropicUserBlocksToOpenAIInputContent(
+        blocks.filter(block => block.type !== 'tool_result') as AnyBlock[],
       )
-      if (text) {
+      if (userContent.length > 0) {
         codexInput.push({
           role: 'user',
-          content: [{ type: 'input_text', text }],
+          content: userContent,
         })
       }
       continue
@@ -693,13 +745,13 @@ export function convertAnthropicRequestToOpenAIResponses(input: {
         })
       }
 
-      const text = contentToText(
-        blocks.filter(block => block.type !== 'tool_result') as unknown as BetaMessageParam['content'],
+      const userContent = mapAnthropicUserBlocksToOpenAIInputContent(
+        blocks.filter(block => block.type !== 'tool_result') as AnyBlock[],
       )
-      if (text) {
+      if (userContent.length > 0) {
         responseInput.push({
           role: 'user',
-          content: [{ type: 'input_text', text }],
+          content: userContent,
         })
       }
       continue
