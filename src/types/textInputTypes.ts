@@ -82,9 +82,26 @@ export type BaseTextInputProps = {
   readonly onSubmit?: (value: string) => void
 
   /**
+   * Function to call when Escape should cancel the active input flow.
+   */
+  readonly onCancel?: () => void
+
+  /**
+   * When true, Escape cancels the active input flow instead of using the
+   * default double-escape-to-clear behavior.
+   */
+  readonly cancelOnEscape?: boolean
+
+  /**
    * Function to call when Ctrl+C is pressed to exit.
    */
   readonly onExit?: () => void
+
+  /**
+   * When true, Ctrl+C uses double-press exit behavior even when the input has
+   * content instead of clearing the field on first press.
+   */
+  readonly exitOnCtrlC?: boolean
 
   /**
    * Optional callback to show exit message
