@@ -28,7 +28,7 @@
 **典型适用场景：**
 
   * 🖥️ 在本地终端中直接调用自定义模型与 Provider。
-  * 🌐 通过 Anthropic 兼容网关或 OpenAI 兼容网关接入模型。
+  * 🌐 通过 Anthropic 兼容网关、OpenAI 兼容网关或 Gemini 兼容网关接入模型。
   * 🔐 无缝切换 API Key、OAuth 及不同 Provider 的专属鉴权模式。
   * 🧱 在无桌面环境（GUI）的服务器终端中高效完成配置与调用。
   * ⚙️ 统一集中管理配置、登录态与模型选择等行为至独立目录。
@@ -81,16 +81,73 @@
 
 -----
 
-## ✅ 已验证模型
+## ✅ 已验证模型与网关接入
 
-以下模型与接入路径的组合均已通过实际测试验证，开箱即用：
+本项目最核心的能力，就是**通过兼容网关直接接入不同模型**，而不是把模型切换逻辑外包给外围工具。
 
-| 模型名称 | 接入协议 | 推理努力 (Reasoning) | 思维链显示 |
+目前已经实际验证通过的主线路有三类：
+
+### 1\. Anthropic 兼容网关
+
+适用于提供 **Anthropic Messages / Claude 风格请求格式**的兼容服务、代理网关和第三方平台。
+
+**已验证模型：**
+
+| 模型名称 | 接入方式 | 推理努力 (Reasoning) | 思维链显示 |
 | :--- | :--- | :---: | :---: |
-| `minimax-m2.7-highspeed` | Anthropic-like | √ | √ |
-| `gpt-5.4` | OpenAI-like<br>*(支持 Chat Completions / Responses（推荐）/ OAuth)* | √ | √ |
-| `gemini-3-flash-preview` | Gemini-like | - | √ |
-| `gemini-3.1-pro-high` | Gemini-like | - | √ |
+| `minimax-m2.7-highspeed` | Anthropic-compatible gateway | √ | √ |
+
+**这一类通常可以承接的模型方向：**
+
+  * 任何被网关包装成 **Anthropic/Claude 兼容协议** 的第三方模型
+  * 各类自建中转、聚合网关、代理平台中映射成 Claude 风格 API 的模型
+  * 典型场景是：你不一定真的在调用 Anthropic 官方模型，但你可以通过 **Anthropic 兼容层**把目标模型接进 `cloaiCode`
+
+### 2\. OpenAI 兼容网关
+
+适用于提供 **Chat Completions / Responses / OAuth** 的 OpenAI 风格接口平台。这一条线路是当前最重要、也最值得详细写清楚的主线路之一。
+
+**已验证模型：**
+
+| 模型名称 | 接入方式 | 推理努力 (Reasoning) | 思维链显示 |
+| :--- | :--- | :---: | :---: |
+| `gpt-5.4` | OpenAI-compatible gateway via Chat Completions | √ | √ |
+| `gpt-5.4` | OpenAI-compatible gateway via Responses | √ | √ |
+| `gpt-5.4` | OpenAI-compatible gateway via OAuth | √ | √ |
+
+**这一类可以重点接入的模型方向：**
+
+  * `gpt-5.4`
+  * 其他被你的网关暴露为 **OpenAI Chat Completions** 接口的模型
+  * 其他被你的网关暴露为 **OpenAI Responses** 接口的模型
+  * 各类通过 OpenAI 风格 `baseURL + apiKey` 即可调用的第三方模型
+
+换句话说，只要你的平台能把目标模型包装成 **OpenAI 兼容协议**，`cloaiCode` 的目标就不是只接某一个固定模型，而是尽量把这类模型统一纳入原生选择、原生鉴权和原生路由里。
+
+### 3\. Gemini 兼容网关
+
+适用于提供 **Gemini 风格接口**或 Gemini CLI OAuth 路径的服务。这条线路现在也已经具备实际可用性，不应该被省略。
+
+**已验证模型：**
+
+| 模型名称 | 接入方式 | 推理努力 (Reasoning) | 思维链显示 |
+| :--- | :--- | :---: | :---: |
+| `gemini-3-flash-preview` | Gemini-compatible gateway | - | √ |
+| `gemini-3.1-pro-high` | Gemini-compatible gateway | - | √ |
+
+**这一类可以重点接入的模型方向：**
+
+  * `gemini-3-flash-preview`
+  * `gemini-3.1-pro-high`
+  * 其他被网关或 CLI 入口包装成 **Gemini-compatible** 请求路径的模型
+
+**一句话总结：**
+
+`cloaiCode` 当前不是只验证了“某几个模型名字”，而是已经把三条关键网关接入思路打通：
+
+  * **Anthropic 兼容网关接入第三方模型**
+  * **OpenAI 兼容网关接入第三方模型**
+  * **Gemini 兼容网关接入第三方模型**
 
 -----
 
@@ -230,8 +287,14 @@ bun link @cloai-code/cli
 ### 2\. OpenAI 兼容线路
 
   * **目标场景**：提供 Chat Completions / Responses 标准接口的平台，接入 `gpt-5.4` 等核心模型，或需要兼容 OAuth 工作流的场景。
+  * **典型模型方向**：`gpt-5.4`，以及任意被你的网关映射成 OpenAI 风格协议的第三方模型。
 
-### 3\. 相同 Provider 的多路鉴权分化
+### 3\. Gemini 兼容线路
+
+  * **目标场景**：提供 Gemini 风格接口或 Gemini CLI OAuth 工作流的平台，接入 `gemini-3-flash-preview`、`gemini-3.1-pro-high` 等模型。
+  * **特点**：适合需要接入 Gemini 系模型，但又希望统一纳入同一套 CLI 交互、配置与模型选择逻辑的场景。
+
+### 4\. 相同 Provider 的多路鉴权分化
 
 即使是同一个 Provider，只要支持多种鉴权模式，`cloaiCode` 就会在底层将其处理为**相互独立的配置实体**，绝不进行粗暴的状态混合。
 这使得“配置检查无误，但实际请求却走了错误鉴权通道”的诡异问题彻底成为历史。🔍
