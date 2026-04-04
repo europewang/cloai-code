@@ -326,6 +326,92 @@ export async function refreshOAuthToken(
   }
 }
 
+export async function refreshOpenAIOAuthToken(input: {
+  refreshToken: string
+  clientId?: string
+}): Promise<{ accessToken: string; refreshToken: string; expiresAt: number }> {
+  const clientId = input.clientId ?? OPENAI_CLIENT_ID
+  const requestBody = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: input.refreshToken,
+    client_id: clientId,
+  })
+
+  const response = await axios.post(OPENAI_TOKEN_URL, requestBody.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 15000,
+  })
+
+  if (response.status !== 200) {
+    throw new Error(`OpenAI token refresh failed: ${response.statusText}`)
+  }
+
+  const data = response.data
+  logEvent('tengu_oauth_token_refresh_success', { oauthProvider: 'openai' })
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || input.refreshToken,
+    expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000 - 5 * 60 * 1000,
+  }
+}
+
+const OPENAI_CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models'
+const OPENAI_CODEX_CLIENT_VERSION = '0.118.0'
+
+/**
+ * Extract the ChatGPT account ID from an OpenAI OAuth access token JWT.
+ */
+export function extractAccountIdFromToken(accessToken: string): string | undefined {
+  try {
+    const parts = accessToken.split('.')
+    if (parts.length !== 3) return undefined
+    const payload = JSON.parse(
+      Buffer.from(parts[1]!, 'base64url').toString('utf-8'),
+    )
+    return (
+      payload?.['https://api.openai.com/auth']?.chatgpt_account_id ??
+      undefined
+    )
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Fetch the curated Codex model list from OpenAI's backend API.
+ * Returns model slugs sorted by priority (ascending), filtered to visible + API-supported.
+ */
+export async function fetchOpenAICodexModels(input: {
+  accessToken: string
+  accountId: string
+}): Promise<string[]> {
+  const response = await axios.get(OPENAI_CODEX_MODELS_URL, {
+    params: { client_version: OPENAI_CODEX_CLIENT_VERSION },
+    headers: {
+      Authorization: `Bearer ${input.accessToken}`,
+      'ChatGPT-Account-Id': input.accountId,
+    },
+    timeout: 15000,
+  })
+
+  if (response.status !== 200) {
+    throw new Error(`Failed to fetch OpenAI Codex models: ${response.statusText}`)
+  }
+
+  const models = (response.data?.models ?? []) as Array<{
+    slug: string
+    visibility?: string
+    supported_in_api?: boolean
+    priority?: number
+  }>
+
+  return models
+    .filter(m => m.visibility === 'list' && m.supported_in_api !== false)
+    .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
+    .map(m => m.slug)
+}
+
 export async function fetchAndStoreUserRoles(
   accessToken: string,
 ): Promise<void> {

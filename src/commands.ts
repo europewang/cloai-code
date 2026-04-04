@@ -1,6 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import addDir from './commands/add-dir/index.js'
 import addModel from './commands/add-model/index.js'
+import importCodex from './commands/import-codex/index.js'
 import removeModel from './commands/remove-model/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
@@ -265,6 +266,7 @@ export const INTERNAL_ONLY_COMMANDS = [
 const COMMANDS = memoize((): Command[] => [
   addDir,
   addModel,
+  importCodex,
   removeModel,
   advisor,
   agents,

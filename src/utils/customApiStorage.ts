@@ -17,6 +17,13 @@ export type GeminiOAuthConfig = {
   email?: string
 }
 
+export type OpenAIOAuthConfig = {
+  accessToken?: string
+  refreshToken?: string
+  expiresAt?: number
+  accountId?: string
+}
+
 export type ActiveCustomApiEndpoint = {
   kind?: CompatibleProviderKind
   providerId?: string
@@ -41,7 +48,7 @@ export type ProviderConfig = {
   apiKey?: string
   models: string[]
   reasoning?: ProviderReasoningConfig
-  oauth?: GeminiOAuthConfig
+  oauth?: GeminiOAuthConfig | OpenAIOAuthConfig
 }
 
 export type CustomApiStorageData = {

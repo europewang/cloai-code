@@ -7,8 +7,85 @@ import type {
   BetaToolUnion,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import { readCustomApiStorage } from '../../utils/customApiStorage.js'
+import { type ProviderConfig, getActiveProviderConfig, readCustomApiStorage, writeCustomApiStorage } from '../../utils/customApiStorage.js'
 import { getOpenAIReasoningConfig } from '../../utils/modelReasoning.js'
+import { fetchOpenAICodexModels, refreshOpenAIOAuthToken } from '../oauth/client.js'
+
+export async function refreshOpenAIProviderOAuthIfNeeded(): Promise<ProviderConfig> {
+  const storage = readCustomApiStorage()
+  const provider = getActiveProviderConfig(storage)
+  if (!provider || provider.kind !== 'openai-like' || provider.authMode !== 'oauth') {
+    throw new Error('Active OpenAI OAuth provider not found')
+  }
+  const oauth = provider.oauth as { accessToken?: string; refreshToken?: string; expiresAt?: number; accountId?: string } | undefined
+  // No oauth metadata stored (legacy) — use apiKey as-is
+  if (!oauth?.accessToken) {
+    return provider
+  }
+  // Token still valid
+  if (!oauth.expiresAt || oauth.expiresAt > Date.now()) {
+    return provider
+  }
+  // Expired but no refresh token — use apiKey as-is (will likely 401)
+  if (!oauth.refreshToken) {
+    return provider
+  }
+
+  const refreshed = await refreshOpenAIOAuthToken({
+    refreshToken: oauth.refreshToken,
+  })
+
+  // Also refresh the model list (non-fatal if it fails)
+  let freshModels: string[] | undefined
+  if (oauth.accountId) {
+    try {
+      freshModels = await fetchOpenAICodexModels({
+        accessToken: refreshed.accessToken,
+        accountId: oauth.accountId,
+      })
+    } catch {
+      // Keep existing models
+    }
+  }
+
+  const providers = (storage.providers ?? []).map(item =>
+    item.kind === provider.kind &&
+    item.id === provider.id &&
+    item.authMode === provider.authMode
+      ? {
+          ...item,
+          apiKey: refreshed.accessToken,
+          models: freshModels ?? item.models,
+          oauth: {
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            expiresAt: refreshed.expiresAt,
+            accountId: oauth.accountId,
+          },
+        }
+      : item,
+  )
+
+  writeCustomApiStorage({
+    ...storage,
+    apiKey: refreshed.accessToken,
+    savedModels: freshModels ?? storage.savedModels,
+    providers,
+  })
+
+  // Update process env so downstream code picks up the new token
+  process.env.CLOAI_API_KEY = refreshed.accessToken
+
+  const nextProvider = providers.find(item =>
+    item.kind === provider.kind &&
+    item.id === provider.id &&
+    item.authMode === provider.authMode,
+  )
+  if (!nextProvider) {
+    throw new Error('Failed to persist refreshed OpenAI OAuth tokens')
+  }
+  return nextProvider
+}
 
 type AnyBlock = Record<string, unknown>
 
