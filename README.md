@@ -27,6 +27,9 @@
 - 支持多模态以及图像粘贴到对话框
 <img width="1872" height="643" alt="image" src="https://github.com/user-attachments/assets/d34682db-88be-49f0-af6f-c1e249f1a8fe" />
 
+注：/chat/completions不支持缓存。请确保使用/responses方式请求，才能命中缓存。支持缓存的模型：
+  * gpt-5.4, gpt-5.2, gpt-5.1-codex-max, gpt-5.1, gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5.1-chat-latest, gpt-5, gpt-5-codex, gpt-4.1
+  * 兼容`prompt_cache_key`的其他模型。
 
 ## 2026 年 4 月 3 日更新
 
