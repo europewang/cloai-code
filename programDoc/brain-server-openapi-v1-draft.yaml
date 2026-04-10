@@ -1,0 +1,738 @@
+openapi: 3.0.3
+info:
+  title: brain-server API (Draft V1)
+  version: 0.1.0-draft
+  description: >
+    cloai-code 统一治理后端 API 草案。用于冻结接口契约、字段语义与鉴权边界。
+servers:
+  - url: http://127.0.0.1:8091
+    description: local
+tags:
+  - name: Health
+  - name: Auth
+  - name: AdminUsers
+  - name: Permissions
+  - name: BrainContext
+  - name: Memory
+  - name: Sessions
+  - name: Audits
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: 进程健康检查
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/ready:
+    get:
+      tags: [Health]
+      summary: 依赖就绪检查
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '503':
+          description: Not Ready
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录并签发令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: 凭证无效
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新访问令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: 刷新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          description: refreshToken 无效
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: 获取当前登录用户信息
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: 未认证
+  /api/v1/admin/users:
+    post:
+      tags: [AdminUsers]
+      summary: 创建用户
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '403':
+          description: 越权
+  /api/v1/admin/users/{id}:
+    patch:
+      tags: [AdminUsers]
+      summary: 更新用户
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '403':
+          description: 越权
+        '404':
+          description: 用户不存在
+  /api/v1/brain/context:
+    get:
+      tags: [BrainContext]
+      summary: 获取执行前策略快照
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 策略快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrainContextResponse'
+  /api/v1/admin/permissions/datasets:
+    post:
+      tags: [Permissions]
+      summary: 授予/撤销数据集权限
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutateDatasetPermissionsRequest'
+      responses:
+        '200':
+          description: 操作结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationResult'
+  /api/v1/admin/permissions/skills:
+    post:
+      tags: [Permissions]
+      summary: 授予/撤销技能权限
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutateSkillPermissionsRequest'
+      responses:
+        '200':
+          description: 操作结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationResult'
+  /api/v1/admin/users/{id}/permissions:
+    get:
+      tags: [Permissions]
+      summary: 查询用户权限快照
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 用户权限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPermissionsResponse'
+  /api/v1/memory/self:
+    get:
+      tags: [Memory]
+      summary: 获取当前用户记忆配置
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 记忆配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemorySelfResponse'
+    put:
+      tags: [Memory]
+      summary: 更新当前用户记忆配置
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemorySelfRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemorySelfResponse'
+  /api/v1/sessions:
+    get:
+      tags: [Sessions]
+      summary: 分页查询会话
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/SessionStatus'
+      responses:
+        '200':
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSessionsResponse'
+  /api/v1/sessions/{id}:
+    get:
+      tags: [Sessions]
+      summary: 查询单会话详情
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 业务会话号 session_id
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetailResponse'
+        '404':
+          description: 会话不存在
+  /api/v1/admin/audits:
+    get:
+      tags: [Audits]
+      summary: 通用审计查询
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: traceId
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: 审计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAuditLogsResponse'
+  /api/v1/admin/audits/skills:
+    get:
+      tags: [Audits]
+      summary: 技能调用审计查询
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 技能审计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListToolCallAuditsResponse'
+  /api/v1/admin/audits/rag:
+    get:
+      tags: [Audits]
+      summary: RAG 查询审计
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: RAG 审计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRagQueryAuditsResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Role:
+      type: string
+      enum: [super_admin, admin, user]
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+    SessionStatus:
+      type: string
+      enum: [active, archived, deleted]
+    ResourceType:
+      type: string
+      enum: [DATASET, DATASET_OWNER, SKILL, MEMORY_PROFILE]
+    PermissionAction:
+      type: string
+      enum: [grant, revoke]
+    HealthResponse:
+      type: object
+      required: [status, ts]
+      properties:
+        status:
+          type: string
+          example: ok
+        ts:
+          type: string
+          format: date-time
+    ReadyResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          example: ok
+        checks:
+          type: object
+          properties:
+            postgres:
+              type: string
+              example: ok
+            redis:
+              type: string
+              example: ok
+    User:
+      type: object
+      required: [id, username, role, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        managerUserId:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+    LoginResponse:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+          description: AccessToken 过期秒数
+        user:
+          $ref: '#/components/schemas/User'
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    RefreshResponse:
+      type: object
+      required: [accessToken, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        expiresIn:
+          type: integer
+    MeResponse:
+      type: object
+      required: [id, username, role, status, profileId]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        profileId:
+          type: string
+    CreateUserRequest:
+      type: object
+      required: [username, password, role]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        role:
+          $ref: '#/components/schemas/Role'
+        managerUserId:
+          type: integer
+          format: int64
+          nullable: true
+    UpdateUserRequest:
+      type: object
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+        managerUserId:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          $ref: '#/components/schemas/UserStatus'
+    BrainContextResponse:
+      type: object
+      required: [role, profileId, allowedDatasets, allowedSkills, policyVersion]
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+        profileId:
+          type: string
+        allowedDatasets:
+          type: array
+          items:
+            type: string
+        allowedSkills:
+          type: array
+          items:
+            type: string
+        policyVersion:
+          type: string
+    MutateDatasetPermissionsRequest:
+      type: object
+      required: [userId, datasetIds, action]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        datasetIds:
+          type: array
+          items:
+            type: string
+        action:
+          $ref: '#/components/schemas/PermissionAction'
+    MutateSkillPermissionsRequest:
+      type: object
+      required: [userId, skillIds, action]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        skillIds:
+          type: array
+          items:
+            type: string
+        action:
+          $ref: '#/components/schemas/PermissionAction'
+    MutationResult:
+      type: object
+      required: [success, affected]
+      properties:
+        success:
+          type: boolean
+        affected:
+          type: integer
+    UserPermissionsResponse:
+      type: object
+      required: [userId, permissions]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        permissions:
+          type: array
+          items:
+            type: object
+            required: [resourceType, resourceId]
+            properties:
+              resourceType:
+                $ref: '#/components/schemas/ResourceType'
+              resourceId:
+                type: string
+    MemorySelfResponse:
+      type: object
+      required: [profileId, storageRoot]
+      properties:
+        profileId:
+          type: string
+        storageRoot:
+          type: string
+        summary:
+          type: string
+          nullable: true
+    UpdateMemorySelfRequest:
+      type: object
+      properties:
+        summary:
+          type: string
+        settings:
+          type: object
+          additionalProperties: true
+    SessionItem:
+      type: object
+      required: [sessionId, userId, profileId, status, lastMessageAt, createdAt]
+      properties:
+        sessionId:
+          type: string
+        userId:
+          type: integer
+          format: int64
+        profileId:
+          type: string
+        title:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        lastMessageAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    ListSessionsResponse:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionItem'
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+    SessionMessage:
+      type: object
+      required: [id, role, content, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+        tokenUsage:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    SessionDetailResponse:
+      type: object
+      required: [session, messages]
+      properties:
+        session:
+          $ref: '#/components/schemas/SessionItem'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionMessage'
+    AuditLogItem:
+      type: object
+      required: [id, traceId, action, result, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        traceId:
+          type: string
+        userId:
+          type: integer
+          format: int64
+          nullable: true
+        operatorId:
+          type: integer
+          format: int64
+          nullable: true
+        action:
+          type: string
+        resourceType:
+          type: string
+          nullable: true
+        resourceId:
+          type: string
+          nullable: true
+        result:
+          type: string
+          enum: [success, deny, fail]
+        payload:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    ListAuditLogsResponse:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogItem'
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+    ListToolCallAuditsResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+    ListRagQueryAuditsResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer

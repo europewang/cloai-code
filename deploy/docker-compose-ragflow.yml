@@ -1,0 +1,200 @@
+services:
+  es01:
+    image: elasticsearch:8.11.3
+    container_name: ragflow-es01
+    pull_policy: if_not_present
+    environment:
+      - node.name=es01
+      - ELASTIC_PASSWORD=infini_rag_flow
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - bootstrap.memory_lock=false
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - cluster.routing.allocation.disk.watermark.low=5gb
+      - cluster.routing.allocation.disk.watermark.high=3gb
+      - cluster.routing.allocation.disk.watermark.flood_stage=2gb
+    ports:
+      - "1200:9200"
+    volumes:
+      - ragflow_esdata01:/usr/share/elasticsearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD-SHELL", "curl http://localhost:9200"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    networks:
+      - ragflow
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0.39
+    container_name: ragflow-mysql
+    pull_policy: if_not_present
+    environment:
+      - MYSQL_ROOT_PASSWORD=infini_rag_flow
+    command:
+      - --max_connections=1000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --tls_version=TLSv1.2,TLSv1.3
+      - --binlog_expire_logs_seconds=604800
+    ports:
+      - "3307:3306"
+    volumes:
+      - ragflow_mysql_data:/var/lib/mysql
+    networks:
+      - ragflow
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pinfini_rag_flow"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-06-13T11-33-47Z
+    container_name: ragflow-minio
+    pull_policy: if_not_present
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      - MINIO_ROOT_USER=rag_flow
+      - MINIO_ROOT_PASSWORD=infini_rag_flow
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    volumes:
+      - ragflow_minio_data:/data
+    networks:
+      - ragflow
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  redis:
+    image: valkey/valkey:8
+    container_name: ragflow-redis
+    pull_policy: if_not_present
+    command: ["redis-server", "--requirepass", "infini_rag_flow", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6381:6379"
+    volumes:
+      - ragflow_redis_data:/data
+    networks:
+      - ragflow
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "infini_rag_flow", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  ragflow:
+    image: infiniflow/ragflow:v0.23.1
+    container_name: ragflow-server
+    pull_policy: if_not_present
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      es01:
+        condition: service_healthy
+    environment:
+      - TIMEZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
+      - ELASTIC_PASSWORD=infini_rag_flow
+      - MYSQL_PASSWORD=infini_rag_flow
+      - MYSQL_HOST=mysql
+      - MYSQL_DBNAME=rag_flow
+      - MYSQL_PORT=3306
+      - MINIO_USER=rag_flow
+      - MINIO_PASSWORD=infini_rag_flow
+      - MINIO_HOST=minio
+      - MINIO_PORT=9000
+      - REDIS_PASSWORD=infini_rag_flow
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ES_HOST=es01
+      - ES_PORT=9200
+    ports:
+      - "8084:80"
+      - "443:443"
+    volumes:
+      - ragflow_logs:/ragflow/logs
+      - ragflow_history_data_agent:/ragflow/history_data_agent
+      - ./nginx/ragflow.conf:/etc/nginx/sites-enabled/default
+    networks:
+      - ragflow
+    restart: on-failure
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ragflow-backend
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - PROCESSOR_MODE=rag
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=infini_rag_flow
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_DATA_REDIS_PASSWORD=infini_rag_flow
+      - LLM_BASE_URL=http://host.docker.internal:8085/v1
+      - LLM_MODEL=deepseek-r1-distill-qwen-14b
+      - RAGFLOW_BASE_URL=http://ragflow-server:80
+      - RAGFLOW_API_KEY=ragflow-rKofJZKLNgh_2Pv9A-0y_3sUbC9MIOkw9n99Cl5hvc4
+      - ROUTER_LOCAL_ROUTER_ENABLED=true
+      - TZ=Asia/Shanghai
+    ports:
+      - "8083:8083"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ragflow:
+        condition: service_started
+    networks:
+      - ragflow
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: ragflow-frontend
+    ports:
+      - "8086:80"
+    depends_on:
+      - backend
+    networks:
+      - ragflow
+    restart: unless-stopped
+
+networks:
+  ragflow:
+    name: ragflow_ragflow
+    driver: bridge
+
+volumes:
+  ragflow_esdata01:
+  ragflow_mysql_data:
+  ragflow_minio_data:
+  ragflow_redis_data:
+  ragflow_logs:
+  ragflow_history_data_agent:

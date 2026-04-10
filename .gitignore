@@ -16,3 +16,6 @@ coverage/
 .claude/
 .idea/
 .vscode/
+
+# brain-server local secrets
+.env.brain

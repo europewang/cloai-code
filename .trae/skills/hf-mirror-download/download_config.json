@@ -1,0 +1,18 @@
+{
+  "deepseek-r1-distill-qwen-14b": {
+    "repo_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+    "download_dir": "./models/deepseek-r1-distill-qwen-14b",
+    "allow_patterns": ["*"]
+  },
+  "bge-reranker-v2-m3": {
+    "repo_id": "BAAI/bge-reranker-v2-m3",
+    "download_dir": "./models/bge-reranker-v2-m3",
+    "allow_patterns": ["*"]
+  },
+  "bge-m3": {
+    "repo_id": "BAAI/bge-m3",
+    "download_dir": "./models/bge-m3",
+    "allow_patterns": ["*"],
+    "ignore_patterns": ["*.DS_Store"]
+  }
+}

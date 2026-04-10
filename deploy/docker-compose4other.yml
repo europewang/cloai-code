@@ -1,0 +1,203 @@
+services:
+  # ==========================================
+  # 1. 业务应用 (Application)
+  # ==========================================
+  ai-tender-app:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ai-tender-app
+    ports:
+      - "8080:8083"
+    environment:
+      - VECTOR_PROVIDER=milvus
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ai_tender_db
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=postgres
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_DATA_REDIS_PASSWORD=
+      - LLM_BASE_URL=http://host.docker.internal:8085/v1
+      - LLM_MODEL=deepseek-r1-distill-qwen-14b
+      - MILVUS_HOST=milvus-standalone
+      - MILVUS_PORT=19530
+    depends_on:
+      - postgres
+      - redis
+      - milvus-standalone
+    networks:
+      - ai-tender-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ==========================================
+  # 2. Debug应用实例 (Debug Application)
+  # ==========================================
+  ai-tender-app-debug:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ai-tender-app-debug
+    ports:
+      - "8081:8083"  # 使用不同的业务端口
+      - "5005:5005"  # Debug端口
+    environment:
+      - VECTOR_PROVIDER=milvus
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ai_tender_db
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=postgres
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_DATA_REDIS_PASSWORD=
+      - LLM_BASE_URL=http://host.docker.internal:8085/v1
+      - LLM_MODEL=deepseek-r1-distill-qwen-14b
+      - MILVUS_HOST=milvus-standalone
+      - MILVUS_PORT=19530
+    entrypoint: ["java", "-jar", "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005", "app.jar"]
+    depends_on:
+      - postgres
+      - redis
+      - milvus-standalone
+    networks:
+      - ai-tender-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ==========================================
+  # 3. 辅助服务 (Sidecar Services)
+  # ==========================================
+  ocr-service:
+    build:
+      context: ../ocr-service
+      dockerfile: Dockerfile
+    container_name: mineru-app
+    gpus: all
+    environment:
+      - MINERU_MODEL_SOURCE=local
+      - MINERU_TOOLS_CONFIG_JSON=/root/.cache/modelscope/mineru.json
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ../ocr-service/models:/root/.cache/modelscope
+      - ../ocr-service/output:/app/output
+      - ../ocr-service/input:/app/input
+      - ../ocr-service:/app
+    ports:
+      - "7860:7860"
+      - "8005:8005"
+    command: /bin/bash -c "cd /app && uvicorn app:app --host 0.0.0.0 --port 8005"
+    networks:
+      - ai-tender-net
+
+  # ==========================================
+  # 2. 基础设施 (Infrastructure)
+  # ==========================================
+  
+  # 2.1 关系型数据库 (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    pull_policy: if_not_present
+    container_name: ai-tender-postgres
+    environment:
+      - POSTGRES_DB=ai_tender_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ai-tender-net
+
+  redis:
+    image: valkey/valkey:8
+    pull_policy: if_not_present
+    container_name: ai-tender-redis
+    networks:
+      - ai-tender-net
+
+  # 2.2 向量数据库 (Milvus Standalone)
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    pull_policy: if_not_present
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - ai-tender-net
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    pull_policy: if_not_present
+    environment:
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    networks:
+      - ai-tender-net
+
+  milvus-standalone:
+    image: milvusdb/milvus:v2.3.4
+    pull_policy: if_not_present
+    container_name: ai-tender-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - etcd
+      - minio
+    networks:
+      - ai-tender-net
+
+  # 2.3 模型推理服务 (vLLM - Placeholder)
+  # 注意: vLLM 需要 GPU 支持，此处仅为示例配置
+  # vllm-server:
+  #   image: vllm/vllm-openai:latest
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #   environment:
+  #     - HUGGING_FACE_HUB_TOKEN=<YOUR_TOKEN>
+  #   command: --model Qwen/Qwen1.5-7B-Chat --quantization awq
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   networks:
+  #     - ai-tender-net
+
+networks:
+  ai-tender-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  etcd_data:
+  minio_data:
+  milvus_data:

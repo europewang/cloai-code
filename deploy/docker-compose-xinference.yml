@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  xinference:
+    image: xprobe/xinference:latest
+    container_name: xinference
+    ports:
+      - "8085:8085"
+    volumes:
+      # Map local models directory to container
+      - ../models:/models
+      # Persist Xinference internal data (logs, other cache)
+      - xinference-home:/root/.xinference
+    environment:
+      - XINFERENCE_HOME=/root/.xinference
+      # Set huggingface mirror just in case
+      - HF_ENDPOINT=https://hf-mirror.com
+    command: xinference-local -H 0.0.0.0 -p 8085
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - ragflow_network
+    restart: always
+
+networks:
+  ragflow_network:
+    external: true
+    name: ragflow_ragflow
+
+volumes:
+  xinference-home:

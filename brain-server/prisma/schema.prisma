@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  super_admin
+  admin
+  user
+}
+
+enum UserStatus {
+  active
+  disabled
+}
+
+enum ResourceType {
+  DATASET
+  DATASET_OWNER
+  SKILL
+  MEMORY_PROFILE
+}
+
+enum AuditResult {
+  success
+  deny
+  fail
+}
+
+enum FileCategory {
+  input
+  output
+}
+
+model User {
+  id            BigInt     @id @default(autoincrement())
+  username      String     @unique @db.VarChar(128)
+  passwordHash  String     @map("password_hash") @db.VarChar(255)
+  role          Role
+  managerUserId BigInt?    @map("manager_user_id")
+  status        UserStatus @default(active)
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  manager      User?  @relation("UserManager", fields: [managerUserId], references: [id])
+  subordinates User[] @relation("UserManager")
+  permissions  Permission[]
+  memoryProfile MemoryProfile?
+  auditSubject AuditLog[] @relation("AuditSubject")
+  auditOperator AuditLog[] @relation("AuditOperator")
+  fileAssets    FileAsset[]
+
+  @@index([role], map: "idx_users_role")
+  @@index([managerUserId], map: "idx_users_manager")
+  @@map("users")
+}
+
+model MemoryProfile {
+  id          BigInt   @id @default(autoincrement())
+  profileId   String   @unique @map("profile_id") @db.VarChar(128)
+  userId      BigInt   @unique @map("user_id")
+  storageRoot String   @map("storage_root") @db.VarChar(512)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("memory_profiles")
+}
+
+model Permission {
+  id           BigInt       @id @default(autoincrement())
+  userId       BigInt       @map("user_id")
+  resourceType ResourceType @map("resource_type")
+  resourceId   String       @map("resource_id") @db.VarChar(128)
+  grantedBy    BigInt       @map("granted_by")
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, resourceType, resourceId], map: "uk_perm_user_type_res")
+  @@index([userId], map: "idx_perm_user")
+  @@index([resourceType, resourceId], map: "idx_perm_res")
+  @@map("permissions")
+}
+
+model AuditLog {
+  id           BigInt      @id @default(autoincrement())
+  traceId      String      @map("trace_id") @db.VarChar(128)
+  userId       BigInt?     @map("user_id")
+  operatorId   BigInt?     @map("operator_id")
+  action       String      @db.VarChar(128)
+  resourceType String?     @map("resource_type") @db.VarChar(64)
+  resourceId   String?     @map("resource_id") @db.VarChar(128)
+  result       AuditResult
+  payloadJson  Json?       @map("payload_json")
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  subjectUser  User? @relation("AuditSubject", fields: [userId], references: [id])
+  operatorUser User? @relation("AuditOperator", fields: [operatorId], references: [id])
+
+  @@index([traceId], map: "idx_audit_trace")
+  @@index([userId, createdAt], map: "idx_audit_user_time")
+  @@index([action, createdAt], map: "idx_audit_action_time")
+  @@map("audit_logs")
+}
+
+model FileAsset {
+  id          String       @id @db.VarChar(64)
+  ownerUserId BigInt       @map("owner_user_id")
+  storagePath String       @map("storage_path") @db.VarChar(1024)
+  fileName    String       @map("file_name") @db.VarChar(255)
+  mimeType    String?      @map("mime_type") @db.VarChar(128)
+  sizeBytes   BigInt       @map("size_bytes")
+  sha256Hex   String?      @map("sha256_hex") @db.VarChar(64)
+  category    FileCategory
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  ownerUser User @relation(fields: [ownerUserId], references: [id])
+
+  @@index([ownerUserId, createdAt], map: "idx_file_assets_owner_time")
+  @@index([category, createdAt], map: "idx_file_assets_category_time")
+  @@map("file_assets")
+}
