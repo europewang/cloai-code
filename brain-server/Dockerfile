@@ -11,6 +11,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 FROM deps AS build
 WORKDIR /app
+ARG BUILD_STAMP=dev
+RUN echo "$BUILD_STAMP" > /tmp/build_stamp
 COPY tsconfig.json ./
 COPY prisma ./prisma
 COPY src ./src

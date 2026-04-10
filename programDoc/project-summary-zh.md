@@ -69,6 +69,7 @@
    - 文件网关：`files/upload`、`files/{id}/download`、`skills/indicator-verification/run`，元数据已落库到 `file_assets`
    - 文件存储：支持 `local/s3` 双后端，已验证 MinIO（复用 RagFlow MinIO）
    - 文件哈希：`upload` 返回 `sha256Hex`，`file_assets` 已存储哈希字段
+   - 运维脚本：已补 `backfill-file-sha256` 与 `maintenance-tick`
 3. 当前约束：
    - `admin` 仅可管理“自己 + 直属 user”。
    - 资源授权默认拒绝，需显式授予。
@@ -79,6 +80,7 @@
    - 指标校核技能：通过“上传文件 -> 运行技能 -> 下载结果”链路验证成功，可产出 JSON/DXF/Excel 三类结果。
    - 部署约束：已按“仅启动本项目 brain + ragflow”执行，无关容器保持未启动。
    - 对象清理：`ops:cleanup-s3-orphans` 脚本可扫描并清理无引用对象（当前扫描 6，删除 0）。
+   - 哈希回填：历史记录回填脚本可执行，当前识别出 4 条 local 路径记录并安全跳过（s3 模式）。
 
 ## 8. 技能挂载机制说明
 

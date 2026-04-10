@@ -8,7 +8,9 @@
     "start": "prisma migrate deploy && bun run seed:admin && node dist/index.js",
     "build": "prisma generate && tsc -p tsconfig.json",
     "seed:admin": "node dist/scripts/seedAdmin.js",
-    "ops:cleanup-s3-orphans": "node dist/scripts/cleanupOrphanS3Objects.js"
+    "ops:cleanup-s3-orphans": "node dist/scripts/cleanupOrphanS3Objects.js",
+    "ops:backfill-file-sha256": "node dist/scripts/backfillFileSha256.js",
+    "ops:maintenance-tick": "node dist/scripts/maintenanceTick.js"
   },
   "dependencies": {
     "@prisma/client": "^6.6.0",
