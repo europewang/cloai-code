@@ -1,0 +1,69 @@
+services:
+  brain-server:
+    build:
+      context: ../brain-server
+      dockerfile: Dockerfile
+    container_name: ai4kb-brain-server
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    env_file:
+      - ../.env.brain
+    environment:
+      - NODE_ENV=production
+      - PORT=8091
+      - DATABASE_URL=postgresql://postgres:postgres@brain-postgres:5432/ai4kb_brain
+      - REDIS_URL=redis://brain-redis:6379
+    depends_on:
+      brain-postgres:
+        condition: service_healthy
+      brain-redis:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../skills/cad_text_extractor:/opt/skills/cad_text_extractor:ro
+    networks:
+      - ai4kb-brain-net
+
+  brain-postgres:
+    image: postgres:15-alpine
+    pull_policy: if_not_present
+    container_name: ai4kb-brain-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=ai4kb_brain
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai4kb_brain"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - brain_postgres_data:/var/lib/postgresql/data
+    networks:
+      - ai4kb-brain-net
+
+  brain-redis:
+    image: valkey/valkey:8
+    pull_policy: if_not_present
+    container_name: ai4kb-brain-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    command: ["valkey-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - brain_redis_data:/data
+    networks:
+      - ai4kb-brain-net
+
+networks:
+  ai4kb-brain-net:
+    driver: bridge
+
+volumes:
+  brain_postgres_data:
+  brain_redis_data:

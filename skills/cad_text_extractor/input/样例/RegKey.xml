@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="GB2312" standalone="yes" ?>
+<Software>
+    <SouthSurvey>
+        <Cass>
+            <bdc_isSimple type="4">0</bdc_isSimple>
+            <bdc_label_jgrq type="4">1</bdc_label_jgrq>
+            <bdc_label_zh type="4">0</bdc_label_zh>
+            <bdc_label_zmc type="4">0</bdc_label_zmc>
+            <bdc_label_zqlr type="4">0</bdc_label_zqlr>
+            <cs_qm type="1"></cs_qm>
+            <cuncode type="1">111</cuncode>
+            <gzwTZM type="1">无定着物(W)</gzwTZM>
+            <Jiedao type="1">111</Jiedao>
+            <Jiefang type="1">111</Jiefang>
+            <ncdj_ds type="4">1</ncdj_ds>
+            <ncdj_dx type="4">0</ncdj_dx>
+            <ncdj_fwlx type="1">1</ncdj_fwlx>
+            <ncdj_fwxz type="1">0</ncdj_fwxz>
+            <ncdj_fwyt type="1">112</ncdj_fwyt>
+            <ncdj_isSimple type="1">实测</ncdj_isSimple>
+            <ncdj_jg type="1">1</ncdj_jg>
+            <ncdj_tzm type="1">F</ncdj_tzm>
+            <OA_OPEN_FILE_PATH type="1"></OA_OPEN_FILE_PATH>
+            <quanshu type="1">国家土地（海域）所有权(G)</quanshu>
+            <Quhao type="1">111111</Quhao>
+            <xiangzhen type="1">111</xiangzhen>
+            <xianqu type="1">111111</xianqu>
+            <zongdicode type="1">00001</zongdicode>
+            <zongdidilei type="1">0101</zongdidilei>
+            <zongdiname type="1">111</zongdiname>
+            <zongdiTZM type="1">建设用地使用权宗地（地表）(B)</zongdiTZM>
+        </Cass>
+    </SouthSurvey>
+</Software>
