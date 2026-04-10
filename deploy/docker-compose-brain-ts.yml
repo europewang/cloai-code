@@ -3,6 +3,8 @@ services:
     build:
       context: ../brain-server
       dockerfile: Dockerfile
+      args:
+        BUILD_STAMP: ${BUILD_STAMP:-dev}
     container_name: ai4kb-brain-server
     restart: unless-stopped
     ports:
@@ -23,6 +25,37 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../skills/cad_text_extractor:/opt/skills/cad_text_extractor:ro
+    networks:
+      - ai4kb-brain-net
+
+  brain-maintenance:
+    image: deploy-brain-server
+    container_name: ai4kb-brain-maintenance
+    restart: unless-stopped
+    profiles: ["maintenance"]
+    env_file:
+      - ../.env.brain
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres@brain-postgres:5432/ai4kb_brain
+      - REDIS_URL=redis://brain-redis:6379
+    depends_on:
+      brain-postgres:
+        condition: service_healthy
+      brain-redis:
+        condition: service_started
+      brain-server:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        while true; do
+          node dist/scripts/maintenanceTick.js || true
+          sleep 1800
+        done
     networks:
       - ai4kb-brain-net
 

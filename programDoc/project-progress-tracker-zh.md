@@ -118,6 +118,10 @@
    - 已执行“先停全部容器，再仅启动 brain + ragflow”，无关容器保持停止。
 8. 对象清理：
    - 新增 `ops:cleanup-s3-orphans`，可清理 MinIO/S3 中无 DB 引用对象。
+9. 维护任务：
+   - 新增 `ops:backfill-file-sha256`（历史哈希回填）
+   - 新增 `ops:maintenance-tick`（回填 + 清理组合执行）
+   - 新增可选容器 `brain-maintenance`（`profile=maintenance`）
 
 ## 4. 待完成内容（Todo）
 
@@ -150,11 +154,11 @@
 1. 审计细分表尚未接入，不满足工具与检索明细追踪要求。
 2. 目前接口测试主要是脚本回归，自动化测试覆盖仍不足。
 3. RagFlow 目前仅做可用性探测，尚未接入受控检索调用链路。
-3. 仍需补“历史存量文件回填哈希”与自动化周期清理任务（当前为手动脚本）。
+3. 当前 `brain-maintenance` 为可选 profile，尚未默认启用自动化周期调度。
 
 ## 6. 下一步建议（按顺序）
 
 1. 扩展 `permissions` 到 `DATASET_OWNER`、`MEMORY_PROFILE` 两类资源。
 2. 落地 `tool_call_audits`、`rag_query_audits` 两张细分审计表。
-3. 增加历史 `file_assets` 的 `sha256` 回填任务与定时清理作业。
+3. 决定是否在生产默认开启 `brain-maintenance` 定时任务（30 分钟一轮）。
 4. 增加最小 API 回归测试脚本集合（登录、鉴权、权限边界、上下文返回）。

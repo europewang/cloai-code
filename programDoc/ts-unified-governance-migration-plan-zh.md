@@ -965,3 +965,17 @@ erDiagram
 4. 验证结果：
    - 新上传文件已带 `sha256Hex`。
    - 清理脚本执行成功（样例：`scanned=6/deleted=0`）。
+
+### 17.21 回填与定时维护入口（2026-04-10）
+
+1. 已新增脚本：
+   - `ops:backfill-file-sha256`
+   - `ops:maintenance-tick`（串行执行回填 + 清理）
+2. 回填策略：
+   - 单次扫描最多 5000 条 `sha256_hex IS NULL` 记录。
+   - 在 `s3` 模式下，遇到历史 local 绝对路径记录将安全跳过（不计失败）。
+3. 编排增强：
+   - `docker-compose-brain-ts.yml` 新增可选服务 `brain-maintenance`（`profile=maintenance`），默认每 30 分钟执行一次 maintenance tick。
+4. 当前验证结果：
+   - `maintenance-tick` 执行成功并输出结构化结果；
+   - 当前样例结果：回填 `scanned=4, updated=0, skipped=4, failed=0`；清理 `scanned=6, deleted=0`。

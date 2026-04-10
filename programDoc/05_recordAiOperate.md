@@ -238,3 +238,13 @@
 - 风险与处理：历史文件记录尚无哈希值，当前仅新写入对象带哈希；后续需补回填任务。
 - 验证结果：新上传文件返回 `sha256Hex` 且入库；清理脚本执行成功（`scanned=6/deleted=0`）。
 - 下步计划：增加“历史文件哈希回填”脚本与定时清理任务（cron）。
+
+## 迭代记录 2026-04-10（历史哈希回填 + maintenance tick）
+
+- 目标：把“历史哈希回填 + 孤儿清理”串成可周期运行的维护入口。
+- 变更范围：新增 `backfillFileSha256.ts`、`maintenanceTick.ts`；新增 npm scripts：`ops:backfill-file-sha256`、`ops:maintenance-tick`；compose 新增可选 `brain-maintenance` 服务（profile 模式）。
+- 关键文件：`brain-server/src/scripts/backfillFileSha256.ts`、`brain-server/src/scripts/maintenanceTick.ts`、`brain-server/package.json`、`deploy/docker-compose-brain-ts.yml`、`brain-server/Dockerfile`
+- 接口影响：无新增业务接口，属于运维能力增强。
+- 风险与处理：历史数据存在 local 路径记录，在 s3 模式回填会失败；已改为“安全跳过并统计 skipped”，避免误报失败。
+- 验证结果：`maintenance-tick` 在容器内执行成功，输出 `backfill(scanned=4,updated=0,skipped=4,failed=0)` + `cleanup(scanned=6,deleted=0)`。
+- 下步计划：补一个“迁移 local 路径对象到 MinIO 后自动回填哈希”的迁移脚本，彻底消除 skipped 项。
