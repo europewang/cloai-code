@@ -8,9 +8,13 @@
     "start": "prisma migrate deploy && bun run seed:admin && node dist/index.js",
     "build": "prisma generate && tsc -p tsconfig.json",
     "seed:admin": "node dist/scripts/seedAdmin.js",
-    "ops:cleanup-s3-orphans": "node dist/scripts/cleanupOrphanS3Objects.js",
-    "ops:backfill-file-sha256": "node dist/scripts/backfillFileSha256.js",
-    "ops:maintenance-tick": "node dist/scripts/maintenanceTick.js"
+    "ops:cleanup-s3-orphans": "bun dist/scripts/cleanupOrphanS3Objects.js",
+    "ops:backfill-file-sha256": "bun dist/scripts/backfillFileSha256.js",
+    "ops:migrate-local-assets-to-s3": "bun dist/scripts/migrateLocalAssetsToS3.js",
+    "ops:maintenance-tick": "bun dist/scripts/maintenanceTick.js",
+    "ops:smoke-admin-file-status": "bun dist/scripts/smokeAdminFileStatusApis.js",
+    "test:e2e-governance": "python3 test/run_governance_e2e.py",
+    "test:e2e-all": "python3 test/run_governance_e2e.py && bun dist/scripts/smokeAdminFileStatusApis.js"
   },
   "dependencies": {
     "@prisma/client": "^6.6.0",

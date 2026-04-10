@@ -5,6 +5,7 @@ const execFileAsync = promisify(execFile)
 
 async function main() {
   const tasks = [
+    { name: 'migrate-local-assets-to-s3', file: 'dist/scripts/migrateLocalAssetsToS3.js' },
     { name: 'backfill-file-sha256', file: 'dist/scripts/backfillFileSha256.js' },
     { name: 'cleanup-s3-orphans', file: 'dist/scripts/cleanupOrphanS3Objects.js' },
   ]
@@ -12,7 +13,7 @@ async function main() {
 
   for (const task of tasks) {
     try {
-      const { stdout, stderr } = await execFileAsync('node', [task.file], { timeout: 10 * 60 * 1000 })
+      const { stdout, stderr } = await execFileAsync('bun', [task.file], { timeout: 10 * 60 * 1000 })
       result.push({
         task: task.name,
         ok: true,

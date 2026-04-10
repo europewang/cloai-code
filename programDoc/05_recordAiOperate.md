@@ -248,3 +248,123 @@
 - 风险与处理：历史数据存在 local 路径记录，在 s3 模式回填会失败；已改为“安全跳过并统计 skipped”，避免误报失败。
 - 验证结果：`maintenance-tick` 在容器内执行成功，输出 `backfill(scanned=4,updated=0,skipped=4,failed=0)` + `cleanup(scanned=6,deleted=0)`。
 - 下步计划：补一个“迁移 local 路径对象到 MinIO 后自动回填哈希”的迁移脚本，彻底消除 skipped 项。
+
+## 迭代记录 2026-04-10（local->s3 存量迁移脚本）
+
+- 目标：将历史 `file_assets` 中 local 路径记录迁移到 MinIO/S3，减少回填 skipped。
+- 变更范围：新增 `migrateLocalAssetsToS3.ts` 与 npm script `ops:migrate-local-assets-to-s3`；并把该任务接入 `maintenance-tick` 第一阶段执行。
+- 关键文件：`brain-server/src/scripts/migrateLocalAssetsToS3.ts`、`brain-server/src/scripts/maintenanceTick.ts`、`brain-server/package.json`
+- 接口影响：无新增业务接口，属于运维迁移能力增强。
+- 风险与处理：迁移时发现历史 local 文件已缺失；脚本将其归类为 `missing`，不计 `failed`，避免误导告警。
+- 验证结果：容器内执行结果 `scanned=4, migrated=0, missing=4, failed=0`，并输出 `migrate-missing` 明细日志。
+- 下步计划：定义 missing 记录处置策略（标记失效/清理记录/人工回补），并据策略实现自动化处置脚本。
+
+## 迭代记录 2026-04-10（missing 文件自动处置第一版）
+
+- 目标：把历史 local 丢失文件从“日志提示”升级为“数据库显式状态 + 业务链路硬保护”。
+- 变更范围：`file_assets` 增加 `status/status_reason/status_updated_at` 字段；`migrateLocalAssetsToS3` 在 ENOENT 时自动标记 `missing`；下载与指标校核接口拒绝 `missing` 文件。
+- 关键文件：`brain-server/prisma/schema.prisma`、`brain-server/prisma/migrations/20260410_add_file_assets_status/migration.sql`、`brain-server/src/scripts/migrateLocalAssetsToS3.ts`、`brain-server/src/server.ts`、`brain-server/src/scripts/backfillFileSha256.ts`、`brain-server/src/scripts/cleanupOrphanS3Objects.ts`
+- 接口影响：`GET /api/v1/files/{fileId}/download` 与 `POST /api/v1/skills/indicator-verification/run` 在命中缺失资产时返回 `410`，避免继续读取脏记录。
+- 风险与处理：初版将 Prisma 字段定义为 enum 导致运行时 PG 类型不一致（`public.FileAssetStatus` 不存在）；已改为 `VARCHAR(32)` 与迁移 SQL 保持一致，恢复稳定。
+- 验证结果：`bun run build` 通过；`docker compose ... up -d --build brain-server` 成功；`docker exec ai4kb-brain-server node dist/scripts/maintenanceTick.js` 成功，输出 `migrate missing=4 / backfill scanned=0 / cleanup deleted=0`。
+- 下步计划：补管理端 `missing` 查询与人工回补回切流程（`missing -> active`），并考虑增加批量处置接口。
+
+## 迭代记录 2026-04-10（missing 资产管理接口补齐）
+
+- 目标：把“missing 资产处置”从脚本侧扩展到管理接口，支持查询和手动状态回切。
+- 变更范围：新增 `GET /api/v1/admin/files`（筛选查询）与 `POST /api/v1/admin/files/{fileId}/status`（状态更新）；`admin` 范围限制为自己+直属用户。
+- 关键文件：`brain-server/src/server.ts`、`programDoc/project-progress-tracker-zh.md`、`programDoc/project-summary-zh.md`、`programDoc/ts-unified-governance-migration-plan-zh.md`
+- 接口影响：管理端可按 `status/category/ownerUserId` 检索文件资产；状态可手动改为 `missing/active`，并记录 `statusReason`。
+- 风险与处理：为避免误回切 `active`，接口在回切前先读对象做可用性检查，不可读返回 `409`。
+- 验证结果：本地实测 `login=200`、`list_missing=200`、`mark_missing=200`；对缺失对象 `mark_active=409` 且返回“对象不可读”错误，符合预期。
+- 下步计划：补“批量状态更新 + 导出 missing 列表”能力，并增加最小 API 回归脚本。
+
+## 迭代记录 2026-04-10（missing 资产批量处置与导出）
+
+- 目标：补齐 missing 管理闭环的批量维护与导出能力，降低手工处理成本。
+- 变更范围：新增 `POST /api/v1/admin/files/status/batch` 与 `GET /api/v1/admin/files/export`；批量更新支持最多 200 条，导出默认输出 missing CSV（最多 5000 条）。
+- 关键文件：`brain-server/src/server.ts`、`programDoc/project-progress-tracker-zh.md`、`programDoc/project-summary-zh.md`、`programDoc/ts-unified-governance-migration-plan-zh.md`
+- 接口影响：管理端可一次性批量标记状态，并直接下载 CSV 用于线下排查与交付对账。
+- 风险与处理：批量回切 `active` 场景逐条校验对象可读；不可读记录进入 `errors` 返回，不会误更新。
+- 验证结果：实测 `batch_missing=200` 且 `updated=2`，`export_missing=200`，响应头为 `text/csv` 且内容包含 missing 资产清单。
+- 下步计划：补最小自动化回归脚本（覆盖文件状态查询、单条更新、批量更新、导出四类接口）。
+
+## 迭代记录 2026-04-10（文件状态接口最小自动化回归脚本）
+
+- 目标：将文件状态管理接口从“手工验证”升级为“一键可重复冒烟验证”。
+- 变更范围：新增 `brain-server/src/scripts/smokeAdminFileStatusApis.ts`，并在 `package.json` 增加 `ops:smoke-admin-file-status` 脚本。
+- 关键文件：`brain-server/src/scripts/smokeAdminFileStatusApis.ts`、`brain-server/package.json`
+- 接口影响：无新增业务接口；新增运维侧回归验证入口。
+- 风险与处理：脚本默认只对 `missing` 资产做幂等更新（设为 `missing`），避免误改生产状态；当无 `missing` 数据时自动跳过更新校验并输出提示。
+- 验证结果：`bun run build` 通过；`bun run ops:smoke-admin-file-status` 返回 `ok=true`，四类检查（查询/单条/批量/导出）均 200。
+- 下步计划：将该脚本接入维护容器的定时任务或 CI 触发任务，形成持续回归。
+
+## 迭代记录 2026-04-10（维护容器接入周期化 smoke 回归）
+
+- 目标：把 `ops:smoke-admin-file-status` 从“手动执行”升级为维护容器周期化自动执行。
+- 变更范围：`brain-maintenance` 命令链路改为“`maintenanceTick` 后自动 smoke”；新增环境参数 `MAINTENANCE_ENABLE_SMOKE/MAINTENANCE_INTERVAL_SECONDS`；维护容器内 `BRAIN_BASE_URL` 指向 `http://brain-server:8091`。
+- 关键文件：`deploy/docker-compose-brain-ts.yml`、`brain-server/src/scripts/maintenanceTick.ts`、`brain-server/src/scripts/smokeAdminFileStatusApis.ts`、`brain-server/package.json`、`.env.brain.example`
+- 接口影响：无新增业务接口；增强了运行时回归保障与日志告警可观测性。
+- 风险与处理：首次联调发现容器内无 `node` 命令，已统一改为 `bun` 执行；并增加 smoke 请求重试，降低服务刚启动时的误报。
+- 验证结果：重启维护容器后，最新一轮日志显示 `maintenanceTick` 成功，随后 smoke 输出 `ok=true`（`login/list/single/batch/export` 全 200）。
+- 下步计划：将 `[ALERT]` 关键字接入现有日志平台告警规则，补通知通道（企业微信/钉钉）。
+
+## 迭代记录 2026-04-10（调整：webhook 告警暂缓 + 继续推进权限扩展）
+
+- 目标：根据用户要求，将 webhook 主动通知改为 `IGNORED_TODO`，并继续推进后续高优先级任务。
+- 变更范围：撤回 `sendAlertWebhook` 脚本与 npm script；新增 `MEMORY_PROFILE` 授权接口与上下文返回字段。
+- 关键文件：`brain-server/src/server.ts`、`brain-server/package.json`、`programDoc/project-progress-tracker-zh.md`、`programDoc/project-summary-zh.md`、`programDoc/ts-unified-governance-migration-plan-zh.md`
+- 接口影响：新增 `POST /api/v1/admin/permissions/memory-profiles`；`GET /api/v1/brain/context` 新增 `allowedMemoryProfiles`。
+- 风险与处理：容器重建时再次遇到 pip 外网不可达；当前以本地构建通过为准，运行态验证待网络恢复后补一次容器回归。
+- 验证结果：`bun run build` 成功，`server.ts` 无新增诊断错误。
+- 下步计划：继续推进 `DATASET_OWNER` 管理接口与审计细分表（`tool_call_audits`、`rag_query_audits`）。
+
+## 迭代记录 2026-04-10（DATASET_OWNER 管理接口与权限入口落地）
+
+- 目标：完成 `DATASET_OWNER` 的管理接口与执行层权限入口，补齐数据集“可访问”和“可管理”两类授权语义。
+- 变更范围：在 `server.ts` 新增 `POST /api/v1/admin/permissions/dataset-owners`；`brain/context` 新增 `allowedDatasetOwners` 返回字段；`allowedDatasets` 与 `allowedDatasetOwners` 拆分返回。
+- 关键文件：`brain-server/src/server.ts`、`programDoc/project-progress-tracker-zh.md`、`programDoc/project-summary-zh.md`、`programDoc/ts-unified-governance-migration-plan-zh.md`
+- 接口影响：权限管理端可独立授予/撤销数据集 owner 权限；执行层可基于 `allowedDatasetOwners` 单独判定管理动作。
+- 风险与处理：为避免旧语义混淆，`brain/context` 中不再把 `DATASET_OWNER` 混入 `allowedDatasets`，改为独立字段显式返回。
+- 验证结果：`conda run -n ai4tender bun run build` 通过；`server.ts` 诊断无新增错误（仅保留既有未使用函数提示）。
+- 下步计划：继续推进审计细分表 `tool_call_audits/rag_query_audits` 与 `policyVersion` 缓存失效策略。
+
+## 迭代记录 2026-04-10（Docker 启动与 DATASET_OWNER 回归验证）
+
+- 目标：在 Docker 运行态验证 `DATASET_OWNER` 新增接口与上下文字段，同时补做现有冒烟回归。
+- 变更范围：执行容器重建与运行态测试；由于外网限制导致镜像重建失败，改用“本地 build + `docker cp dist` + 重启 `brain-server`”完成验证。
+- 关键文件：`deploy/docker-compose-brain-ts.yml`、`brain-server/src/server.ts`、`brain-server/dist/*`
+- 接口影响：无新增接口；重点验证 `POST /api/v1/admin/permissions/dataset-owners` 与 `GET /api/v1/brain/context` 的 `allowedDatasetOwners`。
+- 风险与处理：`pip install ezdxf` 仍存在网络不可达；已记录临时验证方案，后续建议补 pip 镜像源或离线 wheel。
+- 验证结果：`ready=200`、`login=200`、`dataset-owner grant/revoke=200`，`allowedDatasetOwners` 命中与移除均符合预期；`ops:smoke-admin-file-status` 全项 200。
+- 下步计划：继续推进 `tool_call_audits/rag_query_audits`，并补 Docker 构建网络依赖治理。
+
+## 迭代记录 2026-04-10（新增 test 目录统一回归 + 文档功能映射）
+
+- 目标：按用户要求把“前面已实现功能”集中回归，并把测试代码放入 `test` 目录，文档补“功能-代码-测试”映射注释。
+- 变更范围：新增 `brain-server/test/run_governance_e2e.py`；`package.json` 新增 `test:e2e-governance` 与 `test:e2e-all`；更新三份主文档的映射章节。
+- 关键文件：`brain-server/test/run_governance_e2e.py`、`brain-server/package.json`、`programDoc/project-progress-tracker-zh.md`、`programDoc/project-summary-zh.md`、`programDoc/ts-unified-governance-migration-plan-zh.md`
+- 接口影响：无新增业务接口；新增自动化回归入口覆盖鉴权、权限、上下文、审计查询。
+- 风险与处理：Docker `up -d` 后容器可能仍运行旧镜像代码，导致新接口 404；已采用“`bun run build` + `docker cp dist` + 重启容器”保证运行态与源码一致。
+- 验证结果：`test/run_governance_e2e.py` 全项通过；`ops:smoke-admin-file-status` 全项 200；`python -m py_compile` 通过。
+- 下步计划：继续扩展回归脚本覆盖 `admin` 管辖边界与 `rag/query` 权限分支，并处理 pip 构建外网依赖。
+
+## 迭代记录 2026-04-10（按用户要求再次同步容器并重跑全量测试）
+
+- 目标：按用户指定流程执行“本地最新编译产物同步容器 + 重启 + 全量回归”。
+- 变更范围：停止卡住构建任务；执行 `bun run build`；执行 `docker cp dist` 同步；重启 `ai4kb-brain-server`；重跑治理与文件回归。
+- 关键文件：`brain-server/dist/*`、`brain-server/test/run_governance_e2e.py`、`brain-server/src/scripts/smokeAdminFileStatusApis.ts`
+- 接口影响：无新增接口，属于验证执行。
+- 风险与处理：Docker 构建链路仍受外网依赖影响，本次继续采用稳定回归路径，不依赖 `up --build` 成功。
+- 验证结果：`run_governance_e2e.py` 全项 200；`ops:smoke-admin-file-status` 五项 200；`ai4kb-brain-server` 状态 `Up` 且端口 `8091` 正常。
+- 下步计划：若需要彻底解决构建不稳定，可继续落地 pip 国内镜像与离线 wheel 双保险。
+
+## 迭代记录 2026-04-10（高优先级推进：policyVersion + 细分审计）
+
+- 目标：继续完成高优先级剩余项：`policyVersion` 缓存失效策略，以及 `tool_call_audits/rag_query_audits` 落地。
+- 变更范围：`brain/context` 的 `policyVersion` 改为 Redis 用户维度版本号；权限/用户变更时自动 bump；新增两张审计表模型与迁移；接入 `rag/query` 与 `indicator-verification` 细分审计写入。
+- 关键文件：`brain-server/src/server.ts`、`brain-server/prisma/schema.prisma`、`brain-server/prisma/migrations/20260410_add_tool_call_and_rag_query_audits/migration.sql`、`brain-server/test/run_governance_e2e.py`
+- 接口影响：`GET /api/v1/brain/context` 的 `policyVersion` 语义从“请求时间戳”升级为“策略版本号”；`rag/query` 与技能执行新增细分审计落库。
+- 风险与处理：容器镜像仍受外网构建影响，继续采用“本地 build + 同步 dist/prisma/prisma-client + 重启容器”路径保证运行态验证。
+- 验证结果：`bun run build` 通过；`prisma migrate status` 显示 up-to-date；`test/run_governance_e2e.py`（含 policyVersion 变更断言）通过；`ops:smoke-admin-file-status` 通过；SQL 计数确认 `rag_query_audits=1`、`tool_call_audits=1`。
+- 下步计划：补管理侧细分审计查询接口，并继续推进鉴权强化（令牌轮换与 refresh 失效机制）。

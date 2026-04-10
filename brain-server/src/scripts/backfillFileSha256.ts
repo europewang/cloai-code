@@ -25,7 +25,7 @@ async function main() {
     : null
 
   const rows = await prisma.fileAsset.findMany({
-    where: { sha256Hex: null },
+    where: { sha256Hex: null, status: 'active' },
     select: { id: true, storagePath: true },
     orderBy: { createdAt: 'asc' },
     take: 5000,

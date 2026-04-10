@@ -349,24 +349,32 @@ erDiagram
 ### 5.2 权限与上下文
 
 1. `GET /api/v1/brain/context`
-   - 返回：`role`、`profileId`、`allowedDatasets`、`allowedSkills`、`policyVersion`
+   - 返回：`role`、`profileId`、`allowedDatasets`、`allowedDatasetOwners`、`allowedSkills`、`allowedMemoryProfiles`、`policyVersion`
 2. `POST /api/v1/admin/permissions/datasets`
-3. `POST /api/v1/admin/permissions/skills`
-4. `GET /api/v1/admin/users/{id}/permissions`
+3. `POST /api/v1/admin/permissions/dataset-owners`
+4. `POST /api/v1/admin/permissions/skills`
+5. `POST /api/v1/admin/permissions/memory-profiles`
+6. `GET /api/v1/admin/users/{id}/permissions`
 
 接口用途详解：
 
 1. `GET /api/v1/brain/context`
    - 用途：为执行层返回当前用户可用策略快照。
-   - 出参：`role`、`profileId`、`allowedDatasets`、`allowedSkills`、`policyVersion`。
+   - 出参：`role`、`profileId`、`allowedDatasets`、`allowedDatasetOwners`、`allowedSkills`、`allowedMemoryProfiles`、`policyVersion`。
    - 备注：执行前必须调用，缓存需基于 `policyVersion` 失效。
 2. `POST /api/v1/admin/permissions/datasets`
    - 用途：授予或撤销数据集访问权限。
    - 入参：`userId`、`datasetIds`、`action(grant|revoke)`。
-3. `POST /api/v1/admin/permissions/skills`
+3. `POST /api/v1/admin/permissions/dataset-owners`
+   - 用途：授予或撤销数据集管理权限（所有者权限）。
+   - 入参：`userId`、`datasetIds`、`action(grant|revoke)`。
+4. `POST /api/v1/admin/permissions/skills`
    - 用途：授予或撤销技能调用权限。
    - 入参：`userId`、`skillIds`、`action(grant|revoke)`。
-4. `GET /api/v1/admin/users/{id}/permissions`
+5. `POST /api/v1/admin/permissions/memory-profiles`
+   - 用途：授予或撤销记忆命名空间访问权限。
+   - 入参：`userId`、`profileIds`、`action(grant|revoke)`。
+6. `GET /api/v1/admin/users/{id}/permissions`
    - 用途：查看某用户当前权限快照。
    - 备注：管理端权限页和排障页依赖该接口。
 
@@ -689,6 +697,151 @@ erDiagram
 4. 授权变更延迟超阈值：立即复核缓存策略与失效机制。
 5. 恢复态缺失依赖阻断构建：立即转入“恢复阻断项清理”分支，暂停新增功能开发。
 
+### 15.4 文件资产缺失治理（2026-04-10）
+
+1. 已在 `file_assets` 增加状态字段：
+   - `status`（`active|missing`）
+   - `status_reason`
+   - `status_updated_at`
+2. 存量迁移策略：
+   - `ops:migrate-local-assets-to-s3` 在读取 local 绝对路径遇到 `ENOENT` 时，自动将记录标记为 `missing`，并写入原因 `local_file_not_found`。
+3. 执行链路保护：
+   - `GET /api/v1/files/{fileId}/download` 遇到 `missing` 记录返回 `410 Gone`。
+   - `POST /api/v1/skills/indicator-verification/run` 输入文件若为 `missing` 直接拒绝执行（410）。
+4. 运维效果：
+   - `maintenance-tick` 可稳定执行“迁移 -> 回填 -> 清理”，并将历史脏记录从“隐性错误”转为“显式状态”。
+5. 后续补齐项：
+   - 管理端导出与批量处置能力（当前已支持查询与单条状态更新）。
+   - 明确人工回补的 SOP 与审批审计策略（`missing -> active`）。
+
+### 15.5 文件资产管理接口补齐（2026-04-10）
+
+1. 新增接口：
+   - `GET /api/v1/admin/files`
+   - `POST /api/v1/admin/files/{fileId}/status`
+2. 查询能力：
+   - 支持 `status/category/ownerUserId/page/pageSize` 条件。
+   - `admin` 仅可查看“自己 + 直属 user”的文件资产，`super_admin` 可查看全量。
+3. 状态更新能力：
+   - 支持手动标记 `missing/active`。
+   - 回切 `active` 前强制校验对象可读，避免状态与存储现实不一致。
+4. 审计要求：
+   - 状态更新动作统一落审计：`action=admin.files.status.update`。
+
+### 15.6 文件资产批量与导出能力（2026-04-10）
+
+1. 新增接口：
+   - `POST /api/v1/admin/files/status/batch`
+   - `GET /api/v1/admin/files/export`
+2. 批量更新能力：
+   - 单次最多 200 个 `fileId`。
+   - 对每条记录逐条做 owner 边界检查。
+   - 当目标状态为 `active` 时，逐条先校验对象可读。
+3. 导出能力：
+   - 默认导出 `missing`，输出 CSV（最多 5000 条）。
+   - 支持按 `status/category/ownerUserId` 过滤导出。
+4. 管理边界：
+   - `admin` 仍受“自己 + 直属 user”范围限制。
+   - `super_admin` 可全量导出与批量处置。
+
+### 15.7 文件状态接口最小回归脚本（2026-04-10）
+
+1. 新增脚本：
+   - `ops:smoke-admin-file-status`（`node dist/scripts/smokeAdminFileStatusApis.js`）
+2. 覆盖范围：
+   - `GET /api/v1/admin/files`
+   - `POST /api/v1/admin/files/{fileId}/status`
+   - `POST /api/v1/admin/files/status/batch`
+   - `GET /api/v1/admin/files/export`
+3. 默认策略：
+   - 仅对 `missing` 资产执行幂等校验（更新为 `missing`），避免破坏已有业务状态。
+4. 环境参数：
+   - `BRAIN_BASE_URL`（默认 `http://127.0.0.1:8091`）
+   - `BRAIN_ADMIN_USERNAME`（默认 `admin`）
+   - `BRAIN_ADMIN_PASSWORD`（默认 `admin123456`）
+
+### 15.8 维护容器自动回归联动（2026-04-10）
+
+1. 编排调整：
+   - `brain-maintenance` 周期任务改为：`maintenance-tick -> smoke-admin-file-status`。
+2. 可配置项：
+   - `MAINTENANCE_ENABLE_SMOKE`（默认 `true`）
+   - `MAINTENANCE_INTERVAL_SECONDS`（默认 `1800`）
+3. 运行时注意：
+   - 维护容器内脚本执行统一使用 `bun`，避免 `node` 可执行缺失导致任务失败。
+   - 维护容器中 `BRAIN_BASE_URL` 固定为 `http://brain-server:8091`，避免容器内 `127.0.0.1` 误指向自身。
+4. 告警语义：
+   - 任一阶段失败会输出 `[ALERT]` 前缀日志，便于日志平台按关键字抓取与告警聚合。
+
+### 15.9 自动链路前因后果与范围（2026-04-10）
+
+1. 业务线范围：
+   - 仅针对“文件型技能治理”链路：`files/upload`、`files/download`、`skills/indicator-verification/run`、`admin/files*`。
+2. 前因：
+   - 历史存在 local 存量、S3 对象与 DB 元数据漂移、missing 脏记录等问题。
+   - 单跑维护脚本无法证明业务接口仍可用，存在“维护成功但对外失败”的盲区。
+3. 后果（目标）：
+   - 通过“`maintenance-tick` + `smoke-admin-file-status`”把数据修复与业务可用性校验串联，提前发现回归问题。
+4. 当前策略：
+   - 失败以 `[ALERT]` 日志输出。
+   - webhook 主动通知暂列 `IGNORED_TODO`，后续按运维节奏再启用。
+
+### 15.10 权限扩展：MEMORY_PROFILE（2026-04-10）
+
+1. 新增接口：
+   - `POST /api/v1/admin/permissions/memory-profiles`
+2. 能力说明：
+   - 支持 `grant/revoke` memory profile 资源授权。
+   - `admin` 仍受“自己 + 直属 user”边界约束。
+3. 上下文扩展：
+   - `GET /api/v1/brain/context` 新增 `allowedMemoryProfiles` 返回字段，且默认包含当前用户主 profile。
+
+### 15.11 权限扩展：DATASET_OWNER（2026-04-10）
+
+1. 新增接口：
+   - `POST /api/v1/admin/permissions/dataset-owners`
+2. 能力说明：
+   - 支持 `grant/revoke` dataset owner 资源授权。
+   - `admin` 仍受“自己 + 直属 user”边界约束。
+3. 上下文扩展：
+   - `GET /api/v1/brain/context` 新增 `allowedDatasetOwners`，用于执行层识别“可管理的数据集集合”。
+4. 回归结果：
+   - 已完成 `grant/revoke` 接口回归，且 `brain/context` 中 `allowedDatasetOwners` 字段随授权即时变化。
+5. 部署注意：
+   - 当前 Docker 镜像重建仍可能受 `pip install ezdxf` 外网限制影响；当仅验证 TS 变更时，可采用“本地 build + 同步 `dist` + 重启容器”的临时路径。
+
+### 15.12 统一回归测试目录（2026-04-10）
+
+1. 新增测试目录与脚本：
+   - `brain-server/test/run_governance_e2e.py`
+2. 覆盖范围：
+   - `auth/login/refresh/me`
+   - `admin/permissions`（`datasets/dataset-owners/skills/memory-profiles`）
+   - `brain/context` 四类集合字段联动
+   - `admin/audits` 权限动作审计可查询
+3. 执行入口：
+   - `bun run test:e2e-governance`
+   - `bun run test:e2e-all`（治理回归 + 文件治理 smoke）
+4. 回顾映射：
+   - 权限实现代码在 `brain-server/src/server.ts`，对应测试断言在 `run_governance_e2e.py` 的 `perm_*` 与 `brain_context_*` 检查项。
+5. 运行策略：
+   - 当 Docker 重建受外网依赖阻塞时，按“`bun run build` -> `docker cp dist` -> `docker restart ai4kb-brain-server` -> 执行 `test:e2e-all`”路径完成回归。
+
+### 15.13 policyVersion 缓存失效 + 细分审计落地（2026-04-10）
+
+1. `policyVersion` 策略：
+   - `GET /api/v1/brain/context` 的 `policyVersion` 改为 Redis 用户维度版本号，不再使用 `Date.now()`。
+   - 在 `admin.users.update` 与 `admin/permissions*` 变更后自动 `INCR`，实现可追踪的缓存失效。
+2. 新增细分审计表：
+   - `tool_call_audits`
+   - `rag_query_audits`
+3. 链路接入：
+   - `POST /api/v1/rag/query` 已写入 `rag_query_audits`。
+   - `POST /api/v1/skills/indicator-verification/run` 已写入 `tool_call_audits`（含成功/失败/拒绝场景）。
+4. 验证方式：
+   - `test/run_governance_e2e.py` 新增 `policyVersion` 变更断言。
+   - 通过 SQL 计数确认两张细分审计表已写入数据。
+
 ## 16. 实施准备产物（已产出）
 
 1. OpenAPI 草案（V1）：`programDoc/brain-server-openapi-v1-draft.yaml`
@@ -979,3 +1132,15 @@ erDiagram
 4. 当前验证结果：
    - `maintenance-tick` 执行成功并输出结构化结果；
    - 当前样例结果：回填 `scanned=4, updated=0, skipped=4, failed=0`；清理 `scanned=6, deleted=0`。
+
+### 17.22 local 存量迁移脚本（2026-04-10）
+
+1. 已新增脚本：
+   - `ops:migrate-local-assets-to-s3`
+2. 功能：
+   - 扫描 `file_assets.storage_path` 为绝对路径的历史记录；
+   - 读取本地文件并上传到 MinIO/S3；
+   - 成功后回写 `storage_path` 为对象键，并补 `sha256_hex`。
+3. 当前验证：
+   - 样例结果：`scanned=4, migrated=0, missing=4, failed=0`。
+   - 说明：这 4 条历史记录对应本地文件已不存在，已输出 `migrate-missing` 日志用于后续处置。
