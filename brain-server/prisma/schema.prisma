@@ -52,6 +52,10 @@ model User {
   memoryProfile MemoryProfile?
   auditSubject AuditLog[] @relation("AuditSubject")
   auditOperator AuditLog[] @relation("AuditOperator")
+  toolCallAuditSubject ToolCallAudit[] @relation("ToolCallAuditSubject")
+  toolCallAuditOperator ToolCallAudit[] @relation("ToolCallAuditOperator")
+  ragQueryAuditSubject RagQueryAudit[] @relation("RagQueryAuditSubject")
+  ragQueryAuditOperator RagQueryAudit[] @relation("RagQueryAuditOperator")
   fileAssets    FileAsset[]
 
   @@index([role], map: "idx_users_role")
@@ -118,6 +122,9 @@ model FileAsset {
   sizeBytes   BigInt       @map("size_bytes")
   sha256Hex   String?      @map("sha256_hex") @db.VarChar(64)
   category    FileCategory
+  status      String       @default("active") @db.VarChar(32)
+  statusReason String?      @map("status_reason") @db.VarChar(255)
+  statusUpdatedAt DateTime  @default(now()) @map("status_updated_at")
   createdAt   DateTime     @default(now()) @map("created_at")
 
   ownerUser User @relation(fields: [ownerUserId], references: [id])
@@ -125,4 +132,52 @@ model FileAsset {
   @@index([ownerUserId, createdAt], map: "idx_file_assets_owner_time")
   @@index([category, createdAt], map: "idx_file_assets_category_time")
   @@map("file_assets")
+}
+
+model ToolCallAudit {
+  id           BigInt      @id @default(autoincrement())
+  traceId      String      @map("trace_id") @db.VarChar(128)
+  toolCallId   String?     @map("tool_call_id") @db.VarChar(128)
+  userId       BigInt?     @map("user_id")
+  operatorId   BigInt?     @map("operator_id")
+  toolName     String      @map("tool_name") @db.VarChar(128)
+  result       AuditResult
+  latencyMs    Int?        @map("latency_ms")
+  errorMessage String?     @map("error_message") @db.VarChar(1024)
+  inputJson    Json?       @map("input_json")
+  outputJson   Json?       @map("output_json")
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  subjectUser  User? @relation("ToolCallAuditSubject", fields: [userId], references: [id])
+  operatorUser User? @relation("ToolCallAuditOperator", fields: [operatorId], references: [id])
+
+  @@index([traceId], map: "idx_tool_call_audit_trace")
+  @@index([toolName, createdAt], map: "idx_tool_call_audit_tool_time")
+  @@index([userId, createdAt], map: "idx_tool_call_audit_user_time")
+  @@map("tool_call_audits")
+}
+
+model RagQueryAudit {
+  id             BigInt      @id @default(autoincrement())
+  traceId        String      @map("trace_id") @db.VarChar(128)
+  userId         BigInt?     @map("user_id")
+  operatorId     BigInt?     @map("operator_id")
+  datasetId      String?     @map("dataset_id") @db.VarChar(128)
+  chatId         String?     @map("chat_id") @db.VarChar(128)
+  queryText      String      @map("query_text") @db.Text
+  upstreamStatus Int?        @map("upstream_status")
+  result         AuditResult
+  latencyMs      Int?        @map("latency_ms")
+  errorMessage   String?     @map("error_message") @db.VarChar(1024)
+  requestJson    Json?       @map("request_json")
+  responseJson   Json?       @map("response_json")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  subjectUser  User? @relation("RagQueryAuditSubject", fields: [userId], references: [id])
+  operatorUser User? @relation("RagQueryAuditOperator", fields: [operatorId], references: [id])
+
+  @@index([traceId], map: "idx_rag_query_audit_trace")
+  @@index([datasetId, createdAt], map: "idx_rag_query_audit_dataset_time")
+  @@index([userId, createdAt], map: "idx_rag_query_audit_user_time")
+  @@map("rag_query_audits")
 }

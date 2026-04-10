@@ -23,13 +23,25 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN apt-get update -y && apt-get install -y openssl ca-certificates python3 python3-pip && rm -rf /var/lib/apt/lists/*
 
+# pip 镜像与缓存参数：
+# - PIP_INDEX_URL/PIP_EXTRA_INDEX_URL 允许在构建时按环境覆盖镜像源
+# - PIP_CACHE_DIR 指定缓存目录，配合 BuildKit cache mount 保留下载缓存
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+ENV PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}
+ENV PIP_CACHE_DIR=/root/.cache/pip
+
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/bun.lock ./bun.lock
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 COPY requirements-indicator-skill.txt ./requirements-indicator-skill.txt
-RUN python3 -m pip install --break-system-packages --no-cache-dir -r requirements-indicator-skill.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+  python3 -m pip install --break-system-packages -r requirements-indicator-skill.txt
 
 EXPOSE 8091
 CMD ["bun", "run", "start"]

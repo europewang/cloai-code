@@ -7,7 +7,6 @@ import Redis from 'ioredis'
 import { z } from 'zod'
 import * as bcrypt from 'bcryptjs'
 import { prisma } from './lib/prisma.js'
-import { ResourceType } from '@prisma/client'
 import { CreateBucketCommand, GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
@@ -17,6 +16,14 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 type Role = 'super_admin' | 'admin' | 'user'
+type ResourceType = 'DATASET' | 'DATASET_OWNER' | 'SKILL' | 'MEMORY_PROFILE'
+
+const RESOURCE_TYPE = {
+  DATASET: 'DATASET',
+  DATASET_OWNER: 'DATASET_OWNER',
+  SKILL: 'SKILL',
+  MEMORY_PROFILE: 'MEMORY_PROFILE',
+} as const
 
 type TokenClaims = {
   sub: string
@@ -71,6 +78,7 @@ export function createServer(config: AppConfig) {
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
   })
+  const policyVersionKeyPrefix = 'brain:policy:version:user:'
 
   const bootstrapUser = {
     id: '1', // 启动前期保留占位，真实登录态以数据库为准。
@@ -128,6 +136,30 @@ export function createServer(config: AppConfig) {
     page: z.coerce.number().int().positive().default(1),
     pageSize: z.coerce.number().int().positive().max(100).default(20),
   })
+  const listFileAssetsQuerySchema = z.object({
+    status: z.enum(['active', 'missing']).optional(),
+    category: z.enum(['input', 'output']).optional(),
+    ownerUserId: z.coerce.number().int().positive().optional(),
+    page: z.coerce.number().int().positive().default(1),
+    pageSize: z.coerce.number().int().positive().max(100).default(20),
+  })
+  const fileIdParamSchema = z.object({
+    fileId: z.string().min(1),
+  })
+  const updateFileStatusBodySchema = z.object({
+    status: z.enum(['active', 'missing']),
+    reason: z.string().max(255).optional(),
+  })
+  const batchUpdateFileStatusBodySchema = z.object({
+    fileIds: z.array(z.string().min(1)).min(1).max(200),
+    status: z.enum(['active', 'missing']),
+    reason: z.string().max(255).optional(),
+  })
+  const exportFileAssetsQuerySchema = z.object({
+    status: z.enum(['active', 'missing']).default('missing'),
+    category: z.enum(['input', 'output']).optional(),
+    ownerUserId: z.coerce.number().int().positive().optional(),
+  })
   const ragQueryBodySchema = z.object({
     query: z.string().min(1),
     datasetId: z.string().min(1).optional(),
@@ -146,11 +178,21 @@ export function createServer(config: AppConfig) {
     action: z.enum(['grant', 'revoke']),
     datasetIds: z.array(z.string().min(1)).min(1),
   })
+  const mutateDatasetOwnerPermissionBodySchema = z.object({
+    userId: z.coerce.number().int().positive(),
+    action: z.enum(['grant', 'revoke']),
+    datasetIds: z.array(z.string().min(1)).min(1),
+  })
 
   const mutateSkillPermissionBodySchema = z.object({
     userId: z.coerce.number().int().positive(),
     action: z.enum(['grant', 'revoke']),
     skillIds: z.array(z.string().min(1)).min(1),
+  })
+  const mutateMemoryProfilePermissionBodySchema = z.object({
+    userId: z.coerce.number().int().positive(),
+    action: z.enum(['grant', 'revoke']),
+    profileIds: z.array(z.string().min(1)).min(1),
   })
 
   function signToken(tokenType: 'access' | 'refresh') {
@@ -294,6 +336,54 @@ export function createServer(config: AppConfig) {
     })
   }
 
+  async function ensureRedisReadyForPolicy() {
+    if (redis.status === 'wait') {
+      await redis.connect()
+    }
+  }
+
+  // policyVersion 由 Redis 版本号驱动，避免每次 context 返回 Date.now() 造成缓存无法命中。
+  async function getPolicyVersion(userId: bigint) {
+    const key = `${policyVersionKeyPrefix}${userId.toString()}`
+    try {
+      await ensureRedisReadyForPolicy()
+      const current = await redis.get(key)
+      if (current) return current
+      await redis.setnx(key, '1')
+      return (await redis.get(key)) ?? '1'
+    } catch {
+      // Redis 异常时保底返回固定值，避免接口报错阻断执行链路。
+      return '0'
+    }
+  }
+
+  async function bumpPolicyVersion(userId: bigint, reason: string) {
+    const key = `${policyVersionKeyPrefix}${userId.toString()}`
+    try {
+      await ensureRedisReadyForPolicy()
+      const next = await redis.incr(key)
+      app.log.info(
+        {
+          userId: userId.toString(),
+          policyVersion: next,
+          reason,
+        },
+        'policy version bumped',
+      )
+      return String(next)
+    } catch (error) {
+      app.log.warn(
+        {
+          userId: userId.toString(),
+          reason,
+          error: error instanceof Error ? error.message : 'unknown',
+        },
+        'failed to bump policy version',
+      )
+      return null
+    }
+  }
+
   async function authGuard(req: FastifyRequest, reply: FastifyReply) {
     try {
       const token = parseBearerToken(req)
@@ -344,6 +434,66 @@ export function createServer(config: AppConfig) {
     })
   }
 
+  async function writeToolCallAudit(params: {
+    traceId: string
+    toolCallId?: string | null
+    userId?: bigint | null
+    operatorId?: bigint | null
+    toolName: string
+    result: 'success' | 'deny' | 'fail'
+    latencyMs?: number | null
+    errorMessage?: string | null
+    input?: unknown
+    output?: unknown
+  }) {
+    await prisma.toolCallAudit.create({
+      data: {
+        traceId: params.traceId,
+        toolCallId: params.toolCallId ?? null,
+        userId: params.userId ?? null,
+        operatorId: params.operatorId ?? null,
+        toolName: params.toolName,
+        result: params.result,
+        latencyMs: params.latencyMs ?? null,
+        errorMessage: params.errorMessage ?? null,
+        inputJson: params.input ? (params.input as object) : undefined,
+        outputJson: params.output ? (params.output as object) : undefined,
+      },
+    })
+  }
+
+  async function writeRagQueryAudit(params: {
+    traceId: string
+    userId?: bigint | null
+    operatorId?: bigint | null
+    datasetId?: string | null
+    chatId?: string | null
+    queryText: string
+    upstreamStatus?: number | null
+    result: 'success' | 'deny' | 'fail'
+    latencyMs?: number | null
+    errorMessage?: string | null
+    request?: unknown
+    response?: unknown
+  }) {
+    await prisma.ragQueryAudit.create({
+      data: {
+        traceId: params.traceId,
+        userId: params.userId ?? null,
+        operatorId: params.operatorId ?? null,
+        datasetId: params.datasetId ?? null,
+        chatId: params.chatId ?? null,
+        queryText: params.queryText,
+        upstreamStatus: params.upstreamStatus ?? null,
+        result: params.result,
+        latencyMs: params.latencyMs ?? null,
+        errorMessage: params.errorMessage ?? null,
+        requestJson: params.request ? (params.request as object) : undefined,
+        responseJson: params.response ? (params.response as object) : undefined,
+      },
+    })
+  }
+
   function sanitizeFileName(name: string) {
     return name.replace(/[^a-zA-Z0-9._-]/g, '_')
   }
@@ -372,6 +522,20 @@ export function createServer(config: AppConfig) {
     return prisma.fileAsset.findUnique({
       where: { id: fileId },
     })
+  }
+
+  async function getManageableUserIds(operator: { id: bigint; role: string }) {
+    if (operator.role === 'super_admin') {
+      return null
+    }
+    // admin 仅允许查看自己与直属用户，避免扩大文件可见域。
+    const subs = await prisma.user.findMany({
+      where: {
+        managerUserId: operator.id,
+      },
+      select: { id: true },
+    })
+    return [operator.id, ...subs.map((s: { id: bigint }) => s.id)]
   }
 
   async function ensureS3BucketReady() {
@@ -665,6 +829,7 @@ export function createServer(config: AppConfig) {
         },
       })
       await ensureAndGetProfileByUserId(created.id)
+      await bumpPolicyVersion(created.id, 'admin.users.create')
       await writeAudit({
         traceId,
         userId: created.id,
@@ -807,6 +972,7 @@ export function createServer(config: AppConfig) {
       where: { id: target.id },
       data: updateData,
     })
+    await bumpPolicyVersion(updated.id, 'admin.users.update')
     await writeAudit({
       traceId,
       userId: updated.id,
@@ -834,18 +1000,94 @@ export function createServer(config: AppConfig) {
     const memoryProfile = await ensureAndGetProfileByUserId(operator.id)
 
     const allowedDatasets = permissions
-      .filter(p => p.resourceType === 'DATASET' || p.resourceType === 'DATASET_OWNER')
-      .map(p => p.resourceId)
+      .filter((p: { resourceType: string }) => p.resourceType === 'DATASET')
+      .map((p: { resourceId: string }) => p.resourceId)
+    const allowedDatasetOwners = permissions
+      .filter((p: { resourceType: string }) => p.resourceType === 'DATASET_OWNER')
+      .map((p: { resourceId: string }) => p.resourceId)
     const allowedSkills = permissions
-      .filter(p => p.resourceType === 'SKILL')
-      .map(p => p.resourceId)
+      .filter((p: { resourceType: string }) => p.resourceType === 'SKILL')
+      .map((p: { resourceId: string }) => p.resourceId)
+    const allowedMemoryProfiles = permissions
+      .filter((p: { resourceType: string }) => p.resourceType === 'MEMORY_PROFILE')
+      .map((p: { resourceId: string }) => p.resourceId)
 
+    const policyVersion = await getPolicyVersion(operator.id)
     return {
       role: operator.role,
       profileId: memoryProfile.profileId,
       allowedDatasets: Array.from(new Set(allowedDatasets)),
+      allowedDatasetOwners: Array.from(new Set(allowedDatasetOwners)),
       allowedSkills: Array.from(new Set(allowedSkills)),
-      policyVersion: String(Date.now()),
+      // 当前用户主 profile 永远可用，避免权限配置缺失时出现自有记忆不可读。
+      allowedMemoryProfiles: Array.from(new Set([memoryProfile.profileId, ...allowedMemoryProfiles])),
+      policyVersion,
+    }
+  })
+
+  app.post('/api/v1/admin/permissions/dataset-owners', { preHandler: authGuard }, async (req, reply) => {
+    const traceId = getTraceId(req)
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const parsed = mutateDatasetOwnerPermissionBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      await writeAudit({
+        traceId,
+        action: 'admin.permissions.dataset_owners',
+        result: 'fail',
+      })
+      return reply.code(400).send({
+        message: 'Invalid request body',
+      })
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id: BigInt(parsed.data.userId) },
+    })
+    if (!target) {
+      await writeAudit({
+        traceId,
+        operatorId: operator.id,
+        action: 'admin.permissions.dataset_owners',
+        result: 'fail',
+      })
+      return reply.code(404).send({ message: 'target user not found' })
+    }
+    if (!canManageTargetUser(operator, target)) {
+      await writeAudit({
+        traceId,
+        userId: target.id,
+        operatorId: operator.id,
+        action: 'admin.permissions.dataset_owners',
+        result: 'deny',
+      })
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    await mutatePermissions(
+      {
+        userId: parsed.data.userId,
+        action: parsed.data.action,
+        resourceIds: parsed.data.datasetIds,
+      },
+      RESOURCE_TYPE.DATASET_OWNER,
+      operator.id,
+    )
+    await bumpPolicyVersion(target.id, 'admin.permissions.dataset_owners')
+    await writeAudit({
+      traceId,
+      userId: target.id,
+      operatorId: operator.id,
+      action: 'admin.permissions.dataset_owners',
+      resourceType: 'DATASET_OWNER',
+      resourceId: parsed.data.datasetIds.join(','),
+      result: 'success',
+      payload: parsed.data,
+    })
+    return {
+      success: true,
+      affected: parsed.data.datasetIds.length,
     }
   })
 
@@ -895,9 +1137,10 @@ export function createServer(config: AppConfig) {
         action: parsed.data.action,
         resourceIds: parsed.data.datasetIds,
       },
-      ResourceType.DATASET,
+      RESOURCE_TYPE.DATASET,
       operator.id,
     )
+    await bumpPolicyVersion(target.id, 'admin.permissions.datasets')
     await writeAudit({
       traceId,
       userId: target.id,
@@ -960,9 +1203,10 @@ export function createServer(config: AppConfig) {
         action: parsed.data.action,
         resourceIds: parsed.data.skillIds,
       },
-      ResourceType.SKILL,
+      RESOURCE_TYPE.SKILL,
       operator.id,
     )
+    await bumpPolicyVersion(target.id, 'admin.permissions.skills')
     await writeAudit({
       traceId,
       userId: target.id,
@@ -976,6 +1220,90 @@ export function createServer(config: AppConfig) {
     return {
       success: true,
       affected: parsed.data.skillIds.length,
+    }
+  })
+
+  app.post('/api/v1/admin/permissions/memory-profiles', { preHandler: authGuard }, async (req, reply) => {
+    const traceId = getTraceId(req)
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const parsed = mutateMemoryProfilePermissionBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      await writeAudit({
+        traceId,
+        action: 'admin.permissions.memory_profiles',
+        result: 'fail',
+      })
+      return reply.code(400).send({
+        message: 'Invalid request body',
+      })
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id: BigInt(parsed.data.userId) },
+    })
+    if (!target) {
+      await writeAudit({
+        traceId,
+        operatorId: operator.id,
+        action: 'admin.permissions.memory_profiles',
+        result: 'fail',
+      })
+      return reply.code(404).send({ message: 'target user not found' })
+    }
+    if (!canManageTargetUser(operator, target)) {
+      await writeAudit({
+        traceId,
+        userId: target.id,
+        operatorId: operator.id,
+        action: 'admin.permissions.memory_profiles',
+        result: 'deny',
+      })
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const profiles = await prisma.memoryProfile.findMany({
+      where: { profileId: { in: parsed.data.profileIds } },
+      select: { profileId: true, userId: true },
+    })
+    if (profiles.length !== parsed.data.profileIds.length) {
+      return reply.code(404).send({ message: 'some profileIds not found' })
+    }
+    // admin 授权 memory_profile 时，同样受“自己 + 直属用户”边界约束。
+    for (const profile of profiles) {
+      const owner = await prisma.user.findUnique({
+        where: { id: profile.userId },
+        select: { id: true, managerUserId: true },
+      })
+      if (!owner || !canManageTargetUser(operator, owner)) {
+        return reply.code(403).send({ message: `forbidden profile scope: ${profile.profileId}` })
+      }
+    }
+
+    await mutatePermissions(
+      {
+        userId: parsed.data.userId,
+        action: parsed.data.action,
+        resourceIds: parsed.data.profileIds,
+      },
+      RESOURCE_TYPE.MEMORY_PROFILE,
+      operator.id,
+    )
+    await bumpPolicyVersion(target.id, 'admin.permissions.memory_profiles')
+    await writeAudit({
+      traceId,
+      userId: target.id,
+      operatorId: operator.id,
+      action: 'admin.permissions.memory_profiles',
+      resourceType: 'MEMORY_PROFILE',
+      resourceId: parsed.data.profileIds.join(','),
+      result: 'success',
+      payload: parsed.data,
+    })
+    return {
+      success: true,
+      affected: parsed.data.profileIds.length,
     }
   })
 
@@ -1011,7 +1339,7 @@ export function createServer(config: AppConfig) {
 
     return {
       userId: String(target.id),
-      permissions: permissions.map(p => ({
+      permissions: permissions.map((p: { resourceType: string; resourceId: string }) => ({
         resourceType: p.resourceType,
         resourceId: p.resourceId,
       })),
@@ -1048,7 +1376,7 @@ export function createServer(config: AppConfig) {
     ])
 
     return {
-      items: items.map(item => ({
+      items: items.map((item: any) => ({
         id: String(item.id),
         traceId: item.traceId,
         userId: item.userId ? String(item.userId) : null,
@@ -1064,6 +1392,304 @@ export function createServer(config: AppConfig) {
       page,
       pageSize,
     }
+  })
+
+  app.get('/api/v1/admin/files', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const parsed = listFileAssetsQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+    const { status, category, ownerUserId, page, pageSize } = parsed.data
+    const manageableUserIds = await getManageableUserIds(operator)
+    if (operator.role === 'admin' && ownerUserId && !manageableUserIds?.includes(BigInt(ownerUserId))) {
+      return reply.code(403).send({ message: 'forbidden ownerUserId scope' })
+    }
+
+    const where = {
+      ...(status ? { status } : {}),
+      ...(category ? { category } : {}),
+      ...(ownerUserId ? { ownerUserId: BigInt(ownerUserId) } : {}),
+      ...(manageableUserIds ? { ownerUserId: { in: manageableUserIds } } : {}),
+    }
+    const [items, total] = await Promise.all([
+      prisma.fileAsset.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.fileAsset.count({ where }),
+    ])
+
+    return {
+      items: items.map((item: any) => ({
+        id: item.id,
+        ownerUserId: String(item.ownerUserId),
+        fileName: item.fileName,
+        category: item.category,
+        status: item.status,
+        statusReason: item.statusReason,
+        statusUpdatedAt: item.statusUpdatedAt.toISOString(),
+        sizeBytes: String(item.sizeBytes),
+        createdAt: item.createdAt.toISOString(),
+      })),
+      total,
+      page,
+      pageSize,
+    }
+  })
+
+  app.post('/api/v1/admin/files/:fileId/status', { preHandler: authGuard }, async (req, reply) => {
+    const traceId = getTraceId(req)
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const parsedParam = fileIdParamSchema.safeParse(req.params)
+    const parsedBody = updateFileStatusBodySchema.safeParse(req.body)
+    if (!parsedParam.success || !parsedBody.success) {
+      return reply.code(400).send({ message: 'invalid request' })
+    }
+
+    const fileAsset = await getFileAssetById(parsedParam.data.fileId)
+    if (!fileAsset) {
+      return reply.code(404).send({ message: 'file not found' })
+    }
+    const owner = await prisma.user.findUnique({
+      where: { id: fileAsset.ownerUserId },
+      select: { id: true, managerUserId: true },
+    })
+    if (!owner || !canManageTargetUser(operator, owner)) {
+      return reply.code(403).send({ message: 'forbidden file owner scope' })
+    }
+
+    const { status, reason } = parsedBody.data
+    if (status === 'active') {
+      // 回切 active 前做一次可读验证，避免状态与真实存储继续漂移。
+      try {
+        await readAssetBytes(fileAsset)
+      } catch (error) {
+        return reply.code(409).send({
+          message: 'cannot set active: storage object is not readable',
+          error: error instanceof Error ? error.message : 'unknown',
+        })
+      }
+    }
+
+    const updated = await prisma.fileAsset.update({
+      where: { id: fileAsset.id },
+      data: {
+        status,
+        statusReason: status === 'missing' ? reason ?? 'manual_mark_missing' : reason ?? null,
+        statusUpdatedAt: new Date(),
+      },
+    })
+    await writeAudit({
+      traceId,
+      userId: updated.ownerUserId,
+      operatorId: operator.id,
+      action: 'admin.files.status.update',
+      resourceType: 'FILE_ASSET',
+      resourceId: updated.id,
+      result: 'success',
+      payload: {
+        status: updated.status,
+        statusReason: updated.statusReason,
+      },
+    })
+
+    return {
+      fileId: updated.id,
+      ownerUserId: String(updated.ownerUserId),
+      status: updated.status,
+      statusReason: updated.statusReason,
+      statusUpdatedAt: updated.statusUpdatedAt.toISOString(),
+    }
+  })
+
+  app.post('/api/v1/admin/files/status/batch', { preHandler: authGuard }, async (req, reply) => {
+    const traceId = getTraceId(req)
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const parsed = batchUpdateFileStatusBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid request body' })
+    }
+    const { fileIds, status, reason } = parsed.data
+    const dedupIds = Array.from(new Set(fileIds))
+
+    const assets: Array<{ id: string; ownerUserId: bigint; storagePath: string }> = await prisma.fileAsset.findMany({
+      where: { id: { in: dedupIds } },
+      select: { id: true, ownerUserId: true, storagePath: true },
+      orderBy: { createdAt: 'desc' },
+    })
+    const assetMap = new Map(assets.map((a: { id: string; ownerUserId: bigint; storagePath: string }) => [a.id, a]))
+    const ownerIds = Array.from(new Set(assets.map((a: { ownerUserId: bigint }) => a.ownerUserId.toString()))).map((id: string) => BigInt(id))
+    const owners: Array<{ id: bigint; managerUserId: bigint | null }> = await prisma.user.findMany({
+      where: { id: { in: ownerIds } },
+      select: { id: true, managerUserId: true },
+    })
+    const ownerMap = new Map(owners.map((u: { id: bigint; managerUserId: bigint | null }) => [u.id.toString(), u]))
+
+    let updated = 0
+    const skipped: Array<{ fileId: string; reason: string }> = []
+    const errors: Array<{ fileId: string; error: string }> = []
+
+    for (const fileId of dedupIds) {
+      const asset = assetMap.get(fileId)
+      if (!asset) {
+        skipped.push({ fileId, reason: 'not_found' })
+        continue
+      }
+      const owner = ownerMap.get(asset.ownerUserId.toString())
+      if (!owner || !canManageTargetUser(operator, owner)) {
+        skipped.push({ fileId, reason: 'forbidden_owner_scope' })
+        continue
+      }
+
+      if (status === 'active') {
+        try {
+          await readAssetBytes(asset)
+        } catch (error) {
+          errors.push({
+            fileId,
+            error: error instanceof Error ? error.message : 'unknown',
+          })
+          continue
+        }
+      }
+
+      await prisma.fileAsset.update({
+        where: { id: fileId },
+        data: {
+          status,
+          statusReason: status === 'missing' ? reason ?? 'manual_mark_missing_batch' : reason ?? null,
+          statusUpdatedAt: new Date(),
+        },
+      })
+      updated += 1
+    }
+
+    await writeAudit({
+      traceId,
+      userId: null,
+      operatorId: operator.id,
+      action: 'admin.files.status.batch_update',
+      resourceType: 'FILE_ASSET',
+      resourceId: dedupIds.join(','),
+      result: errors.length > 0 ? 'fail' : 'success',
+      payload: {
+        requestCount: dedupIds.length,
+        updated,
+        skippedCount: skipped.length,
+        errorCount: errors.length,
+        status,
+      },
+    })
+
+    return {
+      success: errors.length === 0,
+      requestCount: dedupIds.length,
+      updated,
+      skipped,
+      errors,
+    }
+  })
+
+  app.get('/api/v1/admin/files/export', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const parsed = exportFileAssetsQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+    const { status, category, ownerUserId } = parsed.data
+    const manageableUserIds = await getManageableUserIds(operator)
+    if (operator.role === 'admin' && ownerUserId && !manageableUserIds?.includes(BigInt(ownerUserId))) {
+      return reply.code(403).send({ message: 'forbidden ownerUserId scope' })
+    }
+
+    const where = {
+      status,
+      ...(category ? { category } : {}),
+      ...(ownerUserId ? { ownerUserId: BigInt(ownerUserId) } : {}),
+      ...(manageableUserIds ? { ownerUserId: { in: manageableUserIds } } : {}),
+    }
+    const rows: Array<{
+      id: string
+      ownerUserId: bigint
+      fileName: string
+      category: string
+      status: string
+      statusReason: string | null
+      sizeBytes: bigint
+      createdAt: Date
+      statusUpdatedAt: Date
+    }> = await prisma.fileAsset.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 5000,
+    })
+
+    const header = [
+      'fileId',
+      'ownerUserId',
+      'fileName',
+      'category',
+      'status',
+      'statusReason',
+      'sizeBytes',
+      'createdAt',
+      'statusUpdatedAt',
+    ].join(',')
+    const csvRows = rows.map((row: {
+      id: string
+      ownerUserId: bigint
+      fileName: string
+      category: string
+      status: string
+      statusReason: string | null
+      sizeBytes: bigint
+      createdAt: Date
+      statusUpdatedAt: Date
+    }) =>
+      [
+        row.id,
+        row.ownerUserId.toString(),
+        JSON.stringify(row.fileName),
+        row.category,
+        row.status,
+        JSON.stringify(row.statusReason ?? ''),
+        row.sizeBytes.toString(),
+        row.createdAt.toISOString(),
+        row.statusUpdatedAt.toISOString(),
+      ].join(','),
+    )
+    const csv = [header, ...csvRows].join('\n')
+    const filename = `file-assets-${status}-${new Date().toISOString().slice(0, 10)}.csv`
+    reply.header('Content-Disposition', `attachment; filename="${filename}"`)
+    reply.type('text/csv; charset=utf-8')
+    return reply.send(csv)
   })
 
   app.get('/api/v1/integrations/ragflow/health', { preHandler: authGuard }, async (req, reply) => {
@@ -1151,6 +1777,7 @@ export function createServer(config: AppConfig) {
 
   app.post('/api/v1/rag/query', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
+    const ragStartedAt = Date.now()
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -1162,6 +1789,16 @@ export function createServer(config: AppConfig) {
         operatorId: operator.id,
         action: 'rag.query.proxy',
         result: 'fail',
+      })
+      await writeRagQueryAudit({
+        traceId,
+        userId: operator.id,
+        operatorId: operator.id,
+        queryText: '',
+        result: 'fail',
+        latencyMs: Date.now() - ragStartedAt,
+        errorMessage: 'invalid_request_body',
+        request: req.body ?? null,
       })
       return reply.code(400).send({ message: 'invalid request body' })
     }
@@ -1177,6 +1814,18 @@ export function createServer(config: AppConfig) {
           result: 'deny',
           payload: { reason: 'datasetId required for non-super-admin' },
         })
+        await writeRagQueryAudit({
+          traceId,
+          userId: operator.id,
+          operatorId: operator.id,
+          datasetId: null,
+          chatId: chatId ?? null,
+          queryText: query,
+          result: 'deny',
+          latencyMs: Date.now() - ragStartedAt,
+          errorMessage: 'dataset_id_required',
+          request: parsed.data,
+        })
         return reply.code(403).send({
           message: 'datasetId is required for non-super-admin users',
         })
@@ -1184,7 +1833,7 @@ export function createServer(config: AppConfig) {
       const allowed = await prisma.permission.findFirst({
         where: {
           userId: operator.id,
-          resourceType: { in: [ResourceType.DATASET, ResourceType.DATASET_OWNER] },
+          resourceType: { in: [RESOURCE_TYPE.DATASET, RESOURCE_TYPE.DATASET_OWNER] },
           resourceId: datasetId,
         },
       })
@@ -1197,6 +1846,18 @@ export function createServer(config: AppConfig) {
           result: 'deny',
           resourceType: 'DATASET',
           resourceId: datasetId,
+        })
+        await writeRagQueryAudit({
+          traceId,
+          userId: operator.id,
+          operatorId: operator.id,
+          datasetId,
+          chatId: chatId ?? null,
+          queryText: query,
+          result: 'deny',
+          latencyMs: Date.now() - ragStartedAt,
+          errorMessage: 'dataset_permission_denied',
+          request: parsed.data,
         })
         return reply.code(403).send({
           message: 'dataset permission denied',
@@ -1241,6 +1902,11 @@ export function createServer(config: AppConfig) {
           ...(topK ? { topK } : {}),
           ...(extra ?? {}),
         }
+    const ragRequestPayload = {
+      url,
+      chatId: resolvedChatId ?? null,
+      body: upstreamBody,
+    }
 
     try {
       const upstreamResp = await fetch(url, {
@@ -1271,6 +1937,19 @@ export function createServer(config: AppConfig) {
           query,
         },
       })
+      await writeRagQueryAudit({
+        traceId,
+        userId: operator.id,
+        operatorId: operator.id,
+        datasetId: datasetId ?? null,
+        chatId: resolvedChatId ?? null,
+        queryText: query,
+        upstreamStatus: upstreamResp.status,
+        result: upstreamResp.ok ? 'success' : 'fail',
+        latencyMs: Date.now() - ragStartedAt,
+        request: ragRequestPayload,
+        response: parsedBody,
+      })
 
       if (!upstreamResp.ok) {
         return reply.code(502).send({
@@ -1296,6 +1975,18 @@ export function createServer(config: AppConfig) {
         payload: {
           error: error instanceof Error ? error.message : 'unknown',
         },
+      })
+      await writeRagQueryAudit({
+        traceId,
+        userId: operator.id,
+        operatorId: operator.id,
+        datasetId: datasetId ?? null,
+        chatId: chatId ?? null,
+        queryText: query,
+        result: 'fail',
+        latencyMs: Date.now() - ragStartedAt,
+        errorMessage: error instanceof Error ? error.message : 'unknown',
+        request: parsed.data,
       })
       return reply.code(503).send({
         message: 'ragflow unreachable',
@@ -1357,6 +2048,9 @@ export function createServer(config: AppConfig) {
     if (!fileId) return reply.code(400).send({ message: 'fileId required' })
     const meta = await getFileAssetById(fileId)
     if (!meta) return reply.code(404).send({ message: 'file not found' })
+    if (meta.status === 'missing') {
+      return reply.code(410).send({ message: 'file asset is marked missing' })
+    }
     if (operator.role !== 'super_admin' && meta.ownerUserId !== operator.id) {
       return reply.code(403).send({ message: 'forbidden' })
     }
@@ -1375,11 +2069,25 @@ export function createServer(config: AppConfig) {
 
   app.post('/api/v1/skills/indicator-verification/run', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
+    const toolCallStartedAt = Date.now()
+    const toolCallId = randomUUID()
+    const toolName = 'indicator-verification'
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
     const parsed = indicatorRunBodySchema.safeParse(req.body)
     if (!parsed.success) {
+      await writeToolCallAudit({
+        traceId,
+        toolCallId,
+        userId: operator.id,
+        operatorId: operator.id,
+        toolName,
+        result: 'fail',
+        latencyMs: Date.now() - toolCallStartedAt,
+        errorMessage: 'invalid_request_body',
+        input: req.body ?? null,
+      })
       return reply.code(400).send({ message: 'invalid request body' })
     }
     const { inputFileIds, checker, reviewer } = parsed.data
@@ -1392,9 +2100,45 @@ export function createServer(config: AppConfig) {
     for (const inputFileId of inputFileIds) {
       const meta = await getFileAssetById(inputFileId)
       if (!meta) {
+        await writeToolCallAudit({
+          traceId,
+          toolCallId,
+          userId: operator.id,
+          operatorId: operator.id,
+          toolName,
+          result: 'fail',
+          latencyMs: Date.now() - toolCallStartedAt,
+          errorMessage: `input_file_not_found:${inputFileId}`,
+          input: parsed.data,
+        })
         return reply.code(404).send({ message: `input file not found: ${inputFileId}` })
       }
+      if (meta.status === 'missing') {
+        await writeToolCallAudit({
+          traceId,
+          toolCallId,
+          userId: operator.id,
+          operatorId: operator.id,
+          toolName,
+          result: 'fail',
+          latencyMs: Date.now() - toolCallStartedAt,
+          errorMessage: `input_file_missing:${inputFileId}`,
+          input: parsed.data,
+        })
+        return reply.code(410).send({ message: `input file is marked missing: ${inputFileId}` })
+      }
       if (operator.role !== 'super_admin' && meta.ownerUserId !== operator.id) {
+        await writeToolCallAudit({
+          traceId,
+          toolCallId,
+          userId: operator.id,
+          operatorId: operator.id,
+          toolName,
+          result: 'deny',
+          latencyMs: Date.now() - toolCallStartedAt,
+          errorMessage: `forbidden_file_access:${inputFileId}`,
+          input: parsed.data,
+        })
         return reply.code(403).send({ message: `forbidden file access: ${inputFileId}` })
       }
       const targetPath = path.join(jobInput, meta.fileName)
@@ -1406,69 +2150,114 @@ export function createServer(config: AppConfig) {
       }
     }
 
-    await execFileAsync(
-      'python3',
-      [
-        config.SKILL_INDICATOR_SCRIPT_PATH,
-        jobInput,
-        jobOutput,
-        checker,
-        reviewer,
-      ],
-      { cwd: process.cwd(), timeout: 5 * 60 * 1000 },
-    )
+    try {
+      await execFileAsync(
+        'python3',
+        [
+          config.SKILL_INDICATOR_SCRIPT_PATH,
+          jobInput,
+          jobOutput,
+          checker,
+          reviewer,
+        ],
+        { cwd: process.cwd(), timeout: 5 * 60 * 1000 },
+      )
 
-    const outputFiles = await readdir(jobOutput, { recursive: true })
-    const registeredOutputs: Array<{ fileId: string; fileName: string; size: number }> = []
-    for (const rel of outputFiles) {
-      const relPath = String(rel)
-      const fullPath = path.join(jobOutput, relPath)
-      const fileInfo = await stat(fullPath)
-      if (!fileInfo.isFile()) continue
-      const outId = randomUUID()
-      const fileName = path.basename(relPath)
-      const outputBytes = await readFile(fullPath)
-      const sha256Hex = sha256HexOf(outputBytes)
-      const stored = await storeFile({
-        ownerUserId: operator.id,
-        fileId: outId,
-        fileName,
-        mimeType: null,
-        category: 'output',
-        content: outputBytes,
-      })
-      await prisma.fileAsset.create({
-        data: {
-          id: outId,
+      const outputFiles = await readdir(jobOutput, { recursive: true })
+      const registeredOutputs: Array<{ fileId: string; fileName: string; size: number }> = []
+      for (const rel of outputFiles) {
+        const relPath = String(rel)
+        const fullPath = path.join(jobOutput, relPath)
+        const fileInfo = await stat(fullPath)
+        if (!fileInfo.isFile()) continue
+        const outId = randomUUID()
+        const fileName = path.basename(relPath)
+        const outputBytes = await readFile(fullPath)
+        const sha256Hex = sha256HexOf(outputBytes)
+        const stored = await storeFile({
           ownerUserId: operator.id,
-          storagePath: stored.storagePath,
+          fileId: outId,
           fileName,
           mimeType: null,
-          sizeBytes: BigInt(stored.sizeBytes),
-          sha256Hex,
           category: 'output',
+          content: outputBytes,
+        })
+        await prisma.fileAsset.create({
+          data: {
+            id: outId,
+            ownerUserId: operator.id,
+            storagePath: stored.storagePath,
+            fileName,
+            mimeType: null,
+            sizeBytes: BigInt(stored.sizeBytes),
+            sha256Hex,
+            category: 'output',
+          },
+        })
+        registeredOutputs.push({ fileId: outId, fileName, size: stored.sizeBytes })
+      }
+
+      await writeAudit({
+        traceId,
+        userId: operator.id,
+        operatorId: operator.id,
+        action: 'skills.indicator_verification.run',
+        result: 'success',
+        payload: {
+          jobId,
+          inputFileIds,
+          outputCount: registeredOutputs.length,
         },
       })
-      registeredOutputs.push({ fileId: outId, fileName, size: stored.sizeBytes })
-    }
+      await writeToolCallAudit({
+        traceId,
+        toolCallId,
+        userId: operator.id,
+        operatorId: operator.id,
+        toolName,
+        result: 'success',
+        latencyMs: Date.now() - toolCallStartedAt,
+        input: parsed.data,
+        output: {
+          jobId,
+          outputCount: registeredOutputs.length,
+          outputFileIds: registeredOutputs.map((item: { fileId: string }) => item.fileId),
+        },
+      })
 
-    await writeAudit({
-      traceId,
-      userId: operator.id,
-      operatorId: operator.id,
-      action: 'skills.indicator_verification.run',
-      result: 'success',
-      payload: {
+      return {
         jobId,
-        inputFileIds,
-        outputCount: registeredOutputs.length,
-      },
-    })
-
-    return {
-      jobId,
-      outputFiles: registeredOutputs,
-      downloadEndpoint: '/api/v1/files/{fileId}/download',
+        outputFiles: registeredOutputs,
+        downloadEndpoint: '/api/v1/files/{fileId}/download',
+      }
+    } catch (error) {
+      await writeAudit({
+        traceId,
+        userId: operator.id,
+        operatorId: operator.id,
+        action: 'skills.indicator_verification.run',
+        result: 'fail',
+        payload: {
+          jobId,
+          inputFileIds,
+          error: error instanceof Error ? error.message : 'unknown',
+        },
+      })
+      await writeToolCallAudit({
+        traceId,
+        toolCallId,
+        userId: operator.id,
+        operatorId: operator.id,
+        toolName,
+        result: 'fail',
+        latencyMs: Date.now() - toolCallStartedAt,
+        errorMessage: error instanceof Error ? error.message : 'unknown',
+        input: parsed.data,
+      })
+      return reply.code(500).send({
+        message: 'indicator-verification execution failed',
+        error: error instanceof Error ? error.message : 'unknown',
+      })
     }
   })
 

@@ -39,6 +39,7 @@ services:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://postgres:postgres@brain-postgres:5432/ai4kb_brain
       - REDIS_URL=redis://brain-redis:6379
+      - BRAIN_BASE_URL=http://brain-server:8091
     depends_on:
       brain-postgres:
         condition: service_healthy
@@ -52,9 +53,14 @@ services:
       - /bin/sh
       - -lc
       - |
+        INTERVAL="$${MAINTENANCE_INTERVAL_SECONDS:-1800}"
+        ENABLE_SMOKE="$${MAINTENANCE_ENABLE_SMOKE:-true}"
         while true; do
-          node dist/scripts/maintenanceTick.js || true
-          sleep 1800
+          bun dist/scripts/maintenanceTick.js || echo "[ALERT] maintenance tick failed"
+          if [ "$$ENABLE_SMOKE" = "true" ]; then
+            bun dist/scripts/smokeAdminFileStatusApis.js || echo "[ALERT] smoke-admin-file-status failed"
+          fi
+          sleep "$$INTERVAL"
         done
     networks:
       - ai4kb-brain-net

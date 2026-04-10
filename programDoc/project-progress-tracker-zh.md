@@ -59,7 +59,9 @@
 4. 权限与上下文：
    - `GET /api/v1/brain/context`
    - `POST /api/v1/admin/permissions/datasets`
+   - `POST /api/v1/admin/permissions/dataset-owners`
    - `POST /api/v1/admin/permissions/skills`
+   - `POST /api/v1/admin/permissions/memory-profiles`
    - `GET /api/v1/admin/users/{id}/permissions`
 5. 审计：
    - `GET /api/v1/admin/audits`
@@ -102,11 +104,12 @@
 ## 3. 进行中内容（In Progress）
 
 1. 权限主干持续完善：
-   - 当前已支持按 `DATASET/SKILL` 授权，待补齐更多资源类型策略。
+   - 当前已支持按 `DATASET/DATASET_OWNER/SKILL/MEMORY_PROFILE` 授权。
+   - `brain/context` 已返回 `allowedDatasets/allowedDatasetOwners/allowedSkills/allowedMemoryProfiles`。
 2. 契约与实现对齐：
    - 已修正权限接口入参为 `datasetIds/skillIds`，继续监控接口漂移。
 3. 数据模型补齐：
-   - `tool_call_audits`、`rag_query_audits` 尚未落地，正在规划下一批迁移。
+   - `tool_call_audits`、`rag_query_audits` 已落地，下一步转入管理端查询接口补齐。
 4. RagFlow 深度接入：
    - 已完成检索代理接口与审计接入，且支持动态 chat 发现（无固定 chatId 也可调用）。
 5. 会话调用验证：
@@ -121,26 +124,45 @@
 9. 维护任务：
    - 新增 `ops:backfill-file-sha256`（历史哈希回填）
    - 新增 `ops:maintenance-tick`（回填 + 清理组合执行）
+   - 新增 `ops:migrate-local-assets-to-s3`（local 路径存量迁移）
    - 新增可选容器 `brain-maintenance`（`profile=maintenance`）
+10. 缺失文件治理：
+   - `file_assets` 已新增状态字段（`status/status_reason/status_updated_at`）
+   - `local->s3` 迁移遇到 ENOENT 时会自动标记为 `missing`
+   - 下载与指标校核执行会拒绝 `missing` 文件（返回 410）
+   - maintenance-tick 已实测通过（迁移/回填/清理均正常执行）
+   - 已新增管理接口：`GET /api/v1/admin/files`、`POST /api/v1/admin/files/{fileId}/status`
+   - 支持按 `status/category/ownerUserId` 查询，并支持手动标记 `missing/active`
+   - 回切 `active` 前强制做存储可读校验，不可读返回 409
+   - 已新增批量更新接口：`POST /api/v1/admin/files/status/batch`
+   - 已新增导出接口：`GET /api/v1/admin/files/export`（CSV）
+   - 已新增最小回归脚本：`ops:smoke-admin-file-status`（覆盖查询/单条/批量/导出）
+   - `brain-maintenance` 已接入周期化 smoke 校验（`MAINTENANCE_ENABLE_SMOKE` 开关，可输出 `[ALERT]` 日志）
+11. 权限扩展回归：
+   - `DATASET_OWNER` 端到端已验证（grant -> context 命中 `allowedDatasetOwners` -> revoke -> context 移除）。
+   - 兼容回归：`ops:smoke-admin-file-status` 再次执行通过（`login/list/single/batch/export` 全 200）。
+12. 集成测试目录：
+   - 已新增 `brain-server/test/run_governance_e2e.py`，用于 Docker 运行态统一回归（鉴权/权限/context/审计）。
+   - 已在 `brain-server/package.json` 增加 `test:e2e-governance`、`test:e2e-all` 脚本入口。
+13. 全量回归重跑（按“同步 dist 到容器”路径）：
+   - 已执行：`bun run build -> docker cp dist -> docker restart ai4kb-brain-server`。
+   - 结果：`test/run_governance_e2e.py` 与 `ops:smoke-admin-file-status` 均通过，`ai4kb-brain-server` 运行状态正常。
+14. 策略版本与细分审计（高优先级推进）：
+   - `brain/context` 的 `policyVersion` 已改为 Redis 版本号（非 `Date.now()`），并在 `admin.users.update` 与 `admin/permissions*` 变更后自动递增失效。
+   - 已落地 `tool_call_audits`、`rag_query_audits` 两张表，并接入 `skills/indicator-verification/run` 与 `rag/query` 链路。
+   - 运行态验证通过：治理回归脚本新增 `policyVersion` 变更断言；数据库计数已确认两张细分审计表均有写入。
 
 ## 4. 待完成内容（Todo）
 
 ### 4.1 高优先级
 
-1. `permissions` 资源类型扩展：
-   - `DATASET_OWNER`
-   - `MEMORY_PROFILE`
-2. 补齐 `brain/context` 的策略版本与缓存失效策略（可观测、可追踪）。
-3. 接口鉴权强化：
+1. 接口鉴权强化：
    - 令牌轮换策略
    - refreshToken 黑名单或版本戳失效机制
 
 ### 4.2 中优先级
 
-1. 审计链路扩展：
-   - `tool_call_audits`、`rag_query_audits`
-   - 关键动作统一落审计中间件（现已覆盖 admin/users 与 permissions）
-2. 管理侧查询能力：
+1. 管理侧查询能力：
    - 权限查询分页与过滤
    - 审计查询分页与过滤
 
@@ -148,17 +170,37 @@
 
 1. 根目录统一工作区启动脚本（减少子工程手动切换）。
 2. OpenAPI 自动校验与生成流程（CI 中校验契约一致性）。
+3. `IGNORED_TODO`：`[ALERT]` webhook 主动通知（企业微信/钉钉）；当前仅保留日志告警，后续有时间再启用。
 
 ## 5. 架构不符合项（持续跟踪）
 
-1. 审计细分表尚未接入，不满足工具与检索明细追踪要求。
-2. 目前接口测试主要是脚本回归，自动化测试覆盖仍不足。
+1. 目前接口测试主要是脚本回归，自动化测试覆盖仍不足。
+2. 细分审计表已落地，但管理端尚缺专用查询入口。
 3. RagFlow 目前仅做可用性探测，尚未接入受控检索调用链路。
-3. 当前 `brain-maintenance` 为可选 profile，尚未默认启用自动化周期调度。
+4. 历史 local 存量存在“文件已丢失”场景（当前 `missing=4`），需确认是否做 DB 标记或清理策略。
+5. Docker 重建仍受外网 `pip install ezdxf` 影响，当前采用“本地 build + 同步 dist 到容器”作为临时验证方案。
 
 ## 6. 下一步建议（按顺序）
 
-1. 扩展 `permissions` 到 `DATASET_OWNER`、`MEMORY_PROFILE` 两类资源。
-2. 落地 `tool_call_audits`、`rag_query_audits` 两张细分审计表。
-3. 决定是否在生产默认开启 `brain-maintenance` 定时任务（30 分钟一轮）。
-4. 增加最小 API 回归测试脚本集合（登录、鉴权、权限边界、上下文返回）。
+1. 接口鉴权强化（令牌轮换、refresh 失效机制）。
+2. 为 `tool_call_audits/rag_query_audits` 增加管理端查询接口与分页过滤。
+3. 已落地历史 missing 文件处置第五版（自动标记失效 + 业务侧拒绝读取 + 管理端查询/单条更新/批量更新/CSV导出 + 最小自动化回归脚本 + 维护容器周期化 smoke）。
+4. 继续扩展 `test/run_governance_e2e.py`（新增 user/admin 边界与 rag/query 权限分支用例）。
+
+## 7. 功能与代码映射（回顾用）
+
+1. 鉴权链路（login/refresh/me）：
+   - 业务实现：`brain-server/src/server.ts`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`auth_login/auth_refresh/auth_me`）
+2. 权限授权（DATASET/DATASET_OWNER/SKILL/MEMORY_PROFILE）：
+   - 业务实现：`brain-server/src/server.ts`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`perm_*` 与 revoke）
+3. 上下文下发（`allowedDatasets/allowedDatasetOwners/allowedSkills/allowedMemoryProfiles`）：
+   - 业务实现：`brain-server/src/server.ts` 的 `GET /api/v1/brain/context`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`brain_context_after_grant/revoke`）
+4. 审计查询（权限动作落库）：
+   - 业务实现：`brain-server/src/server.ts` 的 `GET /api/v1/admin/audits`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`audits_query_dataset_owner`）
+5. 文件缺失治理管理接口（list/status/batch/export）：
+   - 业务实现：`brain-server/src/server.ts` + `brain-server/src/scripts/smokeAdminFileStatusApis.ts`
+   - 测试代码：`brain-server/package.json` 的 `ops:smoke-admin-file-status`

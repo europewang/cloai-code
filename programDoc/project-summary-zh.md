@@ -61,8 +61,8 @@
    - 健康检查：`/api/health`、`/api/ready`
    - 鉴权：`/api/v1/auth/login`、`/api/v1/auth/refresh`、`/api/v1/auth/me`
    - 用户管理：`/api/v1/admin/users`（创建/更新）
-   - 权限治理：`/api/v1/admin/permissions/datasets`、`/api/v1/admin/permissions/skills`
-   - 上下文下发：`/api/v1/brain/context`
+  - 权限治理：`/api/v1/admin/permissions/datasets`、`/api/v1/admin/permissions/dataset-owners`、`/api/v1/admin/permissions/skills`、`/api/v1/admin/permissions/memory-profiles`
+  - 上下文下发：`/api/v1/brain/context`（含 `allowedDatasets/allowedDatasetOwners/allowedSkills/allowedMemoryProfiles`）
    - 记忆映射：`memory_profiles` 已落库，`profileId` 由真实映射驱动
    - 审计查询：`/api/v1/admin/audits`，写操作已接入 `audit_logs`
    - RagFlow 联通探测：`/api/v1/integrations/ragflow/health`
@@ -70,6 +70,7 @@
    - 文件存储：支持 `local/s3` 双后端，已验证 MinIO（复用 RagFlow MinIO）
    - 文件哈希：`upload` 返回 `sha256Hex`，`file_assets` 已存储哈希字段
    - 运维脚本：已补 `backfill-file-sha256` 与 `maintenance-tick`
+   - 迁移脚本：已补 `migrate-local-assets-to-s3`，用于历史 local 路径存量迁移
 3. 当前约束：
    - `admin` 仅可管理“自己 + 直属 user”。
    - 资源授权默认拒绝，需显式授予。
@@ -81,6 +82,46 @@
    - 部署约束：已按“仅启动本项目 brain + ragflow”执行，无关容器保持未启动。
    - 对象清理：`ops:cleanup-s3-orphans` 脚本可扫描并清理无引用对象（当前扫描 6，删除 0）。
    - 哈希回填：历史记录回填脚本可执行，当前识别出 4 条 local 路径记录并安全跳过（s3 模式）。
+   - 存量迁移：local 路径迁移脚本可执行，当前识别 4 条历史记录已缺失文件（missing=4）。
+   - 缺失治理：`file_assets` 已新增状态字段，迁移脚本会自动将缺失文件标记为 `missing`，下载与技能运行会返回 410 防止继续消费脏记录。
+   - 管理闭环：已新增 `GET /api/v1/admin/files` 与 `POST /api/v1/admin/files/{fileId}/status`，支持管理侧筛选缺失资产并手动回切状态（回切前校验存储可读）。
+   - 批量与导出：已新增 `POST /api/v1/admin/files/status/batch` 与 `GET /api/v1/admin/files/export`，支持批量状态维护与 missing 资产 CSV 导出。
+   - 回归脚本：已新增 `ops:smoke-admin-file-status`，可一键冒烟验证“查询/单条更新/批量更新/导出”四类接口。
+   - 定时回归：`brain-maintenance` 已接入“`maintenance-tick` 后自动 smoke”流程，支持 `MAINTENANCE_ENABLE_SMOKE/MAINTENANCE_INTERVAL_SECONDS` 配置并输出 `[ALERT]` 日志。
+   - 前因后果：该自动链路用于“文件型技能治理”业务线（上传/下载/指标校核），目的是把数据维护与业务可用性校验组合执行，避免“脚本跑完但接口已不可用”。
+   - 暂缓项：webhook 主动通知能力已按 `IGNORED_TODO` 暂缓，当前保持日志告警模式，后续有时间再启用。
+  - 权限扩展：已新增 `POST /api/v1/admin/permissions/memory-profiles` 与 `POST /api/v1/admin/permissions/dataset-owners`，`brain/context` 已返回 `allowedMemoryProfiles/allowedDatasetOwners`。
+  - DATASET_OWNER 回归：已完成 `grant -> context 命中 -> revoke -> context 移除` 端到端验证。
+  - 回归脚本：`ops:smoke-admin-file-status` 最新执行通过（五项接口均 200）。
+  - 运行注意：Docker 重建仍可能受 `pip` 外网不可达影响（`ezdxf`），当前可用“本地编译后同步 `dist` 到容器并重启”作为临时验证路径。
+  - 测试目录：已新增 `brain-server/test/run_governance_e2e.py`，并提供 `test:e2e-governance`、`test:e2e-all` 脚本。
+  - 全量复测：已按“`bun run build` + `docker cp dist` + 重启容器”路径重跑测试，治理回归与文件治理回归均通过。
+  - 缓存失效：`policyVersion` 已改为 Redis 版本号，授权/用户变更后自动递增，治理回归已验证变更前后版本不同。
+  - 细分审计：已落地 `tool_call_audits` 与 `rag_query_audits`，并接入 `indicator-verification` 与 `rag/query` 写入链路，数据库计数已验证有数据写入。
+
+## 9. 功能与测试代码对照（回顾用）
+
+1. 鉴权功能：
+   - 实现代码：`brain-server/src/server.ts`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`auth_login/auth_refresh/auth_me`）
+2. 权限功能（四类资源）：
+   - 实现代码：`brain-server/src/server.ts`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`perm_dataset/perm_dataset_owner/perm_skill/perm_memory_profile`）
+3. 上下文功能：
+   - 实现代码：`brain-server/src/server.ts` 的 `GET /api/v1/brain/context`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`brain_context_after_grant/revoke`）
+4. 审计查询功能：
+   - 实现代码：`brain-server/src/server.ts` 的 `GET /api/v1/admin/audits`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`audits_query_dataset_owner`）
+5. 文件治理功能：
+   - 实现代码：`brain-server/src/server.ts` + `brain-server/src/scripts/smokeAdminFileStatusApis.ts`
+   - 测试代码：`ops:smoke-admin-file-status`
+6. 策略版本失效功能：
+   - 实现代码：`brain-server/src/server.ts`（Redis `policyVersion` 读写与 bump）
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（`brain_context_before_mutation/after_grant/after_revoke`）
+7. 细分审计功能：
+   - 实现代码：`brain-server/prisma/schema.prisma` + `brain-server/src/server.ts`
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（触发）+ `psql count`（落库验证）
 
 ## 8. 技能挂载机制说明
 

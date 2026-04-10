@@ -20,6 +20,7 @@ async function main() {
   })
 
   const rows = await prisma.fileAsset.findMany({
+    where: { status: 'active' },
     select: { storagePath: true },
   })
   const keep = new Set(rows.map((r: { storagePath: string }) => r.storagePath))
