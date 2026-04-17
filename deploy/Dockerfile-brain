@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+
+FROM oven/bun:1.3.11 AS deps
+WORKDIR /app
+RUN apt-get update -y && apt-get install -y openssl ca-certificates python3 python3-pip && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency files first for Docker layer caching
+# Also copy shims/ for local file dependencies
+COPY package.json bun.lock* ./
+COPY shims/ ./shims/
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+  bun install --frozen-lockfile
+
+FROM deps AS build
+WORKDIR /app
+ARG BUILD_STAMP=dev
+RUN echo "$BUILD_STAMP" > /tmp/build_stamp
+COPY tsconfig.json ./
+COPY src ./src
+COPY skills ./skills
+
+FROM oven/bun:1.3.11 AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apt-get update -y && apt-get install -y openssl ca-certificates python3 python3-pip && rm -rf /var/lib/apt/lists/*
+RUN pip3 install -q --break-system-packages requests
+
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/bun.lock ./bun.lock
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/src ./src
+COPY --from=build /app/skills ./skills
+COPY --from=build /app/tsconfig.json ./tsconfig.json
+
+# Create .claude/skills symlink so skill discovery works
+RUN mkdir -p /app/.claude && ln -s /app/skills /app/.claude/skills
+
+EXPOSE 3100
+CMD ["bun", "run", "src/services/brainOrchestration/brainService.ts"]

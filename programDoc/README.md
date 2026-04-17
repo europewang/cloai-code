@@ -53,6 +53,38 @@
   * 🧱 在无桌面环境（GUI）的服务器终端中高效完成配置与调用。
   * ⚙️ 统一集中管理配置、登录态与模型选择等行为至独立目录。
 
+## 🧭 架构角色澄清（重要）
+
+在本仓库中，角色定义如下：
+
+* **大脑（主决策层）**：`src/`
+  * 负责语义理解、路由决策、是否触发某个 skill/toolcall。
+* **辅助编排层（权限与网关）**：`brain-server/`
+  * 负责权限校验、用户隔离、对外服务编排与结果标准化返回。
+  * 已拆分为前置与后置两段：
+    * 前置：下发 `allowedSkills/allowedDatasets/profileId/memoryScope/policyVersion`
+    * 后置：toolcall 强校验、RAG 数据集约束、审计落库
+  * 不承担“主决策大脑”职责。
+
+目标链路是：`src（大脑） -> brain-server 前置 -> tool/skill 调度 -> brain-server 后置 -> RagFlow/技能执行`。
+
+前端集成方式（当前版本）：
+
+* `frontend/server.js` 作为适配层，统一承接浏览器侧 `/api/*` 请求。
+* 聊天流走 `/api/v1/agent/chat/stream`，由适配层转发至 `brain-server /api/v1/rag/query/stream`。
+* 工具流走 `/api/v1/agent/tool/*`：
+  * `catalog / draft / upload / approve`
+  * 对接 `brain-server` 的文件上传、RAG 查询、CAD 技能执行接口。
+
+用户记忆（按 profile 隔离）：
+
+* `brain-server` 提供：
+  * `GET /api/v1/memory/profiles`
+  * `GET /api/v1/memory/current`
+  * `PUT /api/v1/memory/current`
+* `src` 在每轮 system prompt 构建时会读取当前用户记忆并注入。
+* 支持通过 `BRAIN_MEMORY_PROFILE_ID` 指定本轮使用的记忆 profile。
+
 -----
 
 ## 🎯 核心痛点与解决方案

@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { dirname } from 'path'
+import { tmpdir } from 'os'
 import { getProjectRoot } from 'src/bootstrap/state.js'
 import {
   builtInCommandNames,
@@ -40,7 +41,7 @@ import {
   getSessionId,
 } from '../../bootstrap/state.js'
 import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import type { CanUseToolFn } from '../../hooks/useCanTool.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
@@ -51,6 +52,8 @@ import { errorMessage } from '../../utils/errors.js'
 import {
   extractResultText,
   prepareForkedCommandContext,
+  readStructuredResult,
+  type StructuredSkillResult,
 } from '../../utils/forkedAgent.js'
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -66,6 +69,8 @@ import {
 } from '../utils.js'
 import { SKILL_TOOL_NAME } from './constants.js'
 import { getPrompt } from './prompt.js'
+import { authorizeToolCall, fetchPreContext } from '../../services/brainOrchestration/client.js'
+import { BashTool } from '../BashTool/BashTool.js'
 import {
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -128,6 +133,7 @@ async function executeForkedSkill(
   parentMessage: AssistantMessage,
   onProgress?: ToolCallProgress<Progress>,
 ): Promise<ToolResult<Output>> {
+  console.error('FORK_EXECUTE: Starting forked skill execution for', commandName)
   const startTime = Date.now()
   const agentId = createAgentId()
   const isBuiltIn = builtInCommandNames().has(commandName)
@@ -202,8 +208,10 @@ async function executeForkedSkill(
     }),
   })
 
+  console.error('FORK_EXECUTE: Calling prepareForkedCommandContext')
   const { modifiedGetAppState, baseAgent, promptMessages, skillContent } =
     await prepareForkedCommandContext(command, args || '', context)
+  console.error('FORK_EXECUTE: prepareForkedCommandContext returned')
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
@@ -214,75 +222,124 @@ async function executeForkedSkill(
   // Collect messages from the forked agent
   const agentMessages: Message[] = []
 
+  // Generate a unique temp file path for the skill runner to write structured data.
+  // The path is passed via env so run_skill.py can write the JSON without needing
+  // to return it through the LLM.  We set it on process.env directly so BashTool's
+  // child process inherits it.
+  const structuredResultPath = `${tmpdir()}/skill-structured-result-${agentId}.json`
+  const ragStreamTokensPath = `${tmpdir()}/skill-rag-stream-${agentId}.jsonl`
+  const prevStructuredResultPath = process.env.SKILL_STRUCTURED_RESULT_PATH
+  const prevRagStreamTokensPath = process.env.RAG_STREAM_TOKENS_PATH
+  process.env.SKILL_STRUCTURED_RESULT_PATH = structuredResultPath
+  process.env.RAG_STREAM_TOKENS_PATH = ragStreamTokensPath
+
   logForDebugging(
     `SkillTool executing forked skill ${commandName} with agent ${agentDefinition.agentType}`,
   )
 
   try {
+    // Add BashTool to availableTools so sub-agent can execute skill commands
+    const toolsWithBash = [...context.options.tools, BashTool as unknown as Tool]
+    console.error('FORK SKILL DEBUG: Starting sub-agent for', commandName, 'with tools:', toolsWithBash.map(t => t.name))
+    console.error('FORK SKILL DEBUG: promptMessages count:', promptMessages.length)
+    console.error('FORK SKILL DEBUG: agentDefinition:', JSON.stringify({agentType: agentDefinition.agentType, effort: agentDefinition.effort}).substring(0, 200))
     // Run the sub-agent
-    for await (const message of runAgent({
-      agentDefinition,
-      promptMessages,
-      toolUseContext: {
-        ...context,
-        getAppState: modifiedGetAppState,
-      },
-      canUseTool,
-      isAsync: false,
-      querySource: 'agent:custom',
-      model: command.model as ModelAlias | undefined,
-      availableTools: context.options.tools,
-      override: { agentId },
-    })) {
-      agentMessages.push(message)
+    try {
+      for await (const message of runAgent({
+        agentDefinition,
+        promptMessages,
+        toolUseContext: {
+          ...context,
+          getAppState: modifiedGetAppState,
+        },
+        canUseTool,
+        isAsync: false,
+        querySource: 'agent:custom',
+        model: command.model as ModelAlias | undefined,
+        availableTools: toolsWithBash,
+        override: { agentId },
+      })) {
+        agentMessages.push(message)
+        console.error('FORK SKILL DEBUG: got message type:', message.type)
 
-      // Report progress for tool uses (like AgentTool does)
-      if (
-        (message.type === 'assistant' || message.type === 'user') &&
-        onProgress
-      ) {
-        const normalizedNew = normalizeMessages([message])
-        for (const m of normalizedNew) {
-          const hasToolContent = m.message.content.some(
-            c => c.type === 'tool_use' || c.type === 'tool_result',
-          )
-          if (hasToolContent) {
-            onProgress({
-              toolUseID: `skill_${parentMessage.message.id}`,
-              data: {
-                message: m,
-                type: 'skill_progress',
-                prompt: skillContent,
-                agentId,
-              },
-            })
+        // Report progress for tool uses (like AgentTool does)
+        if (
+          (message.type === 'assistant' || message.type === 'user') &&
+          onProgress
+        ) {
+          const normalizedNew = normalizeMessages([message])
+          for (const m of normalizedNew) {
+            const hasToolContent = m.message.content.some(
+              c => c.type === 'tool_use' || c.type === 'tool_result',
+            )
+            if (hasToolContent) {
+              onProgress({
+                toolUseID: `skill_${parentMessage.message.id}`,
+                data: {
+                  message: m,
+                  type: 'skill_progress',
+                  prompt: skillContent,
+                  agentId,
+                },
+              })
+            }
           }
         }
       }
+    } catch (err) {
+      console.error('FORK SKILL DEBUG: runAgent error:', err)
+      throw err
     }
+    console.error('FORK SKILL DEBUG: Sub-agent completed, messages:', agentMessages.length)
 
     const resultText = extractResultText(
       agentMessages,
       'Skill execution completed',
     )
+
+    // Try to read structured result written by the skill runner (e.g., run_skill.py).
+    // This carries references, raw answer, images, etc. from RAG — null is non-fatal.
+    const structuredResult: StructuredSkillResult | null =
+      readStructuredResult(structuredResultPath)
+    console.error('DEBUG SkillTool: readStructuredResult from', structuredResultPath, 'result:', structuredResult ? 'found' : 'null')
+    if (structuredResult) {
+      console.error('DEBUG SkillTool: structuredResult.answer length:', structuredResult.answer?.length, 'references:', structuredResult.referenceCount)
+    }
+
     // Release message memory after extracting result
     agentMessages.length = 0
 
     const durationMs = Date.now() - startTime
     logForDebugging(
-      `SkillTool forked skill ${commandName} completed in ${durationMs}ms`,
+      `SkillTool forked skill ${commandName} completed in ${durationMs}ms` +
+        (structuredResult
+          ? `, references=${structuredResult.referenceCount}`
+          : ', no structured result'),
     )
 
     return {
       data: {
         success: true,
         commandName,
-        status: 'forked',
+        status: 'forked' as const,
         agentId,
         result: resultText,
+        // Carry structured result upstream so brainService can inject references
+        structuredResult: structuredResult ?? undefined,
       },
     }
   } finally {
+    // Restore previous env value and clean up temp file
+    if (prevStructuredResultPath !== undefined) {
+      process.env.SKILL_STRUCTURED_RESULT_PATH = prevStructuredResultPath
+    } else {
+      delete process.env.SKILL_STRUCTURED_RESULT_PATH
+    }
+    if (prevRagStreamTokensPath !== undefined) {
+      process.env.RAG_STREAM_TOKENS_PATH = prevRagStreamTokensPath
+    } else {
+      delete process.env.RAG_STREAM_TOKENS_PATH
+    }
     // Release skill content from invokedSkills state
     clearInvokedSkillsForAgent(agentId)
   }
@@ -320,6 +377,21 @@ export const outputSchema = lazySchema(() => {
       .string()
       .describe('The ID of the sub-agent that executed the skill'),
     result: z.string().describe('The result from the forked skill execution'),
+    structuredResult: z
+      .object({
+        answer: z.string().optional(),
+        referenceCount: z.number().optional(),
+        references: z.array(z.record(z.unknown())).optional(),
+        raw: z.unknown().optional(),
+        skill: z.string().optional(),
+        traceId: z.string().nullable().optional(),
+        chatId: z.string().nullable().optional(),
+        ok: z.boolean().optional(),
+      })
+      .optional()
+      .describe(
+        'Structured data written by the skill runner (e.g., RAG references)',
+      ),
   })
 
   return z.union([inlineOutputSchema, forkedOutputSchema])
@@ -445,6 +517,33 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Look up the command object to pass as metadata
     const commands = await getAllCommands(context)
     const commandObj = findCommand(commandName, commands)
+
+    const preContext = await fetchPreContext()
+    if (
+      preContext?.allowedSkills &&
+      preContext.allowedSkills.length > 0 &&
+      !preContext.allowedSkills.includes(commandName)
+    ) {
+      return {
+        behavior: 'deny',
+        message: `Skill execution blocked by brain pre-server policy`,
+        decisionReason: undefined,
+      }
+    }
+
+    const remoteAuthorize = await authorizeToolCall({
+      toolName: SKILL_TOOL_NAME,
+      skillId: commandName,
+      action: 'skill.toolcall',
+      memoryProfileId: preContext?.profileId,
+    })
+    if (remoteAuthorize && !remoteAuthorize.allow) {
+      return {
+        behavior: 'deny',
+        message: `Skill execution blocked by brain post-server policy (${remoteAuthorize.reason || 'permission_denied'})`,
+        decisionReason: undefined,
+      }
+    }
 
     // Helper function to check if a rule matches the skill
     // Normalizes both inputs by stripping leading slashes for consistent matching
@@ -615,20 +714,36 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const commands = await getAllCommands(context)
     const command = findCommand(commandName, commands)
 
+    // DEBUG: log all commands with context=fork
+    const forkCmds = commands.filter(c => c.type === 'prompt' && c.context === 'fork')
+    if (forkCmds.length > 0) {
+      console.error('DEBUG_FORK_CHECK: Commands with context=fork:', forkCmds.map(c => c.name).join(', '))
+    }
+
     // Track skill usage for ranking
     recordSkillUsage(commandName)
 
+    // DEBUG: log command details
+    console.error('DEBUG_FORK_CHECK: commandName=', commandName, 'command=', JSON.stringify({type: command?.type, context: command?.context, name: command?.name}).substring(0, 300))
+
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {
-      return executeForkedSkill(
-        command,
-        commandName,
-        args,
-        context,
-        canUseTool,
-        parentMessage,
-        onProgress,
-      )
+      console.error('CALL: About to call executeForkedSkill')
+      try {
+        const result = await executeForkedSkill(
+          command,
+          commandName,
+          args,
+          context,
+          canUseTool,
+          parentMessage,
+          onProgress,
+        )
+        return result
+      } catch (err) {
+        console.error('CALL: executeForkedSkill failed:', err)
+        throw err
+      }
     }
 
     // Process the skill with optional args
@@ -846,10 +961,14 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
   ): ToolResultBlockParam {
     // Handle forked skill result
     if ('status' in result && result.status === 'forked') {
+      // Include structuredResult in content if available (for brain service to extract RAG references)
+      const structuredInfo = result.structuredResult
+        ? `\n\n__STRUCTURED_RESULT__:${JSON.stringify(result.structuredResult)}`
+        : ''
       return {
         type: 'tool_result' as const,
         tool_use_id: toolUseID,
-        content: `Skill "${result.commandName}" completed (forked execution).\n\nResult:\n${result.result}`,
+        content: `Skill "${result.commandName}" completed (forked execution).\n\nResult:\n${result.result}${structuredInfo}`,
       }
     }
 

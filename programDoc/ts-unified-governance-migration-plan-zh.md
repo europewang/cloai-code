@@ -838,9 +838,104 @@ erDiagram
 3. 链路接入：
    - `POST /api/v1/rag/query` 已写入 `rag_query_audits`。
    - `POST /api/v1/skills/indicator-verification/run` 已写入 `tool_call_audits`（含成功/失败/拒绝场景）。
+   - 管理侧已新增 `GET /api/v1/admin/audits/skills` 与 `GET /api/v1/admin/audits/rag` 查询入口。
 4. 验证方式：
    - `test/run_governance_e2e.py` 新增 `policyVersion` 变更断言。
    - 通过 SQL 计数确认两张细分审计表已写入数据。
+   - 通过 `test/run_governance_e2e.py` 的 `audits_query_skills/audits_query_rag` 校验管理侧查询接口可用。
+
+### 15.14 前端与 brain 编排统一（2026-04-10）
+
+1. 编排调整：
+   - 在 `deploy/docker-compose-brain-ts.yml` 新增 `frontend` 服务。
+   - `frontend` 与 `brain-server` 同属 `ai4kb-brain-net`，并通过 `BACKEND_URL=http://brain-server:8091` 代理。
+2. 目标：
+   - 以单一编排文件启动“前端 + brain 后端”，避免跨 compose 网络割裂导致的 502。
+3. 验证：
+   - `http://127.0.0.1:8086` 访问 200。
+   - 通过前端代理调用 `/api/v1/auth/login`、`/api/v1/admin/users` 均返回 200。
+
+### 15.15 前后端能力对照与后续任务池（2026-04-10）
+
+1. 前端依赖但后端尚未承接（接口级）：
+   - `auth`：`/api/user/auth/login`（后端为 `/api/v1/auth/login`）
+   - `permissions`：`/api/admin/permission/{username}`、`/api/admin/permission/sync`
+   - `users`：`/api/admin/users/admin|normal|{id}/promote-admin`
+   - `datasets/documents`：`/api/admin/datasets*`
+   - `conversations`：`/api/user/conversations*`
+   - `agent`：`/api/v1/agent/chat/stream`、`/api/v1/agent/tool/*`
+   - `skills`：`/api/admin/skills*`、`/api/admin/skills/audit/options`
+   - `route-samples`：`/api/admin/route-samples/options`
+2. 后端已具备但前端未承接（能力级）：
+   - `DATASET_OWNER`、`MEMORY_PROFILE` 授权入口
+   - `admin/files` 缺失治理全套入口（查询/单条/批量/导出）
+   - `admin/audits/skills`、`admin/audits/rag` 细分审计页
+   - `brain/context.policyVersion` 与策略可观测性
+3. 任务分组建议：
+   - A组（低风险）：做前端代理适配层，先打通 `auth/users/permissions` 协议映射。
+   - B组（中风险）：补前端页面到后端新能力（files/audits/owner/profile 授权）。
+   - C组（高风险，先评估）：会话聊天链路与数据集管理职责划分（brain vs 旧后端）。
+4. 当前测试登录基线：
+   - `admin / admin123456`（管理员）
+   - `zhangsan / ChangeMe123!`（普通用户）
+
+### 15.16 会话与聊天前端适配层（2026-04-10）
+
+1. 适配目标：
+   - 在不大改 `brain-server` 的前提下，兼容前端旧会话与流式聊天协议。
+2. 适配实现（前端代理层）：
+   - `/api/user/conversations*`：由 `frontend/server.js` 提供内存会话存储与分页/消息接口。
+   - `/api/v1/agent/chat/stream`：由 `frontend/server.js` 直连 `brain` 的 `/api/v1/rag/query/stream`，原样转发 SSE。
+3. RAG 语义说明：
+   - 当前运行态仍由 `brain-server` 调用 RagFlow 获取回答；前端适配层仅做协议桥接。
+   - 按目标架构，这里应回归为 `src` 大脑先做语义路由，再决定是否走 RAG skill/toolcall。
+4. 验证：
+   - 会话创建/查询/消息保存通过。
+   - 流式响应包含连续 `event: token`、`event: message` 与 `data: [DONE]`。
+5. 架构修正（用户反馈后）：
+   - 取消前端 dataset 预判与固定提示拦截，前端仅透传 query。
+   - `brain-server /api/v1/rag/query` 在非 super_admin 且未传 `datasetId` 时，后端自动选取最近授权数据集执行。
+   - RAG 调用固定为 `chats_openai`，并通过 `extra_body.reference=true` 获取引用。
+6. 架构归一（2026-04-11）：
+   - 已完成：移除 `brain -> ragflow-backend` 依赖，改为 `brain-server -> ragflow-server(8084)` 直连。
+   - 已完成：`brain-server` 新增 `/api/v1/rag/query/stream` 并做 OpenAI SSE -> 前端事件转换（token/message）。
+   - 已完成：文档/图片透传改为 `brain-server -> ragflow-server /v1/document/get|image`。
+   - 待完成（关键）：将“是否调用 RAG skill/toolcall”的决策前移到 `src/`（大脑），`brain-server` 仅保留辅助编排与权限治理职责。
+7. 运行资源策略（2026-04-11）：
+   - 为避免显存争抢导致 `src` 长时间 `Thinking`，运行态调整为：
+     - xinference：仅 `bge-m3` + `bge-reranker-v2-m3`
+     - Ollama：`qwen3.5:9b`（GPU）
+   - `launch_xinference_models.py` 已同步为“只拉起两小模型”。
+8. 部署编排清理（2026-04-11）：
+   - `deploy/docker-compose-ragflow.yml` 已删除 `backend` 服务与 `frontend` 对其依赖。
+   - 目的：避免误解为“本项目必须依赖该后端”，保持与 `src` 大脑 + 辅助编排目标一致。
+9. RagFlow 对接 Ollama 稳定性补丁（2026-04-11）：
+   - `ragflow` 服务增加 `extra_hosts: host.docker.internal:host-gateway`，支持容器内回连宿主机 Ollama。
+   - 模型名规范：`qwen3.5:9b`（修正错误写法 `qwen3.5-9b`）。
+10. 前后置编排拆分（2026-04-11）：
+   - 前置（pre-server）：负责向 `src` 下发用户策略上下文。
+   - 后置（post-server）：负责对 `src` 发起的 skill/toolcall 做最终授权与约束。
+   - 代码落地：
+     - `brain-server/src/routes/preServer.ts`
+     - `brain-server/src/routes/postServer.ts`
+     - `src/services/brainOrchestration/client.ts`
+11. 技能运行契约收敛（2026-04-11）：
+   - `skills/rag_query/run_skill.py` 与 `skills/cad_text_extractor/run_skill.py` 统一为结构化 JSON 输出。
+   - 兼容位置参数与命名参数，降低模型调用时参数构造失败概率。
+   - RAG skill 支持通过 `BRAIN_SERVER_*` 环境变量注入鉴权上下文。
+12. 测试闭环（2026-04-12）：
+   - 已覆盖“自然语言触发 + skill/toolcall 执行 + 权限阻断 + 文件上传下载”闭环。
+   - 已验证两类用户：
+     - 授权用户：可执行 RAG/CAD skill；
+     - 非授权用户：RAG 被拒绝（403），越权文件访问被拒绝（403）。
+13. 前端适配闭环（2026-04-12）：
+   - `frontend/server.js` 作为网关适配 `agent/tool` 协议，补齐现有 UI 依赖接口。
+   - SSE 返回统一为 `tool_result/message/[DONE]`，可被当前聊天组件消费。
+   - 保持“展示层不大改、接口层收敛到 brain-server”的改造原则。
+14. 用户记忆闭环（2026-04-12）：
+   - `brain-server` 提供按 profile 的记忆读写接口，并执行权限校验与审计。
+   - `src` 每轮自动注入当前用户记忆，支持按 `BRAIN_MEMORY_PROFILE_ID` 切换。
+   - 前端新增“记忆管理”页，用户可直接编辑个人记忆并用于后续问答。
 
 ## 16. 实施准备产物（已产出）
 
@@ -1144,3 +1239,103 @@ erDiagram
 3. 当前验证：
    - 样例结果：`scanned=4, migrated=0, missing=4, failed=0`。
    - 说明：这 4 条历史记录对应本地文件已不存在，已输出 `migrate-missing` 日志用于后续处置。
+
+### 17.23 Brain Service Docker 部署修复（2026-04-16）
+
+#### 问题描述
+
+1. **Skills 目录未挂载**：Docker 容器内无法访问 `/opt/skills` 目录，导致 skills 无法加载。
+2. **缺少 .claude/skills 符号链接**：src 代码从 `.claude/skills` 目录加载 skills，但 Docker 镜像中不存在该链接。
+3. **CLAUDE_CODE_SIMPLE=1 导致 bare mode**：bare mode 下 skills 自动发现被禁用。
+4. **API provider fallback 问题**：`compatProvider` 未检查 `CLAUDE_CODE_COMPATIBLE_API_PROVIDER` 环境变量。
+5. **Skill 名称匹配问题**：skill 目录名 `rag_query`（下划线）与 preCtx 返回的 `rag-query`（连字符）不匹配。
+6. **Python requests 模块缺失**：skill 执行依赖 `requests` 模块但 Docker 镜像未安装。
+
+#### 修复内容
+
+1. **docker-compose-brain-ts.yml**：
+   ```yaml
+   brain:
+     volumes:
+       - ../skills:/opt/skills:ro
+     environment:
+       - CLAUDE_CODE_SIMPLE=0  # 禁用 bare mode
+   ```
+
+2. **Dockerfile-brain**：
+   ```dockerfile
+   # 创建 .claude/skills 符号链接
+   RUN mkdir -p /app/.claude && ln -s /app/skills /app/.claude/skills
+   
+   # 安装 Python requests 模块
+   RUN pip3 install -q --break-system-packages requests
+   ```
+
+3. **brainService.ts**：
+   - 修复 skill 名称匹配逻辑，支持 `rag_query` 和 `rag-query` 互换：
+   ```typescript
+   const allowedSkillCommands = allSkillCommands.filter(cmd =>
+     !preCtx.allowedSkills || preCtx.allowedSkills.length === 0 || 
+     preCtx.allowedSkills.includes(cmd.name) || 
+     preCtx.allowedSkills.includes(cmd.name.replace(/_/g, '-'))
+   )
+   ```
+
+4. **claude.ts**：
+   - 修复 `compatProvider` fallback 逻辑，检查环境变量：
+   ```typescript
+   : customApiStorage.provider ?? 
+     (process.env.CLAUDE_CODE_COMPATIBLE_API_PROVIDER === 'openai' ? 'openai' : 'anthropic')
+   ```
+
+#### 验证结果
+
+```bash
+# 测试 RAG skill 调用
+curl -X POST http://localhost:8091/api/v1/brain/query \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query": "请调用rag skill，什么是半面积"}'
+
+# 返回结果正确使用 RagFlow 知识库内容
+# - "1/2 面积" 按投影面积的 50% 计算
+# - 阳台按 1/2 面积计算
+# - 半地下室规定
+# - 《武汉市建设工程建筑面积计算规则 条文说明》
+```
+
+### 17.24 Brain-server 无法连接 Brain 服务（2026-04-16）
+
+#### 问题描述
+
+brain-server 调用 brain 服务时报错：
+```
+Error: Unable to connect. Is the computer able to access the url?
+path: http://brain:3100/api/query
+```
+
+#### 原因分析
+
+- brain 服务使用 `network_mode: host`，直接绑定宿主机的网络
+- brain-server 容器在 Docker 网络中，无法通过 `brain:3100` 解析到 brain 服务
+- 需要使用 `host.docker.internal` 才能从容器内部访问宿主机
+
+#### 修复内容
+
+**brain-server/src/server.ts**：
+```typescript
+// 修改前
+const brainServiceUrl = `http://brain:3100/api/query`
+
+// 修改后
+const brainServiceUrl = `http://host.docker.internal:3100/api/query`
+```
+
+#### 验证结果
+
+```bash
+curl -X POST http://localhost:8091/api/v1/brain/query \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query": "请调用rag skill，什么是半面积"}'
+
+# 返回正确的 RAG 知识库内容（CAD 半面积定义）
+```

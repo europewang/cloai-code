@@ -14,6 +14,8 @@ import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/pro
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { registerPreServerRoutes } from './routes/preServer.js'
+import { registerPostServerRoutes } from './routes/postServer.js'
 
 type Role = 'super_admin' | 'admin' | 'user'
 type ResourceType = 'DATASET' | 'DATASET_OWNER' | 'SKILL' | 'MEMORY_PROFILE'
@@ -79,6 +81,7 @@ export function createServer(config: AppConfig) {
     enableOfflineQueue: false,
   })
   const policyVersionKeyPrefix = 'brain:policy:version:user:'
+  const ragChatKeyPrefix = 'brain:rag:chat:user:'
 
   const bootstrapUser = {
     id: '1', // 启动前期保留占位，真实登录态以数据库为准。
@@ -136,6 +139,24 @@ export function createServer(config: AppConfig) {
     page: z.coerce.number().int().positive().default(1),
     pageSize: z.coerce.number().int().positive().max(100).default(20),
   })
+  const listToolCallAuditsQuerySchema = z.object({
+    traceId: z.string().optional(),
+    userId: z.coerce.number().int().positive().optional(),
+    operatorId: z.coerce.number().int().positive().optional(),
+    toolName: z.string().optional(),
+    result: z.enum(['success', 'deny', 'fail']).optional(),
+    page: z.coerce.number().int().positive().default(1),
+    pageSize: z.coerce.number().int().positive().max(100).default(20),
+  })
+  const listRagQueryAuditsQuerySchema = z.object({
+    traceId: z.string().optional(),
+    userId: z.coerce.number().int().positive().optional(),
+    operatorId: z.coerce.number().int().positive().optional(),
+    datasetId: z.string().optional(),
+    result: z.enum(['success', 'deny', 'fail']).optional(),
+    page: z.coerce.number().int().positive().default(1),
+    pageSize: z.coerce.number().int().positive().max(100).default(20),
+  })
   const listFileAssetsQuerySchema = z.object({
     status: z.enum(['active', 'missing']).optional(),
     category: z.enum(['input', 'output']).optional(),
@@ -163,9 +184,17 @@ export function createServer(config: AppConfig) {
   const ragQueryBodySchema = z.object({
     query: z.string().min(1),
     datasetId: z.string().min(1).optional(),
+    skillId: z.string().min(1).optional(),
     topK: z.number().int().positive().max(50).optional(),
     chatId: z.string().min(1).optional(),
     extra: z.record(z.string(), z.unknown()).optional(),
+  })
+  const toolAuthorizeBodySchema = z.object({
+    toolName: z.string().min(1),
+    skillId: z.string().min(1).optional(),
+    datasetId: z.string().min(1).optional(),
+    memoryProfileId: z.string().min(1).optional(),
+    action: z.string().min(1).optional(),
   })
   const indicatorRunBodySchema = z.object({
     inputFileIds: z.array(z.string().min(1)).min(1),
@@ -193,6 +222,13 @@ export function createServer(config: AppConfig) {
     userId: z.coerce.number().int().positive(),
     action: z.enum(['grant', 'revoke']),
     profileIds: z.array(z.string().min(1)).min(1),
+  })
+  const memoryProfileQuerySchema = z.object({
+    profileId: z.string().min(1).optional(),
+  })
+  const updateMemoryBodySchema = z.object({
+    profileId: z.string().min(1).optional(),
+    content: z.string().max(200000),
   })
 
   function signToken(tokenType: 'access' | 'refresh') {
@@ -336,7 +372,7 @@ export function createServer(config: AppConfig) {
     })
   }
 
-  async function ensureRedisReadyForPolicy() {
+  async function ensureRedisReady() {
     if (redis.status === 'wait') {
       await redis.connect()
     }
@@ -346,7 +382,7 @@ export function createServer(config: AppConfig) {
   async function getPolicyVersion(userId: bigint) {
     const key = `${policyVersionKeyPrefix}${userId.toString()}`
     try {
-      await ensureRedisReadyForPolicy()
+      await ensureRedisReady()
       const current = await redis.get(key)
       if (current) return current
       await redis.setnx(key, '1')
@@ -357,10 +393,41 @@ export function createServer(config: AppConfig) {
     }
   }
 
+  async function loadUserPermissionContext(userId: bigint, role: Role) {
+    const permissions = await prisma.permission.findMany({
+      where: {
+        userId,
+      },
+    })
+    const memoryProfile = await ensureAndGetProfileByUserId(userId)
+    const allowedDatasets = permissions
+      .filter((p: { resourceType: string }) => p.resourceType === RESOURCE_TYPE.DATASET)
+      .map((p: { resourceId: string }) => p.resourceId)
+    const allowedDatasetOwners = permissions
+      .filter((p: { resourceType: string }) => p.resourceType === RESOURCE_TYPE.DATASET_OWNER)
+      .map((p: { resourceId: string }) => p.resourceId)
+    const allowedSkills = permissions
+      .filter((p: { resourceType: string }) => p.resourceType === RESOURCE_TYPE.SKILL)
+      .map((p: { resourceId: string }) => p.resourceId)
+    const allowedMemoryProfiles = permissions
+      .filter((p: { resourceType: string }) => p.resourceType === RESOURCE_TYPE.MEMORY_PROFILE)
+      .map((p: { resourceId: string }) => p.resourceId)
+    const policyVersion = await getPolicyVersion(userId)
+    return {
+      role,
+      profileId: memoryProfile.profileId,
+      allowedDatasets: Array.from(new Set(allowedDatasets)),
+      allowedDatasetOwners: Array.from(new Set(allowedDatasetOwners)),
+      allowedSkills: Array.from(new Set(allowedSkills)),
+      allowedMemoryProfiles: Array.from(new Set([memoryProfile.profileId, ...allowedMemoryProfiles])),
+      policyVersion,
+    }
+  }
+
   async function bumpPolicyVersion(userId: bigint, reason: string) {
     const key = `${policyVersionKeyPrefix}${userId.toString()}`
     try {
-      await ensureRedisReadyForPolicy()
+      await ensureRedisReady()
       const next = await redis.incr(key)
       app.log.info(
         {
@@ -381,6 +448,52 @@ export function createServer(config: AppConfig) {
         'failed to bump policy version',
       )
       return null
+    }
+  }
+
+  // 用户记忆以 profile 为隔离单元，统一落盘到 brain 存储目录下。
+  function getMemoryBaseDir() {
+    return path.resolve(config.SKILL_FILE_BASE_DIR, 'memory-profiles')
+  }
+
+  // 仅允许写入 memory-profiles 根目录下，避免路径穿越。
+  function buildProfileMemoryFilePath(storageRoot: string) {
+    const base = getMemoryBaseDir()
+    const target = path.resolve(base, storageRoot, 'MEMORY.md')
+    if (!target.startsWith(`${base}${path.sep}`) && target !== path.join(base, 'MEMORY.md')) {
+      throw new Error('invalid profile storage path')
+    }
+    return target
+  }
+
+  // 解析目标 profile，并做访问权限校验。
+  async function resolveMemoryTarget(
+    operator: { id: bigint; role: Role },
+    profileId: string | undefined,
+  ) {
+    const ctx = await loadUserPermissionContext(operator.id, operator.role)
+    const targetProfileId = profileId?.trim() || ctx.profileId
+    if (!ctx.allowedMemoryProfiles.includes(targetProfileId) && operator.role !== 'super_admin') {
+      return {
+        ok: false as const,
+        reason: 'memory_profile_permission_denied',
+        ctx,
+      }
+    }
+    const profile = await prisma.memoryProfile.findUnique({
+      where: { profileId: targetProfileId },
+    })
+    if (!profile) {
+      return {
+        ok: false as const,
+        reason: 'memory_profile_not_found',
+        ctx,
+      }
+    }
+    return {
+      ok: true as const,
+      profile,
+      ctx,
     }
   }
 
@@ -516,6 +629,104 @@ export function createServer(config: AppConfig) {
       throw new Error('no chat found in ragflow tenant')
     }
     return chatId
+  }
+
+  async function createRagflowChat(
+    base: string,
+    headers: Record<string, string>,
+    name: string,
+    datasetIds: string[] = [],
+  ) {
+    const body = datasetIds.length > 0 ? { name, dataset_ids: datasetIds } : { name }
+    const resp = await fetch(`${base}/api/v1/chats`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      throw new Error(`create chat failed: ${resp.status}`)
+    }
+    const payload = (await resp.json()) as {
+      code?: number
+      message?: string
+      data?: { id?: string }
+    }
+    if (payload?.code !== 0 || !payload?.data?.id) {
+      throw new Error(payload?.message || 'create chat business failed')
+    }
+    return payload.data.id
+  }
+
+  async function getOrCreateUserRagflowChatId(
+    base: string,
+    headers: Record<string, string>,
+    userId: bigint,
+    datasetIds: string[] = [],
+  ) {
+    const key = `${ragChatKeyPrefix}${String(userId)}`
+    let cached: string | null = null
+    try {
+      await ensureRedisReady()
+      cached = await redis.get(key)
+    } catch (error) {
+      app.log.warn(
+        {
+          userId: String(userId),
+          error: error instanceof Error ? error.message : 'unknown',
+        },
+        'redis unavailable when reading rag chat mapping; fallback to create chat',
+      )
+    }
+    if (cached) {
+      return cached
+    }
+    const chatName = `brain_user_${String(userId)}_${Date.now()}`
+    let created: string
+    const candidates = Array.from(new Set(datasetIds.filter((id) => !!id && id !== 'public-default')))
+    // 优先尝试“单 dataset”绑定，避免混入无效 id 导致整批失败。
+    for (const id of candidates) {
+      try {
+        created = await createRagflowChat(base, headers, chatName, [id])
+        try {
+          await ensureRedisReady()
+          await redis.set(key, created)
+        } catch {}
+        return created
+      } catch {
+        // try next candidate
+      }
+    }
+    try {
+      created = await createRagflowChat(base, headers, chatName, candidates)
+      try {
+        await ensureRedisReady()
+        await redis.set(key, created)
+      } catch {}
+      return created
+    } catch {
+      // 部分租户下 dataset 绑定可能被 RagFlow 侧校验拒绝，兜底创建空 chat 避免链路中断。
+      created = await createRagflowChat(base, headers, chatName, [])
+    }
+    try {
+      await ensureRedisReady()
+      await redis.set(key, created)
+    } catch {}
+    return created
+  }
+
+  function buildRagflowHeaders(contentType = 'application/json') {
+    const headers: Record<string, string> = {}
+    if (contentType) {
+      headers['Content-Type'] = contentType
+    }
+    if (config.RAGFLOW_AUTHORIZATION) {
+      headers.Authorization = config.RAGFLOW_AUTHORIZATION
+    } else if (config.RAGFLOW_BEARER_TOKEN) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
+    } else if (config.RAGFLOW_API_KEY) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
+    }
+    return headers
   }
 
   async function getFileAssetById(fileId: string) {
@@ -854,6 +1065,28 @@ export function createServer(config: AppConfig) {
     }
   })
 
+  app.get('/api/v1/admin/users', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    // super_admin 可查看全量；admin 仅查看自己及直属用户。
+    const users = await prisma.user.findMany({
+      where:
+        operator.role === 'super_admin'
+          ? {}
+          : {
+              OR: [{ id: operator.id }, { managerUserId: operator.id }],
+            },
+      orderBy: { id: 'asc' },
+    })
+
+    return users.map((user: any) => formatUser(user))
+  })
+
   app.patch('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
@@ -987,42 +1220,325 @@ export function createServer(config: AppConfig) {
     return reply.send(formatUser(updated))
   })
 
-  app.get('/api/v1/brain/context', { preHandler: authGuard }, async (req, reply) => {
+  app.delete('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
+    const traceId = getTraceId(req)
+    const authedReq = req as AuthedRequest
+    const parsedParam = idParamSchema.safeParse(req.params)
+    if (!parsedParam.success) {
+      await writeAudit({
+        traceId,
+        action: 'admin.users.delete',
+        result: 'fail',
+      })
+      return reply.code(400).send({ message: 'Invalid request' })
+    }
+
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const target = await prisma.user.findUnique({
+      where: { id: BigInt(parsedParam.data.id) },
+    })
+    if (!target) {
+      await writeAudit({
+        traceId,
+        operatorId: operator.id,
+        action: 'admin.users.delete',
+        result: 'fail',
+      })
+      return reply.code(404).send({ message: 'User not found' })
+    }
+    if (!canManageTargetUser(operator, target)) {
+      await writeAudit({
+        traceId,
+        userId: target.id,
+        operatorId: operator.id,
+        action: 'admin.users.delete',
+        result: 'deny',
+      })
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+    if (target.role === 'super_admin') {
+      return reply.code(400).send({ message: 'cannot delete super_admin' })
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: target.id },
+      data: { status: 'disabled' },
+    })
+    await bumpPolicyVersion(updated.id, 'admin.users.delete')
+    await writeAudit({
+      traceId,
+      userId: updated.id,
+      operatorId: operator.id,
+      action: 'admin.users.delete',
+      resourceType: 'USER',
+      resourceId: String(updated.id),
+      result: 'success',
+    })
+    return reply.send(formatUser(updated))
+  })
+
+  registerPreServerRoutes(app, {
+    authGuard,
+    getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
+      getActiveOperator(req as AuthedRequest, reply),
+    loadUserPermissionContext,
+  })
+  registerPostServerRoutes(app, {
+    authGuard,
+    getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
+      getActiveOperator(req as AuthedRequest, reply),
+    loadUserPermissionContext,
+    toolAuthorizeBodySchema,
+  })
+
+  // Brain query schema - simplified brain decision endpoint
+  const brainQueryBodySchema = z.object({
+    query: z.string().min(1),
+    conversationId: z.string().optional(),
+  })
+
+  /**
+   * Brain Query Endpoint
+   *
+   * PROXY to brainService.ts (src brain) for proper LLM-based decision making.
+   * The src brain decides: direct answer, RAG, or CAD skill.
+   * Returns SSE stream or JSON based on the brain's decision.
+   */
+  app.post('/api/v1/brain/query', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
 
-    const permissions = await prisma.permission.findMany({
-      where: {
-        userId: operator.id,
+    const parsed = brainQueryBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid request body' })
+    }
+
+    const { query, conversationId } = parsed.data
+
+    // Get user context (pre-server equivalent)
+    const ctx = await loadUserPermissionContext(operator.id, operator.role)
+
+    // Proxy to brainService.ts (src brain) on port 3100
+    // brain uses network_mode: host, so we need host.docker.internal to reach it
+    const brainServiceUrl = `http://host.docker.internal:3100/api/query`
+    
+    try {
+      const brainPayload = {
+        query,
+        conversationId,
+        context: {
+          userId: String(operator.id),
+          role: operator.role,
+          profileId: ctx.profileId,
+        },
+      }
+
+      const brainResp = await fetch(brainServiceUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': req.headers.authorization || '',
+        },
+        body: JSON.stringify(brainPayload),
+      })
+
+      // Handle SSE stream response (RAG queries)
+      if (brainResp.headers.get('content-type')?.includes('text/event-stream')) {
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        })
+
+        if (brainResp.body) {
+          // Convert web ReadableStream to Node.js Readable for piping
+          const { Readable } = require('node:stream')
+          const nodeStream = Readable.fromWeb(brainResp.body)
+          nodeStream.pipe(reply.raw)
+        } else {
+          reply.raw.write('data: [DONE]\n\n')
+          reply.raw.end()
+        }
+        return
+      }
+
+      // Handle JSON response (skill triggers, errors, direct answers)
+      const result = await brainResp.json()
+
+      // Pass through the response from brainService
+      if (result.type === 'skill_trigger') {
+        return reply.send({
+          skillNeeded: true,
+          skillName: result.skillName,
+          skillHint: result.skillHint,
+          message: result.message || `已识别 ${result.skillName} 技能调用`,
+        })
+      }
+
+      if (result.type === 'error') {
+        return reply.send({
+          error: result.error,
+          message: result.content,
+        })
+      }
+
+      // Direct answer from brain
+      return reply.send({
+        type: result.type,
+        content: result.content,
+        loopCount: result.loopCount,
+      })
+    } catch (err) {
+      req.log.error({ err }, 'brainService proxy failed')
+      return reply.code(502).send({
+        error: 'brain_service_unavailable',
+        message: '脑服务暂不可用，请稍后重试',
+      })
+    }
+  })
+
+  // 返回当前用户可见的 profile 列表，供前端做”记忆切换”。
+  app.get('/api/v1/memory/profiles', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const ctx = await loadUserPermissionContext(operator.id, operator.role)
+    return {
+      currentProfileId: ctx.profileId,
+      allowedProfileIds: ctx.allowedMemoryProfiles,
+      memoryScope: {
+        type: 'profile',
+        profileId: ctx.profileId,
+      },
+      policyVersion: ctx.policyVersion,
+    }
+  })
+
+  // 读取当前 profile 的记忆内容。
+  app.get('/api/v1/memory/current', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const parsed = memoryProfileQuerySchema.safeParse(req.query ?? {})
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+    const resolved = await resolveMemoryTarget(operator, parsed.data.profileId)
+    if (!resolved.ok) {
+      return reply.code(403).send({ message: resolved.reason })
+    }
+    const traceId = getTraceId(req)
+    const filePath = buildProfileMemoryFilePath(resolved.profile.storageRoot)
+    let content = ''
+    try {
+      content = await readFile(filePath, 'utf8')
+    } catch {
+      await mkdir(path.dirname(filePath), { recursive: true })
+      await writeFile(filePath, '', 'utf8')
+    }
+    await writeAudit({
+      traceId,
+      userId: operator.id,
+      operatorId: operator.id,
+      action: 'memory.read',
+      resourceType: RESOURCE_TYPE.MEMORY_PROFILE,
+      resourceId: resolved.profile.profileId,
+      result: 'success',
+    })
+    return {
+      profileId: resolved.profile.profileId,
+      content,
+      memoryScope: {
+        type: 'profile',
+        profileId: resolved.profile.profileId,
+      },
+      policyVersion: resolved.ctx.policyVersion,
+    }
+  })
+
+  // 更新当前 profile 的记忆内容（用户可编辑自己的记忆）。
+  app.put('/api/v1/memory/current', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const parsed = updateMemoryBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid request body' })
+    }
+    const resolved = await resolveMemoryTarget(operator, parsed.data.profileId)
+    if (!resolved.ok) {
+      return reply.code(403).send({ message: resolved.reason })
+    }
+    const traceId = getTraceId(req)
+    const filePath = buildProfileMemoryFilePath(resolved.profile.storageRoot)
+    await mkdir(path.dirname(filePath), { recursive: true })
+    await writeFile(filePath, parsed.data.content, 'utf8')
+    await writeAudit({
+      traceId,
+      userId: operator.id,
+      operatorId: operator.id,
+      action: 'memory.update',
+      resourceType: RESOURCE_TYPE.MEMORY_PROFILE,
+      resourceId: resolved.profile.profileId,
+      result: 'success',
+      payload: {
+        contentLength: parsed.data.content.length,
       },
     })
-    const memoryProfile = await ensureAndGetProfileByUserId(operator.id)
-
-    const allowedDatasets = permissions
-      .filter((p: { resourceType: string }) => p.resourceType === 'DATASET')
-      .map((p: { resourceId: string }) => p.resourceId)
-    const allowedDatasetOwners = permissions
-      .filter((p: { resourceType: string }) => p.resourceType === 'DATASET_OWNER')
-      .map((p: { resourceId: string }) => p.resourceId)
-    const allowedSkills = permissions
-      .filter((p: { resourceType: string }) => p.resourceType === 'SKILL')
-      .map((p: { resourceId: string }) => p.resourceId)
-    const allowedMemoryProfiles = permissions
-      .filter((p: { resourceType: string }) => p.resourceType === 'MEMORY_PROFILE')
-      .map((p: { resourceId: string }) => p.resourceId)
-
-    const policyVersion = await getPolicyVersion(operator.id)
     return {
-      role: operator.role,
-      profileId: memoryProfile.profileId,
-      allowedDatasets: Array.from(new Set(allowedDatasets)),
-      allowedDatasetOwners: Array.from(new Set(allowedDatasetOwners)),
-      allowedSkills: Array.from(new Set(allowedSkills)),
-      // 当前用户主 profile 永远可用，避免权限配置缺失时出现自有记忆不可读。
-      allowedMemoryProfiles: Array.from(new Set([memoryProfile.profileId, ...allowedMemoryProfiles])),
-      policyVersion,
+      profileId: resolved.profile.profileId,
+      contentLength: parsed.data.content.length,
+      updated: true,
+      policyVersion: resolved.ctx.policyVersion,
     }
+  })
+
+  app.get('/api/document/get/:documentId', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const documentId = String((req.params as any)?.documentId || '').trim()
+    if (!documentId) {
+      return reply.code(400).send({ message: 'documentId is required' })
+    }
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const resp = await fetch(`${base}/v1/document/get/${encodeURIComponent(documentId)}`, {
+      method: 'GET',
+      headers: buildRagflowHeaders(''),
+    })
+    if (!resp.ok) {
+      const text = await resp.text()
+      return reply.code(resp.status).send({ message: text || `HTTP ${resp.status}` })
+    }
+    const contentType = resp.headers.get('content-type') || 'application/octet-stream'
+    const buf = Buffer.from(await resp.arrayBuffer())
+    reply.header('content-type', contentType)
+    return reply.send(buf)
+  })
+
+  app.get('/api/document/image/:imageId', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const imageId = String((req.params as any)?.imageId || '').trim()
+    if (!imageId) {
+      return reply.code(400).send({ message: 'imageId is required' })
+    }
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const resp = await fetch(`${base}/v1/document/image/${encodeURIComponent(imageId)}`, {
+      method: 'GET',
+      headers: buildRagflowHeaders(''),
+    })
+    if (!resp.ok) {
+      const text = await resp.text()
+      return reply.code(resp.status).send({ message: text || `HTTP ${resp.status}` })
+    }
+    const contentType = resp.headers.get('content-type') || 'image/jpeg'
+    const buf = Buffer.from(await resp.arrayBuffer())
+    reply.header('content-type', contentType)
+    return reply.send(buf)
   })
 
   app.post('/api/v1/admin/permissions/dataset-owners', { preHandler: authGuard }, async (req, reply) => {
@@ -1386,6 +1902,112 @@ export function createServer(config: AppConfig) {
         resourceId: item.resourceId,
         result: item.result,
         payload: item.payloadJson,
+        createdAt: item.createdAt.toISOString(),
+      })),
+      total,
+      page,
+      pageSize,
+    }
+  })
+
+  app.get('/api/v1/admin/audits/skills', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const parsed = listToolCallAuditsQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+
+    const { traceId, userId, operatorId, toolName, result, page, pageSize } = parsed.data
+    const where = {
+      ...(traceId ? { traceId } : {}),
+      ...(userId ? { userId: BigInt(userId) } : {}),
+      ...(operatorId ? { operatorId: BigInt(operatorId) } : {}),
+      ...(toolName ? { toolName } : {}),
+      ...(result ? { result } : {}),
+    }
+    const [items, total] = await Promise.all([
+      prisma.toolCallAudit.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.toolCallAudit.count({ where }),
+    ])
+
+    return {
+      items: items.map((item: any) => ({
+        id: String(item.id),
+        traceId: item.traceId,
+        toolCallId: item.toolCallId,
+        userId: item.userId ? String(item.userId) : null,
+        operatorId: item.operatorId ? String(item.operatorId) : null,
+        toolName: item.toolName,
+        result: item.result,
+        latencyMs: item.latencyMs,
+        errorMessage: item.errorMessage,
+        input: item.inputJson,
+        output: item.outputJson,
+        createdAt: item.createdAt.toISOString(),
+      })),
+      total,
+      page,
+      pageSize,
+    }
+  })
+
+  app.get('/api/v1/admin/audits/rag', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const parsed = listRagQueryAuditsQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+
+    const { traceId, userId, operatorId, datasetId, result, page, pageSize } = parsed.data
+    const where = {
+      ...(traceId ? { traceId } : {}),
+      ...(userId ? { userId: BigInt(userId) } : {}),
+      ...(operatorId ? { operatorId: BigInt(operatorId) } : {}),
+      ...(datasetId ? { datasetId } : {}),
+      ...(result ? { result } : {}),
+    }
+    const [items, total] = await Promise.all([
+      prisma.ragQueryAudit.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.ragQueryAudit.count({ where }),
+    ])
+
+    return {
+      items: items.map((item: any) => ({
+        id: String(item.id),
+        traceId: item.traceId,
+        userId: item.userId ? String(item.userId) : null,
+        operatorId: item.operatorId ? String(item.operatorId) : null,
+        datasetId: item.datasetId,
+        chatId: item.chatId,
+        queryText: item.queryText,
+        upstreamStatus: item.upstreamStatus,
+        result: item.result,
+        latencyMs: item.latencyMs,
+        errorMessage: item.errorMessage,
+        request: item.requestJson,
+        response: item.responseJson,
         createdAt: item.createdAt.toISOString(),
       })),
       total,
@@ -1775,6 +2397,218 @@ export function createServer(config: AppConfig) {
     }
   })
 
+  app.post('/api/v1/rag/query/stream', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+
+    const parsed = ragQueryBodySchema.safeParse(req.body)
+    if (!parsed.success) {
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+      reply.raw.write(`event: error\ndata: invalid request body\n\n`)
+      reply.raw.write('data: [DONE]\n\n')
+      reply.raw.end()
+      return
+    }
+
+    const { query, datasetId, chatId, skillId } = parsed.data
+    const traceId = getTraceId(req)
+    if (operator.role !== 'super_admin' && skillId) {
+      const hasSkillPerm = await prisma.permission.findFirst({
+        where: {
+          userId: operator.id,
+          resourceType: RESOURCE_TYPE.SKILL,
+          resourceId: skillId,
+        },
+        select: { id: true },
+      })
+      if (!hasSkillPerm) {
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        })
+        reply.raw.write(`event: error\ndata: skill permission denied\n\n`)
+        reply.raw.write('data: [DONE]\n\n')
+        reply.raw.end()
+        await writeRagQueryAudit({
+          traceId,
+          userId: operator.id,
+          operatorId: operator.id,
+          datasetId: datasetId ?? null,
+          chatId: chatId ?? null,
+          queryText: query,
+          result: 'deny',
+          latencyMs: 0,
+          errorMessage: 'skill_permission_denied',
+          request: parsed.data,
+        })
+        return
+      }
+    }
+    let resolvedDatasetId: string | null = datasetId ?? null
+    let allowedDatasetIds: string[] = []
+    if (operator.role !== 'super_admin') {
+      const allowedResources = await prisma.permission.findMany({
+        where: {
+          userId: operator.id,
+          resourceType: { in: [RESOURCE_TYPE.DATASET, RESOURCE_TYPE.DATASET_OWNER] },
+        },
+        select: { resourceId: true },
+        orderBy: { createdAt: 'desc' },
+      })
+      if (!resolvedDatasetId) {
+        resolvedDatasetId = allowedResources[0]?.resourceId ?? null
+      }
+      allowedDatasetIds = Array.from(
+        new Set(allowedResources.map((item: { resourceId: string }) => item.resourceId)),
+      )
+      const allowedSet = new Set(allowedResources.map((item: { resourceId: string }) => item.resourceId))
+      if (resolvedDatasetId && !allowedSet.has(resolvedDatasetId)) {
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        })
+        reply.raw.write(`event: error\ndata: dataset permission denied\n\n`)
+        reply.raw.write('data: [DONE]\n\n')
+        reply.raw.end()
+        return
+      }
+    }
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const headers = buildRagflowHeaders('application/json')
+    let resolvedChatId =
+      chatId ??
+      (operator.role !== 'super_admin'
+        ? await getOrCreateUserRagflowChatId(
+            base,
+            headers,
+            operator.id,
+            resolvedDatasetId
+              ? [resolvedDatasetId, ...allowedDatasetIds.filter((id) => id !== resolvedDatasetId)]
+              : allowedDatasetIds,
+          )
+        : config.RAGFLOW_CHAT_ID ??
+          (config.RAGFLOW_QUERY_PATH.includes('{chatId}')
+            ? await discoverRagflowChatId(base, headers)
+            : undefined))
+
+    const pathRaw = config.RAGFLOW_QUERY_PATH.replace('{chatId}', resolvedChatId ?? '')
+    const path = pathRaw.startsWith('/') ? pathRaw : `/${pathRaw}`
+    const upstreamResp = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: config.RAGFLOW_MODEL,
+        messages: [{ role: 'user', content: query }],
+        stream: true,
+        extra_body: {
+          reference: true,
+        },
+      }),
+    })
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    })
+
+    if (!upstreamResp.ok || !upstreamResp.body) {
+      const errText = await upstreamResp.text()
+      reply.raw.write(`event: error\ndata: ${errText || `HTTP ${upstreamResp.status}`}\n\n`)
+      reply.raw.write('data: [DONE]\n\n')
+      reply.raw.end()
+      return
+    }
+
+    const reader = upstreamResp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffered = ''
+    let answer = ''
+    let references: unknown[] = []
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        buffered += decoder.decode()
+      } else if (value) {
+        buffered += decoder.decode(value, { stream: true })
+      }
+      const lines = buffered.split('\n')
+      buffered = lines.pop() || ''
+      for (const rawLine of lines) {
+        const line = rawLine.trim()
+        if (!line.startsWith('data:')) continue
+        const payloadText = line.slice(5).trim()
+        if (!payloadText) continue
+        if (payloadText === '[DONE]') {
+          continue
+        }
+        try {
+          const payload = JSON.parse(payloadText) as any
+          const delta = payload?.choices?.[0]?.delta?.content || ''
+          const deltaRef = payload?.choices?.[0]?.delta?.reference
+          if (delta) {
+            answer += delta
+            reply.raw.write(`event: token\ndata: ${delta}\n\n`)
+          }
+          if (Array.isArray(deltaRef) && deltaRef.length > 0) {
+            references = deltaRef
+            reply.raw.write(
+              `event: message\ndata: ${JSON.stringify({
+                answer: '',
+                data: { answer: '', references },
+                references,
+                source: 'RAG检索',
+              })}\n\n`,
+            )
+          }
+        } catch {
+          // ignore malformed chunks
+        }
+      }
+      if (done) break
+    }
+    reply.raw.write(
+      `event: message\ndata: ${JSON.stringify({
+        answer,
+        data: { answer, references },
+        references,
+        source: 'RAG检索',
+      })}\n\n`,
+    )
+    await writeRagQueryAudit({
+      traceId,
+      userId: operator.id,
+      operatorId: operator.id,
+      datasetId: resolvedDatasetId ?? null,
+      chatId: resolvedChatId ?? null,
+      queryText: query,
+      upstreamStatus: upstreamResp.status,
+      result: upstreamResp.ok ? 'success' : 'fail',
+      latencyMs: 0,
+      request: { query, mode: 'stream' },
+      response: { answerLength: answer.length, references: Array.isArray(references) ? references.length : 0 },
+    })
+    await writeAudit({
+      traceId,
+      userId: operator.id,
+      operatorId: operator.id,
+      action: 'rag.query.proxy.stream',
+      result: upstreamResp.ok ? 'success' : 'fail',
+      resourceType: resolvedDatasetId ? 'DATASET' : null,
+      resourceId: resolvedDatasetId ?? null,
+      payload: { chatId: resolvedChatId ?? null },
+    })
+    reply.raw.write('data: [DONE]\n\n')
+    reply.raw.end()
+  })
+
   app.post('/api/v1/rag/query', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
     const ragStartedAt = Date.now()
@@ -1803,41 +2637,64 @@ export function createServer(config: AppConfig) {
       return reply.code(400).send({ message: 'invalid request body' })
     }
 
-    const { query, datasetId, topK, chatId, extra } = parsed.data
-    if (operator.role !== 'super_admin') {
-      if (!datasetId) {
+    const { query, datasetId, topK, chatId, extra, skillId } = parsed.data
+    if (operator.role !== 'super_admin' && skillId) {
+      const hasSkillPerm = await prisma.permission.findFirst({
+        where: {
+          userId: operator.id,
+          resourceType: RESOURCE_TYPE.SKILL,
+          resourceId: skillId,
+        },
+        select: { id: true },
+      })
+      if (!hasSkillPerm) {
         await writeAudit({
           traceId,
           userId: operator.id,
           operatorId: operator.id,
           action: 'rag.query.proxy',
           result: 'deny',
-          payload: { reason: 'datasetId required for non-super-admin' },
+          resourceType: 'SKILL',
+          resourceId: skillId,
         })
         await writeRagQueryAudit({
           traceId,
           userId: operator.id,
           operatorId: operator.id,
-          datasetId: null,
+          datasetId: datasetId ?? null,
           chatId: chatId ?? null,
           queryText: query,
           result: 'deny',
           latencyMs: Date.now() - ragStartedAt,
-          errorMessage: 'dataset_id_required',
+          errorMessage: 'skill_permission_denied',
           request: parsed.data,
         })
         return reply.code(403).send({
-          message: 'datasetId is required for non-super-admin users',
+          message: 'skill permission denied',
         })
       }
-      const allowed = await prisma.permission.findFirst({
-        where: {
-          userId: operator.id,
-          resourceType: { in: [RESOURCE_TYPE.DATASET, RESOURCE_TYPE.DATASET_OWNER] },
-          resourceId: datasetId,
-        },
-      })
-      if (!allowed) {
+    }
+    let resolvedDatasetId: string | null = datasetId ?? null
+    let allowedDatasetIds: string[] = []
+    const allowedResources = await prisma.permission.findMany({
+      where: {
+        userId: operator.id,
+        resourceType: { in: [RESOURCE_TYPE.DATASET, RESOURCE_TYPE.DATASET_OWNER] },
+      },
+      select: { resourceId: true },
+      orderBy: { createdAt: 'desc' },
+    })
+    // server 自主决策：前端未指定 datasetId 时，自动选最近授权的数据集。
+    if (!resolvedDatasetId) {
+      resolvedDatasetId = allowedResources[0]?.resourceId ?? null
+    }
+    allowedDatasetIds = Array.from(
+      new Set(allowedResources.map((item: { resourceId: string }) => item.resourceId)),
+    )
+    // 非 super_admin 用户需要校验数据集权限
+    if (operator.role !== 'super_admin' && resolvedDatasetId) {
+      const allowedSet = new Set(allowedDatasetIds)
+      if (!allowedSet.has(resolvedDatasetId)) {
         await writeAudit({
           traceId,
           userId: operator.id,
@@ -1845,13 +2702,13 @@ export function createServer(config: AppConfig) {
           action: 'rag.query.proxy',
           result: 'deny',
           resourceType: 'DATASET',
-          resourceId: datasetId,
+          resourceId: resolvedDatasetId,
         })
         await writeRagQueryAudit({
           traceId,
           userId: operator.id,
           operatorId: operator.id,
-          datasetId,
+          datasetId: resolvedDatasetId,
           chatId: chatId ?? null,
           queryText: query,
           result: 'deny',
@@ -1866,60 +2723,94 @@ export function createServer(config: AppConfig) {
     }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    }
-    if (config.RAGFLOW_AUTHORIZATION) {
-      headers.Authorization = config.RAGFLOW_AUTHORIZATION
-    } else if (config.RAGFLOW_BEARER_TOKEN) {
-      headers.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
-    } else if (config.RAGFLOW_API_KEY) {
-      // 兼容部分网关风格
-      headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
-    }
-    const resolvedChatId =
+    const headers = buildRagflowHeaders('application/json')
+    // 修复：所有用户都走自己的chatId流程，不再区分super_admin
+    let resolvedChatId =
       chatId ??
       config.RAGFLOW_CHAT_ID ??
-      (config.RAGFLOW_QUERY_PATH.includes('{chatId}')
-        ? await discoverRagflowChatId(base, headers)
-        : undefined)
-    const pathRaw = config.RAGFLOW_QUERY_PATH.replace('{chatId}', resolvedChatId ?? '')
-    const path = pathRaw.startsWith('/') ? pathRaw : `/${pathRaw}`
-    const url = `${base}${path}`
+      (await getOrCreateUserRagflowChatId(
+        base,
+        headers,
+        operator.id,
+        resolvedDatasetId
+          ? [resolvedDatasetId, ...allowedDatasetIds.filter((id) => id !== resolvedDatasetId)]
+          : allowedDatasetIds,
+      ))
 
-    const isOpenAIChatPath = path.includes('/chats_openai/')
-    const upstreamBody = isOpenAIChatPath
-      ? {
-          model: config.RAGFLOW_MODEL,
-          messages: [{ role: 'user', content: query }],
-          stream: false,
-          ...(extra ?? {}),
-        }
-      : {
-          question: query,
-          query,
-          ...(datasetId ? { datasetId } : {}),
-          ...(topK ? { topK } : {}),
-          ...(extra ?? {}),
-        }
-    const ragRequestPayload = {
-      url,
-      chatId: resolvedChatId ?? null,
-      body: upstreamBody,
-    }
-
-    try {
-      const upstreamResp = await fetch(url, {
+    async function sendRagflowRequest(chatIdToUse?: string) {
+      const pathRaw = config.RAGFLOW_QUERY_PATH.replace('{chatId}', chatIdToUse ?? '')
+      const path = pathRaw.startsWith('/') ? pathRaw : `/${pathRaw}`
+      const url = `${base}${path}`
+      const isOpenAIChatPath = path.includes('/chats_openai/')
+      const bodyToUse = isOpenAIChatPath
+        ? {
+            model: config.RAGFLOW_MODEL,
+            messages: [{ role: 'user', content: query }],
+            stream: false,
+            extra_body: {
+              reference: true,
+            },
+            ...(extra ?? {}),
+          }
+        : {
+            question: query,
+            query,
+            ...(resolvedDatasetId ? { datasetId: resolvedDatasetId } : {}),
+            ...(topK ? { topK } : {}),
+            ...(extra ?? {}),
+          }
+      const response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(upstreamBody),
+        body: JSON.stringify(bodyToUse),
       })
-      const raw = await upstreamResp.text()
+      const raw = await response.text()
       let parsedBody: unknown = raw
       try {
         parsedBody = JSON.parse(raw)
       } catch {
         parsedBody = raw
+      }
+      return {
+        url,
+        bodyToUse,
+        response,
+        parsedBody,
+      }
+    }
+
+    try {
+      let requestResult = await sendRagflowRequest(resolvedChatId)
+      // 若 chat owner 失配，自动重建该用户 chat 并重试一次。
+      if (
+        operator.role !== 'super_admin' &&
+        requestResult.response.ok &&
+        typeof requestResult.parsedBody === 'object' &&
+        requestResult.parsedBody !== null &&
+        (requestResult.parsedBody as any).code === 102 &&
+        String((requestResult.parsedBody as any).message || '')
+          .toLowerCase()
+          .includes("don't own the chat")
+      ) {
+        const recreated = await createRagflowChat(
+          base,
+          headers,
+          `brain_user_${String(operator.id)}_${Date.now()}`,
+          resolvedDatasetId
+            ? [resolvedDatasetId, ...allowedDatasetIds.filter((id) => id !== resolvedDatasetId)]
+            : allowedDatasetIds,
+        )
+        await redis.set(`${ragChatKeyPrefix}${String(operator.id)}`, recreated)
+        resolvedChatId = recreated
+        requestResult = await sendRagflowRequest(resolvedChatId)
+      }
+
+      const upstreamResp = requestResult.response
+      const parsedBody = requestResult.parsedBody
+      const ragRequestPayload = {
+        url: requestResult.url,
+        chatId: resolvedChatId ?? null,
+        body: requestResult.bodyToUse,
       }
 
       await writeAudit({
@@ -1928,10 +2819,10 @@ export function createServer(config: AppConfig) {
         operatorId: operator.id,
         action: 'rag.query.proxy',
         result: upstreamResp.ok ? 'success' : 'fail',
-        resourceType: datasetId ? 'DATASET' : null,
-        resourceId: datasetId ?? null,
+        resourceType: resolvedDatasetId ? 'DATASET' : null,
+        resourceId: resolvedDatasetId ?? null,
         payload: {
-          url,
+          url: requestResult.url,
           chatId: resolvedChatId ?? null,
           status: upstreamResp.status,
           query,
@@ -1941,7 +2832,7 @@ export function createServer(config: AppConfig) {
         traceId,
         userId: operator.id,
         operatorId: operator.id,
-        datasetId: datasetId ?? null,
+        datasetId: resolvedDatasetId ?? null,
         chatId: resolvedChatId ?? null,
         queryText: query,
         upstreamStatus: upstreamResp.status,
@@ -1970,8 +2861,8 @@ export function createServer(config: AppConfig) {
         operatorId: operator.id,
         action: 'rag.query.proxy',
         result: 'fail',
-        resourceType: datasetId ? 'DATASET' : null,
-        resourceId: datasetId ?? null,
+        resourceType: resolvedDatasetId ? 'DATASET' : null,
+        resourceId: resolvedDatasetId ?? null,
         payload: {
           error: error instanceof Error ? error.message : 'unknown',
         },
@@ -1980,7 +2871,7 @@ export function createServer(config: AppConfig) {
         traceId,
         userId: operator.id,
         operatorId: operator.id,
-        datasetId: datasetId ?? null,
+        datasetId: resolvedDatasetId ?? null,
         chatId: chatId ?? null,
         queryText: query,
         result: 'fail',

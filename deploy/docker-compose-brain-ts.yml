@@ -28,6 +28,32 @@ services:
     networks:
       - ai4kb-brain-net
 
+  brain:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile-brain
+      args:
+        BUILD_STAMP: ${BUILD_STAMP:-dev}
+    container_name: ai4kb-brain
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ../skills:/opt/skills:ro
+    env_file:
+      - ../.env.brain
+    environment:
+      - NODE_ENV=production
+      - PORT=3100
+      - BRAIN_SERVER_BASE_URL=http://localhost:8091
+      - BRAIN_SERVER_ACCESS_TOKEN=${BRAIN_SERVER_ACCESS_TOKEN:-}
+      - OPENAI_BASE_URL=http://localhost:11434/v1
+      - ANTHROPIC_BASE_URL=http://localhost:11434/v1
+      - ANTHROPIC_MODEL=qwen3.5:9b
+      - CLAUDE_CODE_COMPATIBLE_API_PROVIDER=openai
+      - CLAUDE_CODE_SIMPLE=0
+      - ANTHROPIC_API_KEY=ollama
+      - CLOAI_API_KEY=ollama-dummy
+
   brain-maintenance:
     image: deploy-brain-server
     container_name: ai4kb-brain-maintenance
@@ -96,6 +122,22 @@ services:
     command: ["valkey-server", "--save", "60", "1", "--appendonly", "yes"]
     volumes:
       - brain_redis_data:/data
+    networks:
+      - ai4kb-brain-net
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: ai4kb-frontend
+    restart: unless-stopped
+    environment:
+      - BACKEND_URL=http://brain-server:8091
+    ports:
+      - "8086:80"
+    depends_on:
+      brain-server:
+        condition: service_started
     networks:
       - ai4kb-brain-net
 

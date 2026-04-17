@@ -250,6 +250,54 @@ export function extractResultText(
 }
 
 /**
+ * Structured result from a skill execution, containing parsed JSON data
+ * written by the skill runner (e.g., rag-query's references, raw answer, etc.).
+ */
+export type StructuredSkillResult = {
+  /** Raw answer text from the skill */
+  answer: string
+  /** Number of references/sources */
+  referenceCount: number
+  /** Array of reference objects from RAG (document_name, content, url, images, etc.) */
+  references: Record<string, unknown>[]
+  /** Optional raw upstream response from RAG provider */
+  raw?: unknown
+  /** Skill name */
+  skill?: string
+  /** Trace ID for audit */
+  traceId?: string | null
+  /** Chat ID */
+  chatId?: string | null
+  /** Whether the skill succeeded */
+  ok?: boolean
+}
+
+/**
+ * Reads structured skill result from the temporary JSON file written by the
+ * skill runner (e.g., run_skill.py writes it via _write_structured_result).
+ *
+ * Returns null if the file does not exist or cannot be parsed — this is
+ * non-fatal; callers fall back to extracting plain text from agent messages.
+ */
+export function readStructuredResult(
+  structuredResultPath: string,
+): StructuredSkillResult | null {
+  try {
+    // Dynamic import to avoid pulling fs into every caller
+    const { readFileSync } = require('fs') as {
+      readFileSync: (p: string, enc: string) => string
+    }
+    const content = readFileSync(structuredResultPath, 'utf-8')
+    const parsed = JSON.parse(content) as StructuredSkillResult
+    // Basic validation: must have at least one meaningful field
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+/**
  * Options for creating a subagent context.
  *
  * By default, all mutable state is isolated to prevent interference with the parent.

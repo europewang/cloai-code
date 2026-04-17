@@ -203,6 +203,39 @@ def main():
       report["checks"]["audits_query_dataset_owner"] = code
       ensure(code == 200 and isinstance(audits.get("items"), list), "审计查询失败")
 
+      # 5) 触发细分审计（故意传非法 body，走 fail 路径）
+      code, _ = http_json("/api/v1/rag/query", method="POST", token=access_token, body={"bad": "x"})
+      report["checks"]["rag_query_invalid_for_audit"] = code
+      ensure(code == 400, "rag/query 非法请求返回码异常")
+
+      code, _ = http_json(
+        "/api/v1/skills/indicator-verification/run",
+        method="POST",
+        token=access_token,
+        body={"bad": "x"},
+      )
+      report["checks"]["tool_call_invalid_for_audit"] = code
+      ensure(code == 400, "indicator-verification 非法请求返回码异常")
+
+      # 6) 查询细分审计接口
+      code, skill_audits = http_json(
+        f"/api/v1/admin/audits/skills?{urllib.parse.urlencode({'toolName': 'indicator-verification', 'page': 1, 'pageSize': 10})}",
+        method="GET",
+        token=access_token,
+      )
+      report["checks"]["audits_query_skills"] = code
+      ensure(code == 200 and isinstance(skill_audits.get("items"), list), "skills 审计查询失败")
+      ensure(len(skill_audits.get("items", [])) > 0, "skills 审计无数据")
+
+      code, rag_audits = http_json(
+        f"/api/v1/admin/audits/rag?{urllib.parse.urlencode({'result': 'fail', 'page': 1, 'pageSize': 10})}",
+        method="GET",
+        token=access_token,
+      )
+      report["checks"]["audits_query_rag"] = code
+      ensure(code == 200 and isinstance(rag_audits.get("items"), list), "rag 审计查询失败")
+      ensure(len(rag_audits.get("items", [])) > 0, "rag 审计无数据")
+
       report["artifacts"] = {
         "userId": user_id,
         "profileId": profile_id,

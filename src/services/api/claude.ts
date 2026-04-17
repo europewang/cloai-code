@@ -1856,6 +1856,7 @@ async function* queryModel(
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
         const customApiStorage = readCustomApiStorage()
         const activeProviderConfig = getActiveProviderConfig(customApiStorage)
+        const activeProviderId = customApiStorage.activeProvider ?? customApiStorage.providerId
         const compatProvider =
           activeProviderConfig?.kind === 'openai-like'
             ? 'openai'
@@ -1863,7 +1864,7 @@ async function* queryModel(
               ? 'gemini'
               : activeProviderConfig?.kind === 'anthropic-like'
               ? 'anthropic'
-              : customApiStorage.provider ?? 'anthropic'
+              : customApiStorage.provider ?? (process.env.CLAUDE_CODE_COMPATIBLE_API_PROVIDER === 'openai' ? 'openai' : 'anthropic')
         if (compatProvider === 'openai') {
           const activeOpenAIProvider =
             activeProviderConfig?.kind === 'openai-like'
