@@ -8,7 +8,7 @@ services:
       - "8085:8085"
     volumes:
       # Map local models directory to container
-      - ../models:/models
+      - /home/ubutnu/code/AI4LocalKnowledgeBase/models:/models
       # Persist Xinference internal data (logs, other cache)
       - xinference-home:/root/.xinference
     environment:

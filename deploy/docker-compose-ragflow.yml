@@ -137,59 +137,31 @@ services:
       - ./nginx/ragflow.conf:/etc/nginx/sites-enabled/default
     networks:
       - ragflow
-    restart: on-failure
-
-  backend:
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
-    container_name: ragflow-backend
-    environment:
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - PROCESSOR_MODE=rag
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=infini_rag_flow
-      - SPRING_DATA_REDIS_HOST=redis
-      - SPRING_DATA_REDIS_PORT=6379
-      - SPRING_DATA_REDIS_PASSWORD=infini_rag_flow
-      - LLM_BASE_URL=http://host.docker.internal:8085/v1
-      - LLM_MODEL=deepseek-r1-distill-qwen-14b
-      - RAGFLOW_BASE_URL=http://ragflow-server:80
-      - RAGFLOW_API_KEY=ragflow-rKofJZKLNgh_2Pv9A-0y_3sUbC9MIOkw9n99Cl5hvc4
-      - ROUTER_LOCAL_ROUTER_ENABLED=true
-      - TZ=Asia/Shanghai
-    ports:
-      - "8083:8083"
-    depends_on:
-      mysql:
-        condition: service_healthy
-      ragflow:
-        condition: service_started
-    networks:
-      - ragflow
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
+    restart: on-failure
 
   frontend:
     build:
       context: ../frontend
       dockerfile: Dockerfile
     container_name: ragflow-frontend
+    environment:
+      - BACKEND_URL=http://ai4kb-brain-server:8091
     ports:
       - "8086:80"
-    depends_on:
-      - backend
     networks:
       - ragflow
+      - brain
     restart: unless-stopped
 
 networks:
   ragflow:
     name: ragflow_ragflow
     driver: bridge
+  brain:
+    external: true
+    name: deploy_ai4kb-brain-net
 
 volumes:
   ragflow_esdata01:

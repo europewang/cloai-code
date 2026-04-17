@@ -68,6 +68,7 @@ import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js
 import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/Spinner.js';
 import { getSystemPrompt } from '../constants/prompts.js';
+import { fetchCurrentMemory } from '../services/brainOrchestration/client.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
@@ -2564,13 +2565,14 @@ export function REPL({
     const removedNotifications = removeByFilter(cmd => cmd.mode === 'task-notification');
     void (async () => {
       const toolUseContext = getToolUseContext(messagesRef.current, [], new AbortController(), mainLoopModel);
-      const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([getSystemPrompt(toolUseContext.options.tools, mainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), toolUseContext.options.mcpClients), getUserContext(), getSystemContext()]);
+      const [defaultSystemPrompt, userContext, systemContext, memory] = await Promise.all([getSystemPrompt(toolUseContext.options.tools, mainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), toolUseContext.options.mcpClients), getUserContext(), getSystemContext(), fetchCurrentMemory()]);
+      const brainMemoryPrompt = memory?.content?.trim() ? `# User Memory (${memory.profileId || 'default'})\n${memory.content.trim()}` : '';
       const systemPrompt = buildEffectiveSystemPrompt({
         mainThreadAgentDefinition,
         toolUseContext,
         customSystemPrompt,
         defaultSystemPrompt,
-        appendSystemPrompt
+        appendSystemPrompt: [appendSystemPrompt, brainMemoryPrompt].filter(Boolean).join('\n\n')
       });
       toolUseContext.renderedSystemPrompt = systemPrompt;
       const notificationAttachments = await getQueuedCommandAttachments(removedNotifications).catch(() => []);

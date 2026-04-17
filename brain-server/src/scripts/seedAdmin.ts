@@ -1,54 +1,151 @@
 import * as bcrypt from 'bcryptjs'
-import { Role } from '@prisma/client'
-import { loadConfig } from '../config.js'
-import { prisma } from '../lib/prisma.js'
+import type { Role, PrismaClient } from '@prisma/client'
+import type { AppConfig } from '../config.js'
 
-async function seedAdmin() {
-  const config = loadConfig()
-  const passwordHash = await bcrypt.hash(config.BOOTSTRAP_ADMIN_PASSWORD, 10)
+export async function upsertBootstrapUsers(prisma: PrismaClient, config: AppConfig) {
+  const RESOURCE_TYPE = {
+    DATASET: 'DATASET',
+    DATASET_OWNER: 'DATASET_OWNER',
+    SKILL: 'SKILL',
+    MEMORY_PROFILE: 'MEMORY_PROFILE',
+  } as const
 
-  const admin = await prisma.user.upsert({
-    where: {
-      username: config.BOOTSTRAP_ADMIN_USERNAME,
-    },
-    update: {
-      role: config.BOOTSTRAP_ADMIN_ROLE as Role,
-      status: 'active',
-      passwordHash,
-      managerUserId: null,
-    },
-    create: {
-      username: config.BOOTSTRAP_ADMIN_USERNAME,
-      role: config.BOOTSTRAP_ADMIN_ROLE as Role,
-      status: 'active',
-      passwordHash,
-      managerUserId: null,
-    },
+  const upsertUserWithProfile = async ({
+    username,
+    password,
+    role,
+    profileId,
+    managerUserId,
+  }: {
+    username: string
+    password: string
+    role: Role
+    profileId: string
+    managerUserId: bigint | null
+  }) => {
+    const passwordHash = await bcrypt.hash(password, 10)
+    const user = await prisma.user.upsert({
+      where: { username },
+      update: { role, status: 'active', passwordHash, managerUserId },
+      create: { username, role, status: 'active', passwordHash, managerUserId },
+    })
+    await prisma.memoryProfile.upsert({
+      where: { userId: user.id },
+      update: { profileId, storageRoot: `profiles/${profileId}` },
+      create: { userId: user.id, profileId, storageRoot: `profiles/${profileId}` },
+    })
+    return user
+  }
+
+  const superAdmin = await upsertUserWithProfile({
+    username: config.BOOTSTRAP_SUPERADMIN_USERNAME,
+    password: config.BOOTSTRAP_SUPERADMIN_PASSWORD,
+    role: 'super_admin',
+    profileId: config.BOOTSTRAP_SUPERADMIN_PROFILE_ID,
+    managerUserId: null,
+  })
+  const managerAdmin = await upsertUserWithProfile({
+    username: config.BOOTSTRAP_MANAGER_USERNAME,
+    password: config.BOOTSTRAP_MANAGER_PASSWORD,
+    role: 'admin',
+    profileId: config.BOOTSTRAP_MANAGER_PROFILE_ID,
+    managerUserId: null,
+  })
+  const userA = await upsertUserWithProfile({
+    username: config.BOOTSTRAP_USER_A_USERNAME,
+    password: config.BOOTSTRAP_USER_A_PASSWORD,
+    role: 'user',
+    profileId: config.BOOTSTRAP_USER_A_PROFILE_ID,
+    managerUserId: managerAdmin.id,
+  })
+  const userB = await upsertUserWithProfile({
+    username: config.BOOTSTRAP_USER_B_USERNAME,
+    password: config.BOOTSTRAP_USER_B_PASSWORD,
+    role: 'user',
+    profileId: config.BOOTSTRAP_USER_B_PROFILE_ID,
+    managerUserId: managerAdmin.id,
   })
 
-  await prisma.memoryProfile.upsert({
+  // Grant permissions to superAdmin
+  await prisma.permission.upsert({
     where: {
-      userId: admin.id,
+      userId_resourceType_resourceId: {
+        userId: superAdmin.id,
+        resourceType: RESOURCE_TYPE.SKILL,
+        resourceId: 'rag-query',
+      },
     },
-    update: {
-      profileId: config.BOOTSTRAP_ADMIN_PROFILE_ID,
-      storageRoot: `profiles/${config.BOOTSTRAP_ADMIN_PROFILE_ID}`,
-    },
+    update: { grantedBy: superAdmin.id },
     create: {
-      userId: admin.id,
-      profileId: config.BOOTSTRAP_ADMIN_PROFILE_ID,
-      storageRoot: `profiles/${config.BOOTSTRAP_ADMIN_PROFILE_ID}`,
+      userId: superAdmin.id,
+      resourceType: RESOURCE_TYPE.SKILL,
+      resourceId: 'rag-query',
+      grantedBy: superAdmin.id,
+    },
+  })
+  await prisma.permission.upsert({
+    where: {
+      userId_resourceType_resourceId: {
+        userId: superAdmin.id,
+        resourceType: RESOURCE_TYPE.SKILL,
+        resourceId: 'indicator-verification',
+      },
+    },
+    update: { grantedBy: superAdmin.id },
+    create: {
+      userId: superAdmin.id,
+      resourceType: RESOURCE_TYPE.SKILL,
+      resourceId: 'indicator-verification',
+      grantedBy: superAdmin.id,
+    },
+  })
+  // Grant permissions to userA
+  await prisma.permission.upsert({
+    where: {
+      userId_resourceType_resourceId: {
+        userId: userA.id,
+        resourceType: RESOURCE_TYPE.SKILL,
+        resourceId: 'rag-query',
+      },
+    },
+    update: { grantedBy: superAdmin.id },
+    create: {
+      userId: userA.id,
+      resourceType: RESOURCE_TYPE.SKILL,
+      resourceId: 'rag-query',
+      grantedBy: superAdmin.id,
+    },
+  })
+  await prisma.permission.upsert({
+    where: {
+      userId_resourceType_resourceId: {
+        userId: userA.id,
+        resourceType: RESOURCE_TYPE.SKILL,
+        resourceId: 'indicator-verification',
+      },
+    },
+    update: { grantedBy: superAdmin.id },
+    create: {
+      userId: userA.id,
+      resourceType: RESOURCE_TYPE.SKILL,
+      resourceId: 'indicator-verification',
+      grantedBy: superAdmin.id,
+    },
+  })
+  await prisma.permission.upsert({
+    where: {
+      userId_resourceType_resourceId: {
+        userId: userB.id,
+        resourceType: RESOURCE_TYPE.SKILL,
+        resourceId: 'indicator-verification',
+      },
+    },
+    update: { grantedBy: superAdmin.id },
+    create: {
+      userId: userB.id,
+      resourceType: RESOURCE_TYPE.SKILL,
+      resourceId: 'indicator-verification',
+      grantedBy: superAdmin.id,
     },
   })
 }
-
-void seedAdmin()
-  .then(async () => {
-    await prisma.$disconnect()
-  })
-  .catch(async error => {
-    // eslint-disable-next-line no-console
-    console.error('seed admin failed', error)
-    await prisma.$disconnect()
-    process.exit(1)
-  })

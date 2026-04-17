@@ -28,15 +28,27 @@ description: "Performs CAD indicator verification from DXF and exports JSON/DXF/
 python3 skills/cad_text_extractor/run_skill.py <input_root> <output_root> [checker] [reviewer]
 ```
 
+或使用显式参数：
+
+```bash
+python3 skills/cad_text_extractor/run_skill.py \
+  --input-root /path/to/input \
+  --output-root /path/to/output \
+  --checker 张三 \
+  --reviewer 李四
+```
+
 参数说明：
 
 1. `input_root`：包含 `.dxf` 文件的输入目录（支持递归）。
 2. `output_root`：输出目录。
 3. `checker`：校核人（可选，默认 `张三`）。
 4. `reviewer`：审核人（可选，默认 `李四`）。
+5. 支持“位置参数 + 命名参数”两种形式，命名参数优先。
 
 ## 产物约定
 
 1. 每个 dxf 生成同名前缀结果文件。
 2. 输出目录结构与输入目录结构保持一致。
 3. 若单文件失败，不阻断其余文件处理。
+4. 运行结束输出 JSON 汇总：`outputFileCount/jsonCount/dxfCount/excelCount/outputFiles`。

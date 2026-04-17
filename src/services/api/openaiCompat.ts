@@ -847,7 +847,7 @@ function getToolDefinitions(tools?: BetaToolUnion[]): OpenAIChatRequest['tools']
         name,
         description:
           typeof record.description === 'string' ? record.description : undefined,
-        parameters: record.input_schema,
+        parameters: (record.inputSchema || record.input_schema) as Record<string, unknown>,
       },
     }]
   })

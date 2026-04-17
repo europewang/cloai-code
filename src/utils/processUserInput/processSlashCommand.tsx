@@ -13,6 +13,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type A
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js';
 import { buildPostCompactMessages } from '../../services/compact/compact.js';
 import { resetMicrocompactState } from '../../services/compact/microCompact.js';
+import { authorizeToolCall, fetchPreContext } from '../../services/brainOrchestration/client.js';
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js';
 import { runAgent } from '../../tools/AgentTool/runAgent.js';
 import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js';
@@ -524,6 +525,44 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
 }
 async function getMessagesForSlashCommand(commandName: string, args: string, setToolJSX: SetToolJSXFn, context: ProcessUserInputContext, precedingInputBlocks: ContentBlockParam[], imageContentBlocks: ContentBlockParam[], _isAlreadyProcessing?: boolean, canUseTool?: CanUseToolFn, uuid?: string): Promise<SlashCommandResult> {
   const command = getCommand(commandName, context.options.commands);
+
+  if (command.type === 'prompt') {
+    const preContext = await fetchPreContext();
+    if (preContext?.allowedSkills && preContext.allowedSkills.length > 0 && !preContext.allowedSkills.includes(commandName)) {
+      return {
+        messages: [createUserMessage({
+          content: prepareUserContent({
+            inputString: `/${commandName}`,
+            precedingInputBlocks
+          })
+        }), createUserMessage({
+          content: `Skill "${commandName}" is blocked by brain pre-server policy.`
+        })],
+        shouldQuery: false,
+        command
+      };
+    }
+    const remoteAuthorize = await authorizeToolCall({
+      toolName: 'Skill',
+      skillId: commandName,
+      action: 'skill.user_slash',
+      memoryProfileId: preContext?.profileId
+    });
+    if (remoteAuthorize && !remoteAuthorize.allow) {
+      return {
+        messages: [createUserMessage({
+          content: prepareUserContent({
+            inputString: `/${commandName}`,
+            precedingInputBlocks
+          })
+        }), createUserMessage({
+          content: `Skill "${commandName}" is blocked by brain post-server policy (${remoteAuthorize.reason || 'permission_denied'}).`
+        })],
+        shouldQuery: false,
+        command
+      };
+    }
+  }
 
   // Track skill usage for ranking (only for prompt commands that are user-invocable)
   if (command.type === 'prompt' && command.userInvocable !== false) {

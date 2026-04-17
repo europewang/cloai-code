@@ -22,6 +22,7 @@ import type { FileStateCache } from './fileStateCache.js'
 import type { CacheSafeParams } from './forkedAgent.js'
 import { getMainLoopModel } from './model/model.js'
 import { asSystemPrompt } from './systemPromptType.js'
+import { fetchCurrentMemory } from '../services/brainOrchestration/client.js'
 import {
   shouldEnableThinkingByDefault,
   type ThinkingConfig,
@@ -55,10 +56,11 @@ export async function fetchSystemPromptParts({
   customSystemPrompt: string | undefined
 }): Promise<{
   defaultSystemPrompt: string[]
+  brainMemoryPrompt: string | null
   userContext: { [k: string]: string }
   systemContext: { [k: string]: string }
 }> {
-  const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
+  const [defaultSystemPrompt, userContext, systemContext, memory] = await Promise.all([
     customSystemPrompt !== undefined
       ? Promise.resolve([])
       : getSystemPrompt(
@@ -69,8 +71,13 @@ export async function fetchSystemPromptParts({
         ),
     getUserContext(),
     customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
+    fetchCurrentMemory(),
   ])
-  return { defaultSystemPrompt, userContext, systemContext }
+  const memoryContent = memory?.content?.trim() || ''
+  const brainMemoryPrompt = memoryContent
+    ? `# User Memory (${memory?.profileId || 'default'})\n${memoryContent}`
+    : null
+  return { defaultSystemPrompt, brainMemoryPrompt, userContext, systemContext }
 }
 
 /**
@@ -113,7 +120,7 @@ export async function buildSideQuestionFallbackParams({
   const mainLoopModel = getMainLoopModel()
   const appState = getAppState()
 
-  const { defaultSystemPrompt, userContext, systemContext } =
+  const { defaultSystemPrompt, brainMemoryPrompt, userContext, systemContext } =
     await fetchSystemPromptParts({
       tools,
       mainLoopModel,
@@ -128,6 +135,7 @@ export async function buildSideQuestionFallbackParams({
     ...(customSystemPrompt !== undefined
       ? [customSystemPrompt]
       : defaultSystemPrompt),
+    ...(brainMemoryPrompt ? [brainMemoryPrompt] : []),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
   ])
 

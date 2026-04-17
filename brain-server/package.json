@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "start": "prisma migrate deploy && bun run seed:admin && node dist/index.js",
+    "start": "prisma migrate deploy && node dist/index.js",
     "build": "prisma generate && tsc -p tsconfig.json",
     "seed:admin": "node dist/scripts/seedAdmin.js",
     "ops:cleanup-s3-orphans": "bun dist/scripts/cleanupOrphanS3Objects.js",

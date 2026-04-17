@@ -287,6 +287,7 @@ export class QueryEngine {
       typeof customSystemPrompt === 'string' ? customSystemPrompt : undefined
     const {
       defaultSystemPrompt,
+      brainMemoryPrompt,
       userContext: baseUserContext,
       systemContext,
     } = await fetchSystemPromptParts({
@@ -320,6 +321,7 @@ export class QueryEngine {
 
     const systemPrompt = asSystemPrompt([
       ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
+      ...(brainMemoryPrompt ? [brainMemoryPrompt] : []),
       ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
     ])

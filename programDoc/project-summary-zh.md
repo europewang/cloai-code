@@ -54,7 +54,7 @@
 
 ## 7. 统一治理后端补充（2026-04-09）
 
-当前仓库在原有 CLI 主链路之外，新增了治理后端子工程 `brain-server/`，用于承接统一治理能力：
+当前仓库在原有 CLI 主链路之外，新增了治理后端子工程 `brain-server/`，用于承接**辅助编排能力**（权限、网关、治理）；主决策大脑仍为 `src/`：
 
 1. 服务形态：Fastify + TypeScript + Prisma + PostgreSQL + Redis。
 2. 已落地能力：
@@ -98,6 +98,36 @@
   - 全量复测：已按“`bun run build` + `docker cp dist` + 重启容器”路径重跑测试，治理回归与文件治理回归均通过。
   - 缓存失效：`policyVersion` 已改为 Redis 版本号，授权/用户变更后自动递增，治理回归已验证变更前后版本不同。
   - 细分审计：已落地 `tool_call_audits` 与 `rag_query_audits`，并接入 `indicator-verification` 与 `rag/query` 写入链路，数据库计数已验证有数据写入。
+  - 审计查询：已新增 `GET /api/v1/admin/audits/skills` 与 `GET /api/v1/admin/audits/rag`（分页+过滤）。
+  - 前端联调：`ragflow-frontend` 已确认可访问（`http://127.0.0.1:8086`，HTTP 200）。
+  - 编排统一：已将前端服务纳入 `deploy/docker-compose-brain-ts.yml`，与 `brain-server` 置于同一 Docker 网络并直连代理。
+  - 前端兼容：已完成第一批前端接口兼容改造（登录/用户/权限同步），不改动后端主逻辑即可对接 `brain`。
+  - 测试账号：已补齐并验证可登录账号 `admin/admin123456`、`zhangsan/ChangeMe123!`。
+  - 前端第二批兼容：`route_samples`、`skills audit`、`super_overview`、`datasets(只读)` 已改为消费 `brain` 现有 API。
+  - 会话聊天适配：已在前端代理层补 `/api/user/conversations*` 与 `/api/v1/agent/chat/stream` 兼容，实现“不改后端主逻辑”的联调闭环。
+  - RAG 链路保持：聊天回答仍来自 `brain-server -> ragflow`，前端仅做流式协议转换，不改 RAG 业务语义。
+  - 无回复修复：针对 `zhangsan` 无 dataset 权限导致的 403，前端适配层改为“自动探测 datasetId + 友好提示 message 事件”，避免前端看起来无响应。
+  - 架构回调：按“server 自主判断”要求已取消前端 dataset 预判，改由 `brain-server` 在 `rag/query` 内自动选择授权数据集；前端仅透传请求与展示 server 原始返回。
+  - 路径修正：`RAGFLOW_QUERY_PATH` 已切换到 `/api/v1/chats/{chatId}/completions`（替代 `chats_openai`），恢复可用答复链路。
+  - 权限分配：已将 RagFlow 现有知识库（前 3 个 dataset）授权给现有 `user` 账号，`zhangsan` 已具备可检索数据集。
+  - 结果状态：前端流式现已展示 server 返回内容，不再出现固定文案拦截。
+  - 关键发现：清空 RagFlow 聊天后，`server` 使用固定 `RAGFLOW_CHAT_ID` 调用会报 `You don't own the chat`，说明当前尚未实现“按用户自动创建/绑定 RagFlow chat”。
+  - 已修复：`rag/query` 改为按用户自动创建/复用 RagFlow chat（Redis 映射），并在 ownership 失配时自动重建；新 chat 优先绑定已授权知识库。
+  - Xinference 启动修复：已修正 `docker-compose-xinference.yml` 的 `models` 挂载路径并成功执行 `launch_xinference_models.py`，三模型（embedding/rerank/LLM）均启动成功。
+  - 回归结果：`zhangsan` 提问“请调用ragflow技能，问什么是半面积”时，`rag/query` 返回知识库相关中文答案，确认 query 已真实传入 RagFlow。
+  - UI 空白修复：已修复流式答案提取字段与 Redis 短暂不可写降级，前端不再出现“请求已完成，暂未返回可展示内容”。
+  - 流式增强：前端代理层已输出多段 SSE token；并支持从 `raw/references/reference` 多路径提取引用数据。
+  - 现状说明：已移除 `brain -> ragflow-backend` 依赖，当前链路为 `frontend -> brain-server -> ragflow-server`，可提供流式、引用、文档/图片透传。
+  - 架构偏差：该链路仍未经过 `src` 大脑语义路由，不等同于最终目标（`src` 决策 -> skill/toolcall -> brain-server 辅助编排 -> ragflow）。
+  - 现状验证：在 `ragflow-backend` 停止状态下，流式仍可返回（`token_events=68`），`rag/query` 返回 6 条引用，`/api/document/get|image` 均 200。
+  - 模型策略更新：已切换为“xinference 仅 embedding/rerank + Ollama `qwen3.5:9b` 作为 LLM”，并验证 `src` 可正常对话返回。
+  - Compose 清理：`deploy/docker-compose-ragflow.yml` 已移除 `backend` 服务，避免引入与本项目无关的旧链路。
+  - RagFlow↔Ollama 联通修复：`ragflow` 服务已加入 `host.docker.internal` 映射并验证可访问 `11434`；模型名规范为 `qwen3.5:9b`（非 `qwen3.5-9b`）。
+  - 前后置拆分：`brain-server` 已按架构拆分前置/后置路由文件，`src` 在 skill 调度前后接入 brain 策略校验入口。
+  - skills 契约统一：`rag_query` 与 `cad_text_extractor` 的 `run_skill.py` 已统一为“参数兼容 + JSON 结构化输出”模式，匹配当前项目技能调用方式。
+  - 多用户联测完成：RAG 与 CAD 两条 skill 链路均验证了“有权放行、无权拒绝”；CAD 文件上传/产物下载全流程可用。
+  - 前端已对接：新增 `agent/tool` 适配链路，支持在 UI 中完成“草稿 -> 上传文件 -> 审批执行 -> SSE 展示结果”。
+  - 用户记忆已打通：每用户独立 profile 记忆可在前端编辑，`src` 会在每轮问答自动加载当前用户记忆参与决策。
 
 ## 9. 功能与测试代码对照（回顾用）
 
@@ -121,7 +151,21 @@
    - 测试代码：`brain-server/test/run_governance_e2e.py`（`brain_context_before_mutation/after_grant/after_revoke`）
 7. 细分审计功能：
    - 实现代码：`brain-server/prisma/schema.prisma` + `brain-server/src/server.ts`
-   - 测试代码：`brain-server/test/run_governance_e2e.py`（触发）+ `psql count`（落库验证）
+   - 测试代码：`brain-server/test/run_governance_e2e.py`（触发 + `audits_query_skills/audits_query_rag`）+ `psql count`（落库验证）
+
+## 10. 前后端缺口清单（后续开展）
+
+1. 前端依赖但后端缺失/不兼容：
+   - `auth`、`permission`、`users` 仍有旧路径协议差异（`/api/user/*`、`/api/admin/permission*`、`/api/admin/users/admin|normal|promote-admin`）。
+   - `datasets/documents`、`conversations`、`agent/chat/stream`、`agent/tool/*`、`admin/skills/*`、`admin/route-samples*` 等接口在 `brain-server` 尚未完整提供。
+2. 后端已具备但前端未展示：
+   - `DATASET_OWNER`、`MEMORY_PROFILE` 授权 UI 缺失。
+   - `admin/files`（查询/单条/批量/导出）治理页面缺失。
+   - `admin/audits/skills`、`admin/audits/rag` 新审计视图未接入。
+3. 需先评估的大出入：
+   - 聊天会话协议是否沿用旧 `agent` 体系（适配层）或切换到 `rag/query + 新会话 API`。
+   - 数据集/文档管理是否由 `brain-server` 完整承接，或继续由 RagFlow 旧后端承接。
+   - 技能管理采用“目录驱动”还是“注册中心驱动”作为主模式。
 
 ## 8. 技能挂载机制说明
 
@@ -135,3 +179,21 @@
 3. 当前已接入样例：
    - `indicator-verification`（原 `cad_text_extractor`）已通过文件网关接入并完成实测。
    - `rag-query` 已作为运行时技能封装完成，可直接调用治理后端 `rag/query` 并返回结构化结果。
+- Brain Service 流式输出架构修复（2026-04-16）：
+    - 问题：用户通过前端发送"RAG skill"指令时，skill 执行结果被 src 大脑的 LLM 截断并以默认回答输出，而不是直接流式返回 RAG 原始结果。
+    - 根本原因：`brainService.ts` 的 `handleBrainQuery` 是同步阻塞模式，将所有查询结果聚合成 JSON 后返回，前端无法感知中间 skill 执行过程。
+    - 解决方案：新增 `handleBrainQueryStream` + `processQueryThroughBrainStream` + `runSingleTurnStream` 流式处理链，支持 SSE 实时推送：
+      - `chunk`：模型 token 流式输出
+      - `skill_start/skill_end`：skill 调用开始/结束通知
+      - `structured_result`：RAG 结构化引用数据
+      - `done`：最终回答完成
+    - 技术实现：
+      - `brainService.ts` 新增 `/api/query` SSE 端点，将 query() 循环中的每个事件实时 yield
+      - RAG 执行完成后，追加用户消息触发 LLM 总结，实现"流式 RAG -> LLM 总结"完整链路
+      - `brain-server` 的 `/api/v1/brain/query` 已支持透传 SSE 流（原有 pipe 逻辑复用）
+    - 验证方式：前端登录 `superadmin`，发送"请调用rag skill，什么是半面积"，观察 SSE 流是否包含 RAG 原始回答而非截断内容
+- Brain-server 无法连接 Brain 服务修复（2026-04-16）：
+    - 问题：brain-server 调用 brain 服务时报 `ConnectionRefused: http://brain:3100/api/query`
+    - 原因：brain 使用 `network_mode: host`，Docker 网络中无法解析 `brain:3100`
+    - 修复：`brain-server/src/server.ts` 中改为 `http://host.docker.internal:3100/api/query`
+    - 验证：RAG query 正常返回知识库内容（CAD 半面积定义）
