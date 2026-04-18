@@ -371,6 +371,18 @@
     - SSE 事件统计：`event: message=1, event: rag_content=1, event: skill_end=1, event: skill_start=1`（无重复）
     - RAG 查询返回 6 个引用，完整展示在 `rag_content` 事件中
 
+48. 前端 Markdown 表格样式支持（2026-04-17）：
+  - 问题：RAG 返回的 Markdown 表格在前端渲染时没有正确显示表格样式
+  - 修复：
+    - 安装 `remark-gfm` 插件支持 GFM（GitHub Flavored Markdown）表格语法
+    - 在 `App.jsx` 的 `MarkdownWithCitations` 组件中添加表格相关组件配置
+    - 添加 `table`、`thead`、`th`、`td` 的自定义样式类
+  - 涉及文件：
+    - `frontend/package.json`：新增 `remark-gfm`
+    - `frontend/src/App.jsx`：添加 markdown 表格样式
+  - 验证：
+    - 前端刷新后，Markdown 表格正确渲染为带边框和样式的表格
+
 ## 4. 待完成内容（Todo）
 
 ### 4.1 高优先级
