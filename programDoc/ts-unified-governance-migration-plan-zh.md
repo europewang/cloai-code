@@ -1339,3 +1339,85 @@ curl -X POST http://localhost:8091/api/v1/brain/query \
 
 # 返回正确的 RAG 知识库内容（CAD 半面积定义）
 ```
+
+### 17.25 RAG Skill 流式输出优化（2026-04-17）
+
+#### 问题描述
+
+1. **SSE 事件重复发送**：`event: message` 和 `event: rag_content` 各发送两次
+2. **LLM 总结重复**：同一个回答发送两次
+3. **`rag_content` 引用为空**：流式端点超时导致引用数据丢失
+
+#### 修复内容
+
+1. **skills/rag_query/run_skill.py**：
+   - 改用非流式端点 `/api/v1/rag/query` 获取完整引用
+   - 清理调试代码
+
+2. **brainService.ts**：
+   - 简化 `processQueryThroughBrainStream` 循环逻辑
+   - RAG 完成后直接退出，不再发起第二轮 LLM 调用
+   - 跳过发送空的 `done` 消息
+
+3. **skills/rag_query/SKILL.md**：
+   - 修复容器内路径：`/home/ubutnu/code/cloai-code` -> `/app`
+
+#### 验证结果
+
+```bash
+# SSE 事件统计
+event: message     = 1  ✓
+event: rag_content = 1  ✓
+event: skill_end   = 1  ✓
+event: skill_start = 1  ✓
+
+# RAG 返回 6 个引用
+```
+
+### 17.26 前端 Markdown 表格样式支持（2026-04-17）
+
+#### 问题描述
+
+RAG 返回的 Markdown 表格在前端渲染时没有正确显示表格样式（如边框、背景色）。
+
+#### 修复内容
+
+1. **frontend/package.json**：
+   - 新增依赖：`remark-gfm`
+
+2. **frontend/src/App.jsx**：
+   - 导入 `remarkGfm` 插件
+   - 在 `MarkdownWithCitations` 组件中添加 `remarkPlugins={[remarkGfm]}`
+   - 添加表格相关组件自定义样式：
+     - `table`：添加 `overflow-x-auto` 滚动支持
+     - `thead`：添加 `bg-slate-100` 背景色
+     - `th`：添加 `border` 边框和 `px-3 py-2` 内边距
+     - `td`：添加 `border` 边框和 `px-3 py-2` 内边距
+
+#### 验证结果
+
+前端刷新后，Markdown 表格正确渲染为带边框和样式的表格。
+
+### 17.27 前端部署说明（2026-04-17）
+
+#### 部署流程
+
+前端代码修改后需要重新构建并同步到容器：
+
+```bash
+# 1. 进入前端目录并构建
+cd /home/ubutnu/code/cloai-code/frontend
+npm run build
+
+# 2. 复制构建产物到容器
+docker cp dist/. ai4kb-frontend:/app/dist/
+
+# 3. 重启前端容器
+docker restart ai4kb-frontend
+```
+
+#### 相关容器日志
+
+```bash
+docker logs ai4kb-frontend --tail 50
+```

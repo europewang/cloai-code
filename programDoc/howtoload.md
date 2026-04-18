@@ -233,6 +233,8 @@ docker ps | grep -E "brain|postgres|redis"
 
 # 查看容器日志
 docker logs ai4kb-brain-server --tail 50
+docker logs ai4kb-brain --tail 50
+docker logs ai4kb-frontend --tail 50
 docker logs xinference --tail 50
 docker logs ollama-local --tail 50
 
@@ -246,7 +248,25 @@ docker compose -f deploy/docker-compose-brain-ts.yml up -d
 
 ---
 
-## 8. 环境变量参考
+## 8. 前端部署说明
+
+前端代码修改后需要重新构建并同步到容器：
+
+```bash
+# 1. 进入前端目录并构建
+cd /home/ubutnu/code/cloai-code/frontend
+npm run build
+
+# 2. 复制构建产物到容器
+docker cp dist/. ai4kb-frontend:/app/dist/
+
+# 3. 重启前端容器
+docker restart ai4kb-frontend
+```
+
+---
+
+## 9. 环境变量参考
 
 brain (Docker内运行) 需要的环境变量：
 

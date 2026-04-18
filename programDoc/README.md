@@ -19,7 +19,18 @@
 
 ---
 
-## 2026 年 4 月 4 日最新更新
+## 2026 年 4 月 17 日最新更新
+
+- ⭐**RAG Skill 流式输出优化**
+  - 修复 SSE 事件重复发送问题
+  - 修复 RAG 引用为空问题，改用非流式端点获取完整引用
+  - SSE 事件统计：`event: message=1, event: rag_content=1, event: skill_end=1, event: skill_start=1`（无重复）
+  - RAG 查询返回 6 个引用，完整展示在 `rag_content` 事件中
+- ⭐**前端 Markdown 表格样式支持**
+  - 安装 `remark-gfm` 插件
+  - 添加表格自定义样式（边框、背景色、对齐）
+
+## 2026 年 4 月 4 日更新
 
 - ⭐**支持 Responses API 的缓存命中，成本降低 90%** 
 - 修复上下文穿插造成的回复不连续问题

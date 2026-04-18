@@ -128,6 +128,10 @@
   - 多用户联测完成：RAG 与 CAD 两条 skill 链路均验证了“有权放行、无权拒绝”；CAD 文件上传/产物下载全流程可用。
   - 前端已对接：新增 `agent/tool` 适配链路，支持在 UI 中完成“草稿 -> 上传文件 -> 审批执行 -> SSE 展示结果”。
   - 用户记忆已打通：每用户独立 profile 记忆可在前端编辑，`src` 会在每轮问答自动加载当前用户记忆参与决策。
+  - Brain Service Docker 部署修复：skills 目录挂载、`.claude/skills` 符号链接、`CLAUDE_CODE_SIMPLE=0`、skill 名称匹配兼容。
+  - 流式输出架构：新增 `handleBrainQueryStream` + `processQueryThroughBrainStream` + `runSingleTurnStream` 实现真正的 SSE 流式输出。
+  - RAG Skill 优化：修复 SSE 事件重复、引用为空问题，改用非流式端点获取完整引用。
+  - 前端 Markdown 表格支持：安装 `remark-gfm` 插件并添加表格样式配置。
 
 ## 9. 功能与测试代码对照（回顾用）
 

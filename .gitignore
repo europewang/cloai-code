@@ -14,3 +14,12 @@ coverage/
 *.swo
 
 .idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
