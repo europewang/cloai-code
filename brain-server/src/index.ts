@@ -1,10 +1,20 @@
 import { loadConfig } from './config.js'
 import { createServer } from './server.js'
 import { prisma } from './lib/prisma.js'
+import { initMongoDB } from './lib/mongodb.js'
 import { upsertBootstrapUsers } from './scripts/seedAdmin.js'
 
 async function bootstrap() {
   const config = loadConfig()
+
+  // Initialize MongoDB for skill docs
+  try {
+    await initMongoDB()
+    console.log('MongoDB initialized successfully')
+  } catch (error) {
+    console.error('Failed to initialize MongoDB:', error)
+    // Continue anyway - MongoDB might be optional for some features
+  }
 
   // Seed bootstrap users on startup
   try {

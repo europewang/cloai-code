@@ -31,6 +31,7 @@ import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
 import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
 import { setBrainToken, clearBrainToken, getBrainToken } from './client.js'
 import type { StructuredSkillResult } from 'src/utils/forkedAgent.js'
+import { getMongoDBSkills } from './mongoDBSkills.js'
 
 // Types
 type PreContext = {
@@ -301,7 +302,17 @@ async function processQueryThroughBrain(queryText: string): Promise<{ answer: st
   const { SkillTool } = await import('src/tools/SkillTool/SkillTool.js')
   const { getSkillToolCommands } = await import('src/commands.js')
   const projectRoot = getProjectRoot()
-  const allSkillCommands = await getSkillToolCommands(projectRoot)
+  
+  // Get local skill commands from filesystem
+  const localSkillCommands = await getSkillToolCommands(projectRoot)
+  
+  // Get skill commands from MongoDB (via brain-server)
+  const mongoSkills = await getMongoDBSkills()
+  
+  // Combine local and MongoDB skills
+  const allSkillCommands = [...localSkillCommands, ...mongoSkills]
+  
+  // Combine local and MongoDB skills, filter by allowed skills
   const allowedSkillCommands = allSkillCommands.filter(cmd =>
     !preCtx.allowedSkills || preCtx.allowedSkills.length === 0 || preCtx.allowedSkills.includes(cmd.name) || preCtx.allowedSkills.includes(cmd.name.replace(/_/g, '-'))
   )
@@ -522,12 +533,13 @@ function handleBrainQueryStream(req: any, res: any): void {
             // Skill execution started - send as 'skill_start' event
             res.write(`event: skill_start\ndata: ${JSON.stringify({ type: 'skill_start', skillName: event.skillName })}\n\n`)
           } else if (event.type === 'skill_end') {
-            // Skill execution completed - include result and references
+            // Skill execution completed - include result, references, and output files
             res.write(`event: skill_end\ndata: ${JSON.stringify({
               type: 'skill_end',
               skillName: event.skillName,
               result: event.result,
               references: event.references || [],
+              outputFiles: event.outputFiles || [],
             })}\n\n`)
           } else if (event.type === 'rag_token') {
             // Real-time RAG token streaming - send as 'rag_token' event for immediate display
@@ -579,7 +591,7 @@ function handleBrainQueryStream(req: any, res: any): void {
 type StreamEventType =
   | { type: 'chunk'; content: string }
   | { type: 'skill_start'; skillName: string }
-  | { type: 'skill_end'; skillName: string; result: string; references?: any[] }
+  | { type: 'skill_end'; skillName: string; result: string; references?: any[]; outputFiles?: any[] }
   | { type: 'rag_token'; skillName: string; delta: string }
   | { type: 'structured_result'; data: StructuredSkillResult }
   | { type: 'rag_content'; skillName: string; data: StructuredSkillResult; answer?: string; references?: any[]; markdown?: string }
@@ -623,7 +635,17 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
   const { SkillTool } = await import('src/tools/SkillTool/SkillTool.js')
   const { getSkillToolCommands } = await import('src/commands.js')
   const projectRoot = getProjectRoot()
-  const allSkillCommands = await getSkillToolCommands(projectRoot)
+  
+  // Get local skill commands from filesystem
+  const localSkillCommands = await getSkillToolCommands(projectRoot)
+  
+  // Get skill commands from MongoDB (via brain-server)
+  const mongoSkills = await getMongoDBSkills()
+  
+  // Combine local and MongoDB skills
+  const allSkillCommands = [...localSkillCommands, ...mongoSkills]
+  
+  // Combine local and MongoDB skills, filter by allowed skills
   const allowedSkillCommands = allSkillCommands.filter(cmd =>
     !preCtx.allowedSkills || preCtx.allowedSkills.length === 0 || preCtx.allowedSkills.includes(cmd.name) || preCtx.allowedSkills.includes(cmd.name.replace(/_/g, '-'))
   )
@@ -692,6 +714,7 @@ type ExtractedSkillResult = {
   skillName: string
   result: string
   structuredResult?: StructuredSkillResult
+  outputFiles?: Array<{ file_name: string; file_id: string; download_url: string }>
 }
 
 /**
@@ -715,6 +738,10 @@ function extractSkillResultFromToolResult(block: any): ExtractedSkillResult | nu
 
   const skillName = match[1]
 
+  // Extract result text from content
+  const resultMatch = content.match(/Result:\s*\n([\s\S]+?)(?:\n\n__STRUCTURED_RESULT__|$)/)
+  let result = resultMatch ? resultMatch[1].trim() : content
+
   // Try to extract structured result from content (embedded by SkillTool.mapToolResultToToolResultBlockParam)
   let structuredResult: StructuredSkillResult | undefined
   const structuredMatch = content.match(/__STRUCTURED_RESULT__:(.+)$/)
@@ -729,14 +756,35 @@ function extractSkillResultFromToolResult(block: any): ExtractedSkillResult | nu
       console.error('DEBUG extractToolResult: parse error:', e)
     }
   } else {
-    console.error('DEBUG extractToolResult: no structured result marker found. Content ends with:', content.substring(content.length - 300))
+    console.error('DEBUG extractToolResult: no structured result marker found')
   }
 
-  // Extract result text from content
-  const resultMatch = content.match(/Result:\s*\n([\s\S]+?)(?:\n\n__STRUCTURED_RESULT__|$)/)
-  const result = resultMatch ? resultMatch[1].trim() : content
+  // Extract output files from __OUTPUT_FILES__ marker in result
+  const outputFiles: Array<{ file_name: string; file_id: string; download_url: string }> = []
+  const outputFilesMatch = result.match(/__OUTPUT_FILES__\s*\n([\s\S]+?)\n__OUTPUT_FILES_END__/)
+  if (outputFilesMatch) {
+    try {
+      const files = JSON.parse(outputFilesMatch[1])
+      if (Array.isArray(files)) {
+        // Use brain service URL for downloads
+        const baseUrl = process.env.BRAIN_SERVICE_URL || 'http://localhost:3100'
+        files.forEach((f: any, idx: number) => {
+          outputFiles.push({
+            file_name: f.file_name || f.fileName || `file-${idx}`,
+            file_id: `output-${Date.now()}-${idx}`,
+            download_url: `${baseUrl}/api/files/download?filename=${encodeURIComponent(f.file_path || f.filePath || f.file_name)}`
+          })
+        })
+        console.error('DEBUG extractToolResult: found outputFiles:', outputFiles.length)
+      }
+    } catch (e) {
+      console.error('DEBUG extractToolResult: parse outputFiles error:', e)
+    }
+    // Clean up the result by removing the output files marker
+    result = result.replace(/__OUTPUT_FILES__\s*\n[\s\S]+?\n__OUTPUT_FILES_END__/g, '').trim()
+  }
 
-  return { skillName, result, structuredResult }
+  return { skillName, result, structuredResult, outputFiles }
 }
 
 /**
@@ -890,14 +938,21 @@ async function* runSingleTurnStream(
                 const ragReferences = skillResult.structuredResult?.references || []
                 const ragMarkdown = skillResult.structuredResult?.markdown || ragAnswer
 
-                // Yield skill_end with RAG content (not LLM summarized)
+                // Yield skill_end with RAG content (not LLM summarized) and output files
                 yield { 
                   type: 'skill_end', 
                   skillName: skillResult.skillName, 
                   result: ragAnswer, 
-                  references: ragReferences 
+                  references: ragReferences,
+                  outputFiles: skillResult.outputFiles || []
                 }
-                lastStreamEvent = { type: 'skill_end', skillName: skillResult.skillName, result: ragAnswer, references: ragReferences }
+                lastStreamEvent = { 
+                  type: 'skill_end', 
+                  skillName: skillResult.skillName, 
+                  result: ragAnswer, 
+                  references: ragReferences,
+                  outputFiles: skillResult.outputFiles || []
+                }
 
                 // If we have structured result (RAG references), yield it separately for streaming
                 if (skillResult.structuredResult && ragReferences.length > 0) {
@@ -976,6 +1031,28 @@ export function startBrainService(): void {
     if (url === '/api/query' && req.method === 'POST') {
       handleBrainQueryStream(req, res)
       return
+    }
+
+    // File download endpoint
+    const downloadMatch = url.match(/^\/api\/files\/download\?filename=(.+)$/)
+    if (downloadMatch && req.method === 'GET') {
+      const filePath = decodeURIComponent(downloadMatch[1])
+      console.error('Download request for:', filePath)
+      const { createReadStream, existsSync } = require('fs')
+      if (existsSync(filePath)) {
+        const fileName = filePath.split('/').pop() || 'download'
+        const stat = require('fs').statSync(filePath)
+        res.setHeader('Content-Type', 'application/octet-stream')
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+        res.setHeader('Content-Length', stat.size)
+        createReadStream(filePath).pipe(res)
+        return
+      } else {
+        console.error('File not found:', filePath)
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'File not found', path: filePath }))
+        return
+      }
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' })

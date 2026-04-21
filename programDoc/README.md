@@ -21,6 +21,12 @@
 
 ## 2026 年 4 月 17 日最新更新
 
+- ⭐**MongoDB-backed Skills 技能管理系统**
+  - 技能 SKILL.md 内容存储在 MongoDB 中
+  - 技能元数据存储在 PostgreSQL 中（skills 表）
+  - 支持技能快捷方式（skill_shortcuts 表）
+  - 前端技能管理页面支持 Markdown 编辑和预览
+  - 脚本文件保留在文件系统，只需修改 SKILL.md 即可更新技能
 - ⭐**RAG Skill 流式输出优化**
   - 修复 SSE 事件重复发送问题
   - 修复 RAG 引用为空问题，改用非流式端点获取完整引用

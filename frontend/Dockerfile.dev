@@ -1,0 +1,20 @@
+# 开发环境 Dockerfile - 支持热更新
+FROM node:20-alpine
+
+WORKDIR /app
+
+# 设置 npm 镜像
+RUN npm config set registry https://registry.npmmirror.com
+
+# 复制 package.json 并安装依赖
+COPY package*.json ./
+RUN npm install
+
+# 复制源代码（后续通过 volume 覆盖）
+COPY . .
+
+# 暴露开发端口
+EXPOSE 8086
+
+# 启动 Vite 开发服务器
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

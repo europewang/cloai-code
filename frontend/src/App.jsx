@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus } from 'lucide-react'
+import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
@@ -702,13 +702,51 @@ async function startAgentStream(conversationId, query, options = {}) {
     replanOnly: !!options.replanOnly,
     memoryProfileId: options.memoryProfileId || ''
   }
+
+  // 如果有文件，先上传
+  let uploadedFiles = []
+  if (options.files && options.files.length > 0) {
+    for (const fileData of options.files) {
+      try {
+        const result = await uploadFileToChat(fileData.file, conversationId)
+        if (result) {
+          uploadedFiles.push({
+            fileId: result.fileId || result.file_id || '',
+            fileName: fileData.file.name,
+            fileSize: result.size || 0,
+            filePath: result.filePath || result.file_path || ''
+          })
+        }
+      } catch (err) {
+        console.error('上传文件失败:', err)
+      }
+    }
+    if (uploadedFiles.length > 0) {
+      payload.fileIds = uploadedFiles.map(f => f.fileId)
+    }
+  }
+
   const res = await apiFetch('/v1/agent/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res
+  return { response: res, uploaded: uploadedFiles }
+}
+
+// 上传文件到聊天
+async function uploadFileToChat(file, conversationId) {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('conversationId', conversationId)
+  const res = await apiFetch('/v1/files/upload', {
+    method: 'POST',
+    body: formData
+  })
+  if (!res.ok) throw new Error(`上传失败: HTTP ${res.status}`)
+  const data = await res.json()
+  return data // 返回完整对象
 }
 
 async function uploadToolInputFile(toolCallId, file) {
@@ -4143,12 +4181,13 @@ function SourceViewer({ reference, onClose }) {
                                     className="shadow-md"
                                 >
                                     {/* Highlight Overlay */}
-                                    {reference.positions && reference.positions.map((pos, idx) => {
-                                        const [p, x_min, x_max, y_min, y_max] = pos; 
-                                        if (p !== pageNum) return null;
+                                    {reference.positions && reference.positions
+                                        .filter((pos) => pos[0] === pageNum)
+                                        .map((pos, idx) => {
+                                        const [p, x_min, x_max, y_min, y_max] = pos;
                                         return (
                                             <div
-                                                key={idx}
+                                                key={`${pageNum}-${idx}`}
                                                 style={{
                                                     position: 'absolute',
                                                     left: x_min * scale,
@@ -4309,6 +4348,8 @@ function ChatInterface() {
   const [planDrafts, setPlanDrafts] = useState({})
   const [planUiStates, setPlanUiStates] = useState({})
   const [selectedMemoryProfileId, setSelectedMemoryProfileId] = useState('')
+  const [uploadedFiles, setUploadedFiles] = useState([])
+  const [uploadProgress, setUploadProgress] = useState({})
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
   const abortControllerRef = useRef(null)
@@ -5165,25 +5206,18 @@ function ChatInterface() {
           const answer = payload.answer || ''
           const refs = normalizeRefs(payload)
           const skillName = payload.skillName || ''
-          // Update references
           if (refs.length > 0) {
             assistantPayloadState.references = refs
           }
           if (skillName) {
             assistantPayloadState.sourceTag = 'RAG检索'
           }
-          // Append RAG content to message with marker
+          // Store RAG content separately for dedicated block display
           if (answer) {
-            // Add separator if there's existing content
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            // Add RAG marker header
-            aiContent += `> **📚 RAG检索结果**\n\n`
-            aiContent += answer
-            finalAssistantContent = aiContent
+            assistantPayloadState.ragContent = answer
             updateStreamingMessage(nextMsgId, old => ({
-              content: aiContent,
+              content: old.content,
+              ragContent: answer,
               references: refs.length > 0 ? refs : (old.references || []),
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
@@ -5194,36 +5228,43 @@ function ChatInterface() {
           return
         }
         if (eventName === 'skill_end') {
-          // Handle skill_end event - stream RAG results directly to frontend
           hasRenderableOutput = true
           const payload = parseJsonSafe(dataStr)
           if (!payload) return
           const result = payload.result || payload.answer || ''
           const refs = normalizeRefs(payload)
           const skillName = payload.skillName || ''
-          // Update references
           if (refs.length > 0) {
             assistantPayloadState.references = refs
           }
           if (skillName) {
             assistantPayloadState.sourceTag = 'RAG检索'
           }
-          // Stream RAG content directly without LLM summarization
+          // Store RAG content separately
           if (result) {
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            aiContent += `> **📚 ${skillName || 'Skill'} 执行结果**\n\n`
-            aiContent += result
-            finalAssistantContent = aiContent
+            assistantPayloadState.ragContent = result
             updateStreamingMessage(nextMsgId, old => ({
-              content: aiContent,
+              content: old.content,
+              ragContent: result,
               references: refs.length > 0 ? refs : (old.references || []),
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
               hasRagContent: true
             }))
+          }
+          return
+        }
+        if (eventName === 'skill_start') {
+          // Mark rag start - save current content as preRagContent
+          const payload = parseJsonSafe(dataStr)
+          if (!payload) return
+          const skillName = payload.skillName || ''
+          if (skillName && (skillName === 'rag-query' || skillName.includes('rag'))) {
+            assistantPayloadState.isRagPending = true
+            assistantPayloadState.preRagContent = aiContent
+            assistantPayloadState.ragContent = ''
+            assistantPayloadState.postRagContent = ''
           }
           return
         }
@@ -5271,9 +5312,18 @@ function ChatInterface() {
               }
               pendingStepPayload = null
             }
+            // Check if rag is pending - add to postRagContent
+            if (assistantPayloadState.isRagPending) {
+              const currentPostRag = assistantPayloadState.postRagContent || ''
+              assistantPayloadState.postRagContent = currentPostRag + plainText
+            }
             aiContent += plainText
             finalAssistantContent = aiContent
-            updateStreamingMessage(nextMsgId, () => ({ content: aiContent }))
+            updateStreamingMessage(nextMsgId, () => ({ 
+              content: aiContent,
+              preRagContent: assistantPayloadState.preRagContent,
+              postRagContent: assistantPayloadState.postRagContent
+            }))
             return
           }
           const delta = payload.answer || payload.data?.answer || ''
@@ -5307,14 +5357,17 @@ function ChatInterface() {
             }
             pendingStepPayload = null
           }
-          // Add LLM marker header if this is the first LLM output after RAG content
-          if (delta && assistantPayloadState.references?.length > 0 && !aiContent.includes('🤖 AI回答')) {
-            aiContent += '\n\n---\n\n> **🤖 AI回答**\n\n'
+          // Check if rag is pending - add to postRagContent
+          if (assistantPayloadState.isRagPending && delta) {
+            const currentPostRag = assistantPayloadState.postRagContent || ''
+            assistantPayloadState.postRagContent = currentPostRag + delta
           }
           aiContent += delta
           finalAssistantContent = aiContent
           updateStreamingMessage(nextMsgId, old => ({
             content: aiContent,
+            preRagContent: assistantPayloadState.preRagContent,
+            postRagContent: assistantPayloadState.postRagContent,
             references: refs.length > 0 ? refs : old.references,
             sourceTag: sourceTag || old.sourceTag,
             logicFlow: logicFlow || old.logicFlow,
@@ -5500,9 +5553,26 @@ function ChatInterface() {
     }
 
     try {
-      const response = await startAgentStream(conversationIdRef.current, userMsg.content, {
-        memoryProfileId: selectedMemoryProfileId
+      // 获取并清空上传的文件
+      const filesToUpload = [...uploadedFiles]
+      setUploadedFiles([])
+
+      const { response, uploaded: uploadedFromStream } = await startAgentStream(conversationIdRef.current, userMsg.content, {
+        memoryProfileId: selectedMemoryProfileId,
+        files: filesToUpload
       })
+
+      // 如果有上传的文件，显示在消息中
+      if (uploadedFromStream && uploadedFromStream.length > 0) {
+        const fileMsg = {
+          role: 'user',
+          content: `[已上传文件]`,
+          id: `upload-${Date.now()}`,
+          isFile: true,
+          fileNames: uploadedFromStream.map(f => f.fileName)
+        }
+        setMessages(prev => [...prev, fileMsg])
+      }
       let aiContent = ''
       let hasRenderableOutput = false
 
@@ -5608,21 +5678,56 @@ function ChatInterface() {
             assistantPayloadState.sourceTag = 'RAG检索'
           }
           if (answer) {
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            // Add RAG marker header
-            aiContent += `> **📚 RAG检索结果**\n\n`
-            aiContent += answer
-            finalAssistantContent = aiContent
+            assistantPayloadState.ragContent = answer
             updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
+              content: old.content,
+              ragContent: answer,
               references: refs.length > 0 ? refs : (old.references || []),
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
               hasRagContent: true
             }))
+          }
+          return
+        }
+        if (eventName === 'skill_end') {
+          hasRenderableOutput = true
+          const payload = parseJsonSafe(dataStr)
+          if (!payload) return
+          const result = payload.result || payload.answer || ''
+          const refs = normalizeRefs(payload)
+          const skillName = payload.skillName || ''
+          if (refs.length > 0) {
+            assistantPayloadState.references = refs
+          }
+          if (skillName) {
+            assistantPayloadState.sourceTag = 'RAG检索'
+          }
+          if (result) {
+            assistantPayloadState.ragContent = result
+            updateStreamingMessage(aiMsgId, old => ({
+              content: old.content,
+              ragContent: result,
+              references: refs.length > 0 ? refs : (old.references || []),
+              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
+              logicFlow: old.logicFlow,
+              skillHint: old.skillHint,
+              hasRagContent: true
+            }))
+          }
+          return
+        }
+        if (eventName === 'skill_start') {
+          // Mark rag start - save current content as preRagContent
+          const payload = parseJsonSafe(dataStr)
+          if (!payload) return
+          const skillName = payload.skillName || ''
+          if (skillName && (skillName === 'rag-query' || skillName.includes('rag'))) {
+            assistantPayloadState.isRagPending = true
+            assistantPayloadState.preRagContent = aiContent
+            assistantPayloadState.ragContent = ''
+            assistantPayloadState.postRagContent = ''
           }
           return
         }
@@ -5641,14 +5746,10 @@ function ChatInterface() {
             assistantPayloadState.sourceTag = 'RAG检索'
           }
           if (result) {
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            aiContent += `> **📚 ${skillName || 'Skill'} 执行结果**\n\n`
-            aiContent += result
-            finalAssistantContent = aiContent
+            assistantPayloadState.ragContent = result
             updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
+              content: old.content,
+              ragContent: result,
               references: refs.length > 0 ? refs : (old.references || []),
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
@@ -5790,6 +5891,96 @@ function ChatInterface() {
     await loadConversationListAndMessages(targetConversationId)
   }
 
+  // 文件选择处理
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length > 0) {
+      addFiles(files)
+    }
+    e.target.value = ''
+  }
+
+  // 拖拽文件处理（支持文件夹）
+  const handleFileDrop = async (e) => {
+    e.preventDefault()
+    const allFiles = []
+
+    // 尝试使用 File System Access API 读取目录
+    const items = e.dataTransfer.items
+    if (items) {
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const entry = item.webkitGetAsEntry?.()
+          if (entry) {
+            await readDirectoryEntry(entry, allFiles)
+          } else {
+            const file = item.getAsFile()
+            if (file) allFiles.push(file)
+          }
+        }
+      }
+    }
+
+    // 如果没有读取到文件，尝试直接使用 files
+    if (allFiles.length === 0 && e.dataTransfer.files.length > 0) {
+      allFiles.push(...Array.from(e.dataTransfer.files))
+    }
+
+    if (allFiles.length > 0) {
+      addFiles(allFiles)
+    }
+  }
+
+  // 递归读取目录中的所有文件
+  const readDirectoryEntry = (entry, fileList, basePath = '') => {
+    return new Promise((resolve) => {
+      if (entry.isFile) {
+        entry.file((file) => {
+          const fileWithPath = new File([file], basePath + file.name, { type: file.type })
+          fileList.push(fileWithPath)
+          resolve()
+        })
+      } else if (entry.isDirectory) {
+        const dirReader = entry.createReader()
+        dirReader.readEntries((entries) => {
+          if (entries.length === 0) {
+            resolve()
+            return
+          }
+          const promises = entries.map((e) =>
+            readDirectoryEntry(e, fileList, basePath + entry.name + '/')
+          )
+          Promise.all(promises).then(resolve)
+        })
+      } else {
+        resolve()
+      }
+    })
+  }
+
+  // 添加文件
+  const addFiles = (newFiles) => {
+    setUploadedFiles(prev => {
+      const existingNames = new Set(prev.map(f => f.name))
+      const unique = newFiles.filter(f => !existingNames.has(f.name))
+      return [...prev, ...unique.map(f => ({ name: f.name, size: f.size, file: f }))]
+    })
+  }
+
+  // 移除文件
+  const removeUploadedFile = (index) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index))
+  }
+
+  // 处理文件夹选择
+  const handleFolderSelect = (e) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length > 0) {
+      addFiles(files)
+    }
+    e.target.value = ''
+  }
+
   const handleSendButtonClick = () => {
     // 点击转圈按钮时，真正中断当前流式输出；若输入框有新内容则立即发起新问题。
     if (loading) {
@@ -5907,6 +6098,7 @@ function ChatInterface() {
       )
       let aiContent = ''
       let latestToolResult = null
+      let hasRenderableOutput = false
       await consumeSse(response, async (eventName, dataStr) => {
         if (dataStr === '[DONE]') return
         if (eventName === 'tool_result') {
@@ -5957,6 +6149,7 @@ function ChatInterface() {
           const result = payload.result || payload.answer || ''
           const refs = normalizeRefs(payload)
           const skillName = payload.skillName || ''
+          const outputFiles = payload.outputFiles || []
           if (refs.length > 0) {
             assistantPayloadState.references = refs
           }
@@ -5969,6 +6162,13 @@ function ChatInterface() {
             }
             aiContent += `> **📚 ${skillName || 'Skill'} 执行结果**\n\n`
             aiContent += result
+            // Add download links if available
+            if (outputFiles.length > 0) {
+              aiContent += '\n\n---\n\n**📥 下载文件:**\n\n'
+              outputFiles.forEach(f => {
+                aiContent += `- [${f.file_name}](${f.download_url})\n`
+              })
+            }
             finalAssistantContent = aiContent
             updateStreamingMessage(aiMsgId, old => ({
               content: aiContent,
@@ -5976,7 +6176,8 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
-              hasRagContent: true
+              hasRagContent: true,
+              outputFiles: outputFiles
             }))
           }
           return
@@ -6179,9 +6380,9 @@ function ChatInterface() {
             {!toolCatalogLoading && toolCatalog.length === 0 && (
               <div className="px-2 py-2 text-[11px] text-slate-400">暂无可用技能</div>
             )}
-            {!toolCatalogLoading && toolCatalog.map((tool) => (
+            {!toolCatalogLoading && toolCatalog.map((tool, idx) => (
               <button
-                key={tool.name}
+                key={tool.code || tool.toolCode || `tool-${idx}`}
                 onClick={() => handleManualSkillInvoke(tool)}
                 disabled={loading || manualDraftPending === tool.name}
                 className="w-full text-left px-2 py-1.5 rounded border border-slate-200 hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50"
@@ -6242,6 +6443,13 @@ function ChatInterface() {
                   ? "bg-blue-600 text-white rounded-tr-sm" 
                   : "bg-white border border-slate-100 text-slate-700 rounded-tl-sm"
               )}>
+                {msg.isFile && (
+                  <div className="mb-2 flex items-center gap-2 text-xs text-slate-600">
+                    <Paperclip size={14} className="text-blue-500" />
+                    <span>已上传文件:</span>
+                    <span className="font-medium">{msg.fileNames?.join(', ')}</span>
+                  </div>
+                )}
                 {msg.toolDraft && (
                   <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
                     <div className="text-xs text-blue-700 font-semibold mb-2">
@@ -6616,15 +6824,67 @@ function ChatInterface() {
                           isStreaming={msg.isStreaming} 
                         />
                       )}
-                      <MarkdownWithCitations 
-                        content={answer} 
-                        references={msg.references} 
-                        onViewReference={setViewingRef} 
-                      />
+                      {/* 大脑内容 - RAG 之前的部分 */}
+                      {msg.preRagContent && (
+                        <div className="whitespace-pre-wrap">
+                          {msg.preRagContent}
+                          {msg.isStreaming && <span className="inline-block w-1 h-3 bg-emerald-400 animate-pulse ml-0.5"/>}
+                        </div>
+                      )}
+                      {/* RAG检索结果 - 固定显示在preRagContent之后、postRagContent之前 */}
+                      {msg.ragContent && (
+                        <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Database size={14} className="text-amber-600" />
+                            <span className="text-xs font-semibold text-amber-700">RAG检索结果</span>
+                          </div>
+                          <div className="text-sm text-amber-900 whitespace-pre-wrap">
+                            {msg.ragContent}
+                            {msg.isStreaming && <span className="inline-block w-1 h-3 bg-amber-400 animate-pulse ml-0.5"/>}
+                          </div>
+                        </div>
+                      )}
+                      {/* 大脑内容 - RAG 之后的部分 */}
+                      {msg.postRagContent && (
+                        <div className="whitespace-pre-wrap">
+                          {msg.postRagContent}
+                          {msg.isStreaming && <span className="inline-block w-1 h-3 bg-emerald-400 animate-pulse ml-0.5"/>}
+                        </div>
+                      )}
+                      {/* 没有任何分割内容时，显示原始 content */}
+                      {!msg.preRagContent && !msg.postRagContent && (
+                        <MarkdownWithCitations 
+                          content={answer} 
+                          references={msg.references} 
+                          onViewReference={setViewingRef} 
+                        />
+                      )}
                       {msg.isStreaming && <span className="inline-block w-1.5 h-4 bg-emerald-400 animate-pulse ml-1 align-middle"/>}
                     </>
                   )
                 })()}
+                {msg.outputFiles && msg.outputFiles.length > 0 && !msg.isStreaming && (
+                  <div className="mt-4 pt-3 border-t border-slate-100">
+                    <div className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1">
+                      <Download size={14} />
+                      下载文件
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {msg.outputFiles.map((f, i) => (
+                        <a
+                          key={i}
+                          href={f.download_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-2 p-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-left transition-colors"
+                        >
+                          <Download size={14} className="text-blue-600" />
+                          <span className="text-xs text-blue-700 flex-1 truncate">{f.file_name}</span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {msg.references && msg.references.length > 0 && !msg.isStreaming && (
                   <div className="mt-4 pt-3 border-t border-slate-100">
                     <div className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1">
@@ -6704,6 +6964,25 @@ function ChatInterface() {
             ))}
           </div>
           <div className="relative">
+            {/* 已上传文件显示区域 */}
+            {uploadedFiles.length > 0 && (
+              <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex flex-wrap gap-2">
+                  {uploadedFiles.map((file, idx) => (
+                    <div key={idx} className="flex items-center gap-1 bg-white px-2 py-1 rounded border text-xs">
+                      <span className="text-slate-600 max-w-[120px] truncate">{file.name}</span>
+                      <span className="text-slate-400">({(file.size / 1024).toFixed(1)}KB)</span>
+                      <button
+                        onClick={() => removeUploadedFile(idx)}
+                        className="text-red-500 hover:text-red-700 ml-1"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <textarea
               ref={inputRef}
               value={input}
@@ -6752,12 +7031,24 @@ function ChatInterface() {
               onBlur={() => {
                 setTimeout(() => closeMention(), 120)
               }}
-              placeholder="请输入您的问题..."
-              className="w-full pl-4 pr-12 py-3 bg-slate-50 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none h-[56px] text-sm"
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.currentTarget.classList.add('border-blue-400', 'bg-blue-50')
+              }}
+              onDragLeave={(e) => {
+                e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50')
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50')
+                handleFileDrop(e)
+              }}
+              placeholder="请输入您的问题...（可拖拽文件到此处上传）"
+              className="w-full pl-4 pr-24 py-3 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none h-[80px] text-sm transition-colors"
               disabled={conversationLoading}
             />
             {mentionOpen && mentionCandidates.length > 0 && (
-              <div className="absolute left-0 right-14 bottom-[64px] rounded-lg border border-slate-200 bg-white shadow-lg z-20 max-h-56 overflow-y-auto">
+              <div className="absolute left-0 right-14 bottom-[88px] rounded-lg border border-slate-200 bg-white shadow-lg z-20 max-h-56 overflow-y-auto">
                 {mentionCandidates.map((tool, idx) => (
                   <button
                     key={tool.name || `${tool.displayName}-${idx}`}
@@ -6776,15 +7067,37 @@ function ChatInterface() {
                 ))}
               </div>
             )}
+            {/* 文件上传按钮 - 支持文件和文件夹 */}
+            <div className="absolute right-12 top-2 flex items-center gap-1">
+              <label className="p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors" title="上传文件">
+                <input
+                  type="file"
+                  multiple
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <Paperclip size={18} />
+              </label>
+              <label className="p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors" title="上传文件夹">
+                <input
+                  type="file"
+                  multiple
+                  webkitdirectory=""
+                  onChange={handleFolderSelect}
+                  className="hidden"
+                />
+                <FolderOpen size={18} />
+              </label>
+            </div>
             <button
               onClick={handleSendButtonClick}
-              disabled={conversationLoading || (!loading && !input.trim())}
+              disabled={conversationLoading || (!loading && !input.trim() && uploadedFiles.length === 0)}
               className="absolute right-2 top-2 p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
             >
               {(loading || conversationLoading) ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
             </button>
           </div>
-          <p className="text-[11px] text-slate-400 mt-1">输入 `@` 可选择技能名称（上下键选择，Enter/Tab 插入），是否调用由模型根据语义自主判断。</p>
+          <p className="text-[11px] text-slate-400 mt-1">输入 `@` 可选择技能名称，支持拖拽上传文件。</p>
           <p className="text-center text-xs text-slate-400 mt-2">
             AI 生成内容仅供参考，请以原始文档为准。
           </p>

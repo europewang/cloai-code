@@ -45,6 +45,9 @@ const envSchema = z.object({
   FILE_S3_SECRET_ACCESS_KEY: z.string().default('infini_rag_flow'),
   FILE_S3_BUCKET: z.string().default('brain-skill-files'),
   FILE_S3_FORCE_PATH_STYLE: z.coerce.boolean().default(true),
+  // MongoDB configuration for skill docs
+  MONGO_URL: z.string().default('mongodb://127.0.0.1:27017'),
+  MONGO_DB_NAME: z.string().default('ai4kb_brain'),
 })
 
 export type AppConfig = z.infer<typeof envSchema>
