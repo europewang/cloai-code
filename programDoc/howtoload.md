@@ -47,6 +47,10 @@
 ```bash
 cd /home/ubutnu/code/cloai-code
 
+docker compose -f deploy/docker-compose-brain-ts.yml build frontend
+docker compose -f deploy/docker-compose-brain-ts.yml up -d frontend
+
+
 # 1. 启动所有Docker服务（包括 brain-server 和 brain）
 docker compose -f deploy/docker-compose-brain-ts.yml up -d
 
@@ -95,6 +99,16 @@ curl -s http://localhost:8085/v1/models | jq -r '.data[].id'
 cd /home/ubutnu/code/cloai-code
 docker compose -f deploy/docker-compose-brain-ts.yml build brain-server
 docker compose -f deploy/docker-compose-brain-ts.yml up -d brain-server
+
+# 停止并删除旧容器
+docker stop ai4kb-frontend
+docker rm ai4kb-frontend
+
+# 重新启动生产前端
+docker compose -f deploy/docker-compose-brain-ts.yml up -d frontend
+
+# 验证
+sleep 3 && docker ps --filter name=ai4kb-frontend --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 # 仅重启（不重新构建）
 docker compose -f deploy/docker-compose-brain-ts.yml restart brain-server
@@ -263,6 +277,118 @@ docker cp dist/. ai4kb-frontend:/app/dist/
 # 3. 重启前端容器
 docker restart ai4kb-frontend
 ```
+
+---
+
+## 8. 前端开发模式启动与测试
+
+### 8.1 一键启动
+
+使用 `--profile dev` 启动前端开发服务（与主服务共享网络）：
+
+```bash
+cd /home/ubutnu/code/cloai-code
+
+# 启动前端开发模式（使用 profile，自动连接到 ai4kb-brain-net 网络）
+docker compose -f deploy/docker-compose-brain-ts.yml --profile dev up -d frontend-dev
+
+# 验证启动
+sleep 5 && docker logs ai4kb-frontend-dev
+```
+
+**说明：**
+- 前端开发服务使用 **8087 端口**（避免与生产前端 8086 冲突）
+- 已添加到 `docker-compose-brain-ts.yml` 的 `frontend-dev` 服务中
+- 通过 `profiles: ["dev"]` 控制，默认不启动
+
+### 8.2 Vite 代理配置说明
+
+前端 `vite.config.js` 中的代理配置确保 API 请求正确转发到后端：
+
+```javascript
+proxy: {
+  // 对话相关（重写到 brain/query）
+  '/api/v1/agent/chat/stream': {
+    target: backendUrl,
+    changeOrigin: true,
+    ws: true,
+    rewrite: (path) => '/api/v1/brain/query'
+  },
+  // 其他 /api/v1/ 请求直接转发
+  '/api/v1/': {
+    target: backendUrl,
+    changeOrigin: true,
+    rewrite: (path) => path
+  },
+  // ...
+}
+```
+
+### 8.3 API 测试
+
+#### 登录获取 Token
+
+```bash
+# 超级管理员账号
+TOKEN=$(curl -s -X POST http://localhost:8087/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"ChangeMe123!"}' | grep -o '"accessToken":"[^"]*"' | cut -d'"' -f4)
+
+echo "Token: ${TOKEN:0:50}..."
+```
+
+#### 测试 1：普通问答
+
+```bash
+curl -s -N -X POST http://localhost:8087/api/v1/agent/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"你好"}'
+```
+
+**预期输出：**
+```
+event: message
+data: {"answer":"你好！很高兴见到你。有什么我可以帮你的吗？"}
+```
+
+#### 测试 2：RAG 查询
+
+```bash
+curl -s -N -X POST http://localhost:8087/api/v1/agent/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"请调用rag skill，什么是半面积"}'
+```
+
+**预期输出（应包含完整 SSE 事件流）：**
+```
+event: skill_start
+data: {"type":"skill_start","skillName":"rag-query"}
+
+event: skill_end
+data: {"type":"skill_end","skillName":"rag-query","result":"根据知识库中的信息...",...}
+
+event: message
+data: {"answer":"根据查询结果，**半面积**是指...",...}
+```
+
+### 8.4 常见问题
+
+#### 前端无法连接后端（DNS 解析失败）
+
+如果日志显示 `getaddrinfo EAI_AGAIN ai4kb-brain-server`：
+```bash
+# 检查容器网络
+docker network inspect ai4kb-brain-net --format '{{range .Containers}}{{.Name}} {{end}}'
+
+# 重新连接容器到网络
+docker network connect deploy_ai4kb-brain-net ai4kb-frontend-dev
+```
+
+#### 404 错误
+
+确保 `vite.config.js` 中包含 `/api/v1/agent/chat/stream` 的代理规则。
 
 ---
 

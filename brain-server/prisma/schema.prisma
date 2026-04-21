@@ -181,3 +181,38 @@ model RagQueryAudit {
   @@index([userId, createdAt], map: "idx_rag_query_audit_user_time")
   @@map("rag_query_audits")
 }
+
+model Skill {
+  id           BigInt   @id @default(autoincrement())
+  name         String   @unique @map("name") @db.VarChar(128)
+  displayName  String?  @map("display_name") @db.VarChar(256)
+  mongoDocId   String?  @map("mongo_doc_id") @db.VarChar(64)
+  status       String   @default("active") @map("status") @db.VarChar(32)
+  allowedRoles String[] @default(["user"]) @map("allowed_roles")
+  scriptPath   String?  @map("script_path") @db.VarChar(512)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  shortcuts SkillShortcut[]
+
+  @@index([name], map: "idx_skills_name")
+  @@index([status], map: "idx_skills_status")
+  @@map("skills")
+}
+
+model SkillShortcut {
+  id          BigInt   @id @default(autoincrement())
+  skillId     BigInt   @map("skill_id")
+  name        String   @map("name") @db.VarChar(128)
+  displayName String?  @map("display_name") @db.VarChar(256)
+  fixedParams Json?    @map("fixed_params")
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@index([skillId], map: "idx_skill_shortcuts_skill_id")
+  @@index([name], map: "idx_skill_shortcuts_name")
+  @@map("skill_shortcuts")
+}

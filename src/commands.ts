@@ -706,7 +706,9 @@ export function findCommand(
     _ =>
       _.name === commandName ||
       getCommandName(_) === commandName ||
-      _.aliases?.includes(commandName),
+      _.aliases?.includes(commandName) ||
+      // Also match by skillRoot directory name for skills (e.g., cad_text_extractor folder matches indicator-verification command name)
+      (_.skillRoot && _.skillRoot.endsWith(`/${commandName}`)),
   )
 }
 

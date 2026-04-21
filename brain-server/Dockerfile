@@ -7,7 +7,7 @@ RUN apt-get update -y && apt-get install -y openssl ca-certificates python3 pyth
 # 先复制依赖描述文件，最大化利用 Docker 层缓存。
 COPY package.json bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-  bun install --frozen-lockfile
+  bun install
 
 FROM deps AS build
 WORKDIR /app

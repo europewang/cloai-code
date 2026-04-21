@@ -16,15 +16,21 @@ services:
       - PORT=8091
       - DATABASE_URL=postgresql://postgres:postgres@brain-postgres:5432/ai4kb_brain
       - REDIS_URL=redis://brain-redis:6379
+      - MONGO_URL=mongodb://brain-mongo:27017
+      - MONGO_DB_NAME=ai4kb_brain
+      - SKILL_INPUT_BASE_DIR=/shared/brain-skill-files/inputs
     depends_on:
       brain-postgres:
         condition: service_healthy
       brain-redis:
         condition: service_started
+      brain-mongo:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../skills/cad_text_extractor:/opt/skills/cad_text_extractor:ro
+      - brain_skill_files:/shared/brain-skill-files
     networks:
       - ai4kb-brain-net
 
@@ -39,12 +45,15 @@ services:
     network_mode: host
     volumes:
       - ../skills:/opt/skills:ro
+      - brain_skill_files:/shared/brain-skill-files:ro
+      - brain_output_files:/tmp/cad_output
     env_file:
       - ../.env.brain
     environment:
       - NODE_ENV=production
       - PORT=3100
       - BRAIN_SERVER_BASE_URL=http://localhost:8091
+      - BRAIN_SERVICE_URL=http://localhost:3100
       - BRAIN_SERVER_ACCESS_TOKEN=${BRAIN_SERVER_ACCESS_TOKEN:-}
       - OPENAI_BASE_URL=http://localhost:11434/v1
       - ANTHROPIC_BASE_URL=http://localhost:11434/v1
@@ -53,6 +62,7 @@ services:
       - CLAUDE_CODE_SIMPLE=0
       - ANTHROPIC_API_KEY=ollama
       - CLOAI_API_KEY=ollama-dummy
+      - SKILL_INPUT_BASE_DIR=/shared/brain-skill-files/inputs
 
   brain-maintenance:
     image: deploy-brain-server
@@ -112,6 +122,25 @@ services:
     networks:
       - ai4kb-brain-net
 
+  brain-mongo:
+    image: mongo:7
+    pull_policy: if_not_present
+    container_name: ai4kb-brain-mongo
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=ai4kb_brain
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - brain_mongo_data:/data/db
+    networks:
+      - ai4kb-brain-net
+
   brain-redis:
     image: valkey/valkey:8
     pull_policy: if_not_present
@@ -141,6 +170,29 @@ services:
     networks:
       - ai4kb-brain-net
 
+  # 前端开发模式（Vite 热更新）
+  frontend-dev:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.dev
+    container_name: ai4kb-frontend-dev
+    restart: unless-stopped
+    profiles: ["dev"]  # 仅在使用 --profile dev 时启动
+    ports:
+      - "8087:3000"  # 使用 8087 端口避免与生产前端冲突
+    environment:
+      - VITE_DEV_PORT=3000
+      - VITE_BACKEND_URL=http://brain-server:8091
+    volumes:
+      - ../frontend:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      brain-server:
+        condition: service_started
+    networks:
+      - ai4kb-brain-net
+
 networks:
   ai4kb-brain-net:
     driver: bridge
@@ -148,3 +200,6 @@ networks:
 volumes:
   brain_postgres_data:
   brain_redis_data:
+  brain_mongo_data:
+  brain_skill_files:
+  brain_output_files:

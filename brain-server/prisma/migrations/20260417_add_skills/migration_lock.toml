@@ -1,0 +1,2 @@
+-- Add Skill and SkillShortcut models to Prisma schema
+-- Migration: 20260417_add_skills

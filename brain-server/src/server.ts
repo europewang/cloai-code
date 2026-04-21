@@ -16,6 +16,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { registerPreServerRoutes } from './routes/preServer.js'
 import { registerPostServerRoutes } from './routes/postServer.js'
+import { registerSkillRoutes } from './routes/skills.js'
 
 type Role = 'super_admin' | 'admin' | 'user'
 type ResourceType = 'DATASET' | 'DATASET_OWNER' | 'SKILL' | 'MEMORY_PROFILE'
@@ -1290,6 +1291,13 @@ export function createServer(config: AppConfig) {
       getActiveOperator(req as AuthedRequest, reply),
     loadUserPermissionContext,
     toolAuthorizeBodySchema,
+  })
+
+  // Register skill management routes
+  registerSkillRoutes(app, {
+    authGuard,
+    getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
+      getActiveOperator(req as AuthedRequest, reply),
   })
 
   // Brain query schema - simplified brain decision endpoint
