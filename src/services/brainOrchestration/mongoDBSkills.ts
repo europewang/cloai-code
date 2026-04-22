@@ -187,19 +187,22 @@ export async function getMongoDBSkills(): Promise<Command[]> {
         return skill.displayName || skill.name
       },
       async getPromptForCommand(args: string, _toolUseContext: ToolUseContext) {
-        let content = skill.scriptPath 
-          ? `Base directory for this skill: ${skill.scriptPath}\n\n${markdownContent}`
-          : markdownContent
+        // Build the skill execution prompt
+        // The skill script is located at /opt/skills/<skill_name>/run_skill.py in the brain container
+        const skillScriptDir = skill.scriptPath ? skill.scriptPath.replace(/\/run_skill\.py$/, '') : `/opt/skills/${skill.name}`
+        
+        // Prepend execution instruction to ensure the model executes the skill
+        const executionInstruction = `You are executing the "${skill.name}" skill. Follow the instructions below to complete the task.\n\n`
+        
+        let content = `${executionInstruction}Base directory for this skill: ${skillScriptDir}\n\n${markdownContent}`
         
         // Substitute arguments
         content = substituteArguments(content, args, true, [])
         
-        // Replace ${CLAUDE_SKILL_DIR} with script path
-        if (skill.scriptPath) {
-          content = content.replace(/\$\{CLAUDE_SKILL_DIR\}/g, skill.scriptPath.replace(/\\/g, '/'))
-        }
+        // Replace ${CLAUDE_SKILL_DIR} with actual skill script directory
+        content = content.replace(/\$\{CLAUDE_SKILL_DIR\}/g, skillScriptDir.replace(/\\/g, '/'))
         
-        return content
+        return [{ type: 'text' as const, text: content }]
       },
     }
     
