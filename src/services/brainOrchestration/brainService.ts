@@ -66,9 +66,11 @@ const BRAIN_SERVER_ACCESS_TOKEN = process.env.BRAIN_SERVER_ACCESS_TOKEN || ''
 let requestContext: {
   preContext: PreContext | null
   memoryContent: MemoryContent | null
+  authToken: string
 } = {
   preContext: null,
   memoryContent: null,
+  authToken: '',
 }
 
 /**
@@ -76,16 +78,22 @@ let requestContext: {
  */
 async function fetchPreContextFromBrainServer(): Promise<PreContext | null> {
   try {
+    // Get token from request context
+    const token = requestContext.authToken || process.env.BRAIN_SERVER_ACCESS_TOKEN || ''
     const resp = await fetch(`${BRAIN_SERVER_BASE_URL}/api/v1/pre/context`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${getBrainToken()}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
     })
-    if (!resp.ok) return null
+    if (!resp.ok) {
+      console.error('fetchPreContextFromBrainServer: failed with status', resp.status)
+      return null
+    }
     return await resp.json() as PreContext
-  } catch {
+  } catch (e) {
+    console.error('fetchPreContextFromBrainServer: error', e)
     return null
   }
 }
@@ -95,16 +103,22 @@ async function fetchPreContextFromBrainServer(): Promise<PreContext | null> {
  */
 async function fetchMemoryFromBrainServer(profileId: string): Promise<MemoryContent | null> {
   try {
+    // Get token from request context
+    const token = requestContext.authToken || process.env.BRAIN_SERVER_ACCESS_TOKEN || ''
     const resp = await fetch(`${BRAIN_SERVER_BASE_URL}/api/v1/memory/current?profileId=${encodeURIComponent(profileId)}`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${getBrainToken()}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
     })
-    if (!resp.ok) return null
+    if (!resp.ok) {
+      console.error('fetchMemoryFromBrainServer: failed with status', resp.status)
+      return null
+    }
     return await resp.json() as MemoryContent
-  } catch {
+  } catch (e) {
+    console.error('fetchMemoryFromBrainServer: error', e)
     return null
   }
 }
@@ -300,6 +314,9 @@ async function processQueryThroughBrain(queryText: string): Promise<{ answer: st
 
   // Step 4: Get skill tools and commands
   const { SkillTool } = await import('src/tools/SkillTool/SkillTool.js')
+  const { BashTool } = await import('src/tools/BashTool/BashTool.js')
+  const { FileReadTool } = await import('src/tools/FileReadTool/FileReadTool.js')
+  const { GrepTool } = await import('src/tools/GrepTool/GrepTool.js')
   const { getSkillToolCommands } = await import('src/commands.js')
   const projectRoot = getProjectRoot()
   
@@ -316,7 +333,7 @@ async function processQueryThroughBrain(queryText: string): Promise<{ answer: st
   const allowedSkillCommands = allSkillCommands.filter(cmd =>
     !preCtx.allowedSkills || preCtx.allowedSkills.length === 0 || preCtx.allowedSkills.includes(cmd.name) || preCtx.allowedSkills.includes(cmd.name.replace(/_/g, '-'))
   )
-  const tools: Tool[] = [SkillTool as unknown as Tool]
+  const tools: Tool[] = [SkillTool as unknown as Tool, BashTool as unknown as Tool, FileReadTool as unknown as Tool, GrepTool as unknown as Tool]
 
   // Step 5: Create canUseTool that uses pre-context directly
   const canUseTool = createBrainServiceCanUseTool(preCtx.allowedSkills, preCtx.allowedDatasets)
@@ -390,6 +407,9 @@ async function runSingleTurn(
   preCtx: PreContext,
   allowedSkillCommands: any[]
 ): Promise<TurnResult> {
+  // Import BashTool for skill execution
+  const { BashTool } = await import('src/tools/BashTool/BashTool.js')
+
   // Minimal general-purpose agent definition for forked skill execution
   const generalPurposeAgent = {
     agentType: 'general-purpose' as const,
@@ -399,6 +419,9 @@ async function runSingleTurn(
     getSystemPrompt: () => 'You are a skill execution agent. Execute the given skill and return the results.',
     tools: ['*'] as string[],
   }
+
+  // Add BashTool to available tools for skill execution
+  const toolsWithBash: Tool[] = [...tools, BashTool as unknown as Tool]
 
   const toolUseContext: ToolUseContext = {
     messages,
@@ -410,7 +433,7 @@ async function runSingleTurn(
     },
     options: {
       commands: allowedSkillCommands,
-      tools,
+      tools: toolsWithBash,
       mainLoopModel: process.env.ANTHROPIC_MODEL || 'qwen3.5:9b',
       thinkingConfig: { type: 'disabled' },
       mcpClients: [],
@@ -507,7 +530,8 @@ function handleBrainQueryStream(req: any, res: any): void {
       // Extract Authorization header (user's JWT token) from the request
       const authHeader = String(req.headers.authorization || '').replace('Bearer ', '')
 
-      // Set token for SkillTool.checkPermissions to use
+      // Set token for SkillTool.checkPermissions and fetchPreContextFromBrainServer to use
+      requestContext.authToken = authHeader
       if (authHeader) {
         setBrainToken(authHeader)
       }
@@ -576,6 +600,7 @@ function handleBrainQueryStream(req: any, res: any): void {
         res.end()
       } finally {
         // Always clear the token after the request
+        requestContext.authToken = ''
         if (authHeader) {
           clearBrainToken()
         }
@@ -633,6 +658,9 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
 
   // Step 4: Get skill tools and commands
   const { SkillTool } = await import('src/tools/SkillTool/SkillTool.js')
+  const { BashTool } = await import('src/tools/BashTool/BashTool.js')
+  const { FileReadTool } = await import('src/tools/FileReadTool/FileReadTool.js')
+  const { GrepTool } = await import('src/tools/GrepTool/GrepTool.js')
   const { getSkillToolCommands } = await import('src/commands.js')
   const projectRoot = getProjectRoot()
   
@@ -649,7 +677,7 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
   const allowedSkillCommands = allSkillCommands.filter(cmd =>
     !preCtx.allowedSkills || preCtx.allowedSkills.length === 0 || preCtx.allowedSkills.includes(cmd.name) || preCtx.allowedSkills.includes(cmd.name.replace(/_/g, '-'))
   )
-  const tools: Tool[] = [SkillTool as unknown as Tool]
+  const tools: Tool[] = [SkillTool as unknown as Tool, BashTool as unknown as Tool, FileReadTool as unknown as Tool, GrepTool as unknown as Tool]
 
   // Step 5: Create canUseTool that uses pre-context directly
   const canUseTool = createBrainServiceCanUseTool(preCtx.allowedSkills, preCtx.allowedDatasets)
@@ -723,7 +751,13 @@ type ExtractedSkillResult = {
  * contains a reference to that. We need to read the temp file.
  */
 function extractSkillResultFromToolResult(block: any): ExtractedSkillResult | null {
-  const content = block?.content
+  let content = block?.content
+
+  // Handle array content: [{type: 'text', text: '...'}]
+  if (Array.isArray(content)) {
+    content = content.map((c: any) => typeof c === 'string' ? c : (c?.text || '')).join('\n')
+  }
+
   if (!content || typeof content !== 'string') {
     console.error('DEBUG extractToolResult: no content')
     return null
@@ -823,6 +857,9 @@ async function* runSingleTurnStream(
   preCtx: PreContext,
   allowedSkillCommands: any[]
 ): AsyncGenerator<StreamEventType, void, unknown> {
+  // Import BashTool for skill execution
+  const { BashTool } = await import('src/tools/BashTool/BashTool.js')
+
   // Minimal general-purpose agent definition for forked skill execution
   const generalPurposeAgent = {
     agentType: 'general-purpose' as const,
@@ -832,6 +869,9 @@ async function* runSingleTurnStream(
     getSystemPrompt: () => 'You are a skill execution agent. Execute the given skill and return the results.',
     tools: ['*'] as string[],
   }
+
+  // Add BashTool to available tools for skill execution
+  const toolsWithBash: Tool[] = [...tools, BashTool as unknown as Tool]
 
   const toolUseContext: ToolUseContext = {
     messages,
@@ -843,7 +883,7 @@ async function* runSingleTurnStream(
     },
     options: {
       commands: allowedSkillCommands,
-      tools,
+      tools: toolsWithBash,
       mainLoopModel: process.env.ANTHROPIC_MODEL || 'qwen3.5:9b',
       thinkingConfig: { type: 'disabled' },
       mcpClients: [],

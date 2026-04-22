@@ -93,9 +93,13 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
     .mcp.commands.filter(
       cmd => cmd.type === 'prompt' && cmd.loadedFrom === 'mcp',
     )
-  if (mcpSkills.length === 0) return getCommands(getProjectRoot())
+
+  // Get commands passed via toolUseContext.options.commands (used by brainService to inject MongoDB skills)
+  const injectedCommands = context.options?.commands || []
+
+  if (mcpSkills.length === 0 && injectedCommands.length === 0) return getCommands(getProjectRoot())
   const localCommands = await getCommands(getProjectRoot())
-  return uniqBy([...localCommands, ...mcpSkills], 'name')
+  return uniqBy([...localCommands, ...mcpSkills, ...injectedCommands], 'name')
 }
 
 // Re-export Progress from centralized types to break import cycles
@@ -239,7 +243,8 @@ async function executeForkedSkill(
 
   try {
     // Add BashTool to availableTools so sub-agent can execute skill commands
-    const toolsWithBash = [...context.options.tools, BashTool as unknown as Tool]
+    // Filter out SkillTool to prevent infinite recursion
+    const toolsWithBash = [...context.options.tools, BashTool as unknown as Tool].filter(t => t.name !== SKILL_TOOL_NAME)
     console.error('FORK SKILL DEBUG: Starting sub-agent for', commandName, 'with tools:', toolsWithBash.map(t => t.name))
     console.error('FORK SKILL DEBUG: promptMessages count:', promptMessages.length)
     console.error('FORK SKILL DEBUG: agentDefinition:', JSON.stringify({agentType: agentDefinition.agentType, effort: agentDefinition.effort}).substring(0, 200))
@@ -366,6 +371,8 @@ export const outputSchema = lazySchema(() => {
       .describe('Tools allowed by this skill'),
     model: z.string().optional().describe('Model override if specified'),
     status: z.literal('inline').optional().describe('Execution status'),
+    // Include skill result content for brainService to extract
+    result: z.string().optional().describe('The result from the inline skill'),
   })
 
   // Output schema for forked skills
@@ -878,6 +885,22 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // calling them again here would double-register hooks and rebuild
     // skillContent redundantly.
 
+    // Extract skill content from processedCommand.messages for brainService
+    // Inline skills return skill content in newMessages - extract text content
+    const skillContent = processedCommand.messages
+      .filter(m => m.type === 'user' && 'message' in m)
+      .flatMap(m => {
+        const content = (m as any).message?.content
+        if (typeof content === 'string') return [content]
+        if (Array.isArray(content)) {
+          return content
+            .filter((c: any) => c?.type === 'text')
+            .map((c: any) => c?.text || '')
+        }
+        return []
+      })
+      .join('\n\n')
+
     // Return success with newMessages and contextModifier
     return {
       data: {
@@ -885,6 +908,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         commandName,
         allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
         model,
+        result: skillContent, // Include skill content for brainService extraction
       },
       newMessages,
       contextModifier(ctx) {
@@ -972,11 +996,12 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Inline skill result (default)
+    // Inline skill result (default) - include result content so brainService can extract it
+    const inlineResult = ('result' in result && result.result) ? `\n\nResult:\n${result.result}` : ''
     return {
       type: 'tool_result' as const,
       tool_use_id: toolUseID,
-      content: `Launching skill: ${result.commandName}`,
+      content: `Skill "${result.commandName}" completed (inline execution).${inlineResult}`,
     }
   },
 
