@@ -200,7 +200,13 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
         }
       })
 
-      return skill
+      return {
+        name: skill.name,
+        displayName: skill.displayName,
+        status: skill.status,
+        allowedRoles: skill.allowedRoles,
+        scriptPath: skill.scriptPath,
+      }
     } catch (err) {
       console.error('Failed to update skill:', err)
       return reply.code(500).send({ error: 'Failed to update skill' })
@@ -519,6 +525,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
     conversationId: z.string().optional(),
     toolCallId: z.string().min(1),
     reviewedArgs: z.record(z.unknown()).optional(),
+    fileIds: z.array(z.string()).optional(),
   })
 
   app.post('/api/v1/agent/tool/approve', async (req, reply) => {
@@ -531,15 +538,77 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
       return reply.code(400).send({ error: 'Invalid request body' })
     }
 
-    const { toolCallId, reviewedArgs } = parsed.data
+    const { toolCallId, reviewedArgs, fileIds } = parsed.data
 
-    // This would trigger actual skill execution
-    // For now, return a placeholder result
-    return {
-      success: true,
-      toolCallId,
-      summary: 'Skill execution placeholder - implement actual skill execution here',
-      output: reviewedArgs || {}
+    // Normalize toolCallId: the frontend sends "draft-${timestamp}" but the upload
+    // endpoint stores files at SKILL_INPUT_BASE_DIR/${rawId} where rawId is just
+    // the timestamp. Strip the "draft-" prefix if present to match the upload path.
+    const rawId = toolCallId.startsWith('draft-') ? toolCallId.slice(6) : toolCallId
+    // The upload endpoint actually stores at: SKILL_INPUT_BASE_DIR/draft-rawId
+    const inputDir = path.join(SKILL_INPUT_BASE_DIR, `draft-${rawId}`)
+
+    // If there are fileIds, copy files to the isolated input directory
+    if (fileIds && fileIds.length > 0) {
+      await mkdir(inputDir, { recursive: true })
+      for (const fileId of fileIds) {
+        // fileId format from upload endpoint: "file-${Date.now()}"
+        // We need to find the asset by its stored path matching toolCallId
+        // The upload endpoint stores files at SKILL_INPUT_BASE_DIR/toolCallId/fileName
+        // Since we don't track individual fileIds, we rely on the directory already
+        // being populated by the upload endpoint.
+        // For now, skip copying — the files are already in the directory.
+      }
+    }
+
+    // Build the skill query prompt
+    const skillQuery = typeof reviewedArgs === 'object' && reviewedArgs !== null
+      ? JSON.stringify(reviewedArgs)
+      : (reviewedArgs as string | undefined) || toolCallId
+
+    // Proxy to brain-service (src brain) for skill execution
+    const brainServiceUrl = process.env.BRAIN_SERVICE_URL || 'http://host.docker.internal:3100'
+
+    try {
+      const brainResp = await fetch(`${brainServiceUrl}/api/query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': req.headers.authorization || '',
+        },
+        body: JSON.stringify({
+          query: skillQuery,
+          conversationId: parsed.data.conversationId,
+          skillInputDir: inputDir,
+        }),
+      })
+
+      // Handle SSE stream response
+      if (brainResp.headers.get('content-type')?.includes('text/event-stream')) {
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        })
+
+        if (brainResp.body) {
+          const { Readable } = require('node:stream')
+          const nodeStream = Readable.fromWeb(brainResp.body)
+          nodeStream.pipe(reply.raw)
+        } else {
+          reply.raw.write('data: [DONE]\n\n')
+          reply.raw.end()
+        }
+        return
+      }
+
+      // Non-streaming response
+      const result = await brainResp.json()
+      return result
+    } catch (err) {
+      console.error('approve tool: brain-service error:', err)
+      return reply.code(502).send({ error: 'brain-service unavailable', message: String(err) })
     }
   })
 

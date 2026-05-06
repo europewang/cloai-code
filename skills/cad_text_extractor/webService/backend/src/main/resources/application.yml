@@ -1,0 +1,30 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: toolbox-backend
+  
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/toolbox_db?useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8
+    username: ${DB_USER:root}
+    password: ${DB_PASS:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: update # 自动更新表结构，生产环境建议 validate 或 none
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+# 自定义配置
+app:
+  python-script-path: /app/python_scripts/cad_text_extractor.py
+  temp-dir: /tmp/toolbox_uploads

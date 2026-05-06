@@ -264,8 +264,59 @@ docker compose -f deploy/docker-compose-brain-ts.yml up -d
 
 ## 8. 前端部署说明
 
-前端代码修改后需要重新构建并同步到容器：
+### 8.1 两种前端模式对比
 
+| 模式 | 端口 | 构建方式 | 热更新 | 适用场景 |
+|------|------|----------|--------|----------|
+| **生产前端** | 8086 | Dockerfile (静态文件) | ❌ | 正式测试/生产环境 |
+| **开发前端** | 8087 | Dockerfile.dev (Vite) | ✅ | 前端开发调试 |
+
+### 8.2 生产前端操作
+
+```bash
+# 进入项目目录
+cd /home/ubutnu/code/cloai-code
+
+# 重新构建生产前端镜像
+docker compose -f deploy/docker-compose-brain-ts.yml build frontend
+
+# 启动/重启生产前端
+docker compose -f deploy/docker-compose-brain-ts.yml up -d frontend
+
+# 访问地址
+http://localhost:8086
+```
+
+### 8.3 开发前端操作
+
+开发前端使用 `--profile dev`，默认不启动。
+
+```bash
+cd /home/ubutnu/code/cloai-code
+
+# 启动开发前端（Vite 热更新）
+docker compose -f deploy/docker-compose-brain-ts.yml --profile dev up -d frontend-dev
+
+# 访问地址
+http://localhost:8087
+
+# 停止开发前端
+docker compose -f deploy/docker-compose-brain-ts.yml --profile dev down
+
+# 查看开发前端日志
+docker logs ai4kb-frontend-dev --tail 50
+```
+
+### 8.4 前端代码修改后重新部署
+
+**方法1：使用 Docker Compose（推荐）**
+```bash
+cd /home/ubutnu/code/cloai-code
+docker compose -f deploy/docker-compose-brain-ts.yml build frontend
+docker compose -f deploy/docker-compose-brain-ts.yml up -d frontend
+```
+
+**方法2：手动复制构建产物**
 ```bash
 # 1. 进入前端目录并构建
 cd /home/ubutnu/code/cloai-code/frontend
@@ -278,9 +329,23 @@ docker cp dist/. ai4kb-frontend:/app/dist/
 docker restart ai4kb-frontend
 ```
 
+### 8.5 清除冗余开发前端
+
+如果不需要开发前端，可以停止并移除 `frontend-dev` 服务：
+
+```bash
+cd /home/ubutnu/code/cloai-code/deploy
+
+# 停止开发前端容器
+docker stop ai4kb-frontend-dev
+docker rm ai4kb-frontend-dev
+
+# 从 docker-compose 中移除（可选，编辑 docker-compose-brain-ts.yml 删除 frontend-dev 部分）
+```
+
 ---
 
-## 8. 前端开发模式启动与测试
+## 9. 前端开发模式 API 测试
 
 ### 8.1 一键启动
 
@@ -392,7 +457,99 @@ docker network connect deploy_ai4kb-brain-net ai4kb-frontend-dev
 
 ---
 
-## 9. 环境变量参考
+## 10. Ollama 配置（qwen3.5 模型调优）
+
+> **重要：** qwen3.5 模型默认开启 thinking 模式，thinking 内容会膨胀到 8K-20K tokens。
+> 这会消耗大量 `max_output_tokens` budget，导致 content 被截断为 0，回答为空甚至卡死。
+> 需通过增大 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 解决。
+
+### 9.1 当前配置（docker-compose-brain-ts.yml）
+
+```yaml
+ollama-local:
+  image: ollama/ollama:latest
+  container_name: ollama-local
+  restart: unless-stopped
+  network_mode: bridge
+  ports:
+    - "11434:11434"
+  environment:
+    - OLLAMA_HOST=0.0.0.0:11434
+    - OLLAMA_MODELS=/root/.ollama/models
+    # 模型保活时间（默认5分钟，0为永久）
+    - OLLAMA_KEEP_ALIVE=5m
+    # 最大并发数（qwen3.5:9b 建议设为1，避免显存竞争）
+    - OLLAMA_NUM_PARALLEL=1
+    # 加载超时（模型较大时可调大）
+    - OLLAMA_LOAD_TIMEOUT=5m0s
+  volumes:
+    - ollama_data:/root/.ollama
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+```
+
+**brain 服务的额外配置（确保 output token 预算充足）：**
+
+```yaml
+brain:
+  # ... 其他配置 ...
+  environment:
+    # ... 其他 env ...
+    # qwen3.5 thinking 模式需要更大的 output token budget（thinking 可能长达 8K-20K tokens）
+    - CLAUDE_CODE_MAX_OUTPUT_TOKENS=20000
+```
+
+### 9.2 可调整参数说明
+
+| 参数 | 位置 | 默认值 | 推荐值 | 说明 |
+|------|------|--------|--------|------|
+| `OLLAMA_KEEP_ALIVE` | ollama-local | `5m` | `5m` | 模型保活时间，0为永久 |
+| `OLLAMA_NUM_PARALLEL` | ollama-local | `1` | `1` | 最大并发数，避免显存竞争 |
+| `OLLAMA_LOAD_TIMEOUT` | ollama-local | `5m0s` | `5m0s` | 模型加载超时时间 |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | brain | `8192` | **`20000`** | **关键参数**，thinking 可能很长 |
+| `OLLAMA_MAX_LOADED_MODELS` | ollama-local | `0`（无限制） | `0` | 同时加载模型数 |
+
+### 9.3 问题根因说明
+
+qwen3.5:9b 模型在 OpenAI-compatible API 下的行为：
+1. 先执行 thinking（8K-20K tokens）
+2. 再输出 content
+3. `max_output_tokens` 默认 8192（`CLAUDE_CODE_MAX_OUTPUT_TOKENS` 默认值）
+4. thinking 就把 8192 吃完了 → content 被截断为 0 → 回答为空
+5. 长时间 context 满了之后 → 模型卡死
+
+### 9.4 验证修复
+
+```bash
+# 重启 ollama-local 和 brain 后测试
+TOKEN=$(curl -s -X POST http://localhost:8091/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"superadmin","password":"ChangeMe123!"}' | jq -r '.accessToken')
+
+curl -s -N -X POST http://localhost:8091/api/v1/brain/query \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"你好，今天是星期几？"}'
+
+# 预期：有内容、格式良好的回答（非空）
+# 响应时间应 <5 秒
+```
+
+### 9.5 常见问题
+
+- **修改 `OLLAMA_NUM_PARALLEL` 后不生效？** 需要重建容器 `docker compose up -d --force-recreate ollama-local`
+- **模型加载慢？** 增加 `OLLAMA_LOAD_TIMEOUT`，如 `10m0s`
+- **回答仍然为空？** 确认 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=20000` 已设置在 **brain** 容器而非 ollama-local
+- **显存不够？** 确保 xinference 模型先占用后，Ollama 再加载；减少 `OLLAMA_NUM_PARALLEL` 为 1
+
+---
+
+## 11. 环境变量参考
 
 brain (Docker内运行) 需要的环境变量：
 
@@ -404,3 +561,4 @@ brain (Docker内运行) 需要的环境变量：
 | ANTHROPIC_MODEL | qwen3.5:9b | 模型名称 |
 | BRAIN_SERVER_BASE_URL | http://brain-server:8091 | brain-server服务地址（Docker内部DNS） |
 | BRAIN_SERVER_ACCESS_TOKEN | (空) | 本地开发可不填 |
+| CLAUDE_CODE_MAX_OUTPUT_TOKENS | 20000 | qwen3.5 thinking 模式需要更大的 output budget |

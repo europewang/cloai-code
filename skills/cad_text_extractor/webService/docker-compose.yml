@@ -1,0 +1,52 @@
+ 
+
+services:
+  mysql_db:
+    image: mysql:8.0
+    container_name: toolbox_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: toolbox_db
+      MYSQL_TCP_PORT: 3307
+    ports:
+      - "3307:3307"
+    command: --port=3307
+    volumes:
+      - ./mysql/init:/docker-entrypoint-initdb.d
+      - mysql_data:/var/lib/mysql
+
+  backend:
+    image: toolbox_backend:latest
+    build: ./backend
+    container_name: toolbox_backend
+    restart: always
+    ports:
+      - "8087:8080"
+    volumes:
+      # Mount the autoCadPy directory from the parent/sibling path
+      # webService/docker-compose.yml -> ../autoCadPy
+      - ../autoCadPy:/app/python_scripts
+      - ./uploads:/tmp/toolbox_uploads
+    environment:
+      DB_HOST: mysql_db
+      DB_PORT: 3307
+      DB_USER: root
+      DB_PASS: root
+      # Ensure python script path matches the mount
+      APP_PYTHON_SCRIPT_PATH: /app/python_scripts/cad_text_extractor.py
+    depends_on:
+      - mysql_db
+
+  frontend:
+    image: toolbox_frontend:latest
+    build: ./frontend
+    container_name: toolbox_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:

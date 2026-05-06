@@ -500,7 +500,9 @@ export function createServer(config: AppConfig) {
 
   async function authGuard(req: FastifyRequest, reply: FastifyReply) {
     try {
-      const token = parseBearerToken(req)
+      // Support token as query param for download URLs (frontend can't set headers on <a> tags)
+      const queryToken = (req.query as Record<string, unknown>)?.token as string | undefined
+      const token = queryToken ?? parseBearerToken(req)
       const payload = verifyToken(token, 'access')
       ;(req as AuthedRequest).auth = {
         sub: payload.sub,
@@ -609,7 +611,8 @@ export function createServer(config: AppConfig) {
   }
 
   function sanitizeFileName(name: string) {
-    return name.replace(/[^a-zA-Z0-9._-]/g, '_')
+    // Only remove control characters and path separators; preserve Unicode (Chinese, etc.)
+    return name.replace(/[\x00-\x1f\x7f\/\\]/g, '_')
   }
 
   function sha256HexOf(content: Buffer) {
@@ -1304,12 +1307,16 @@ export function createServer(config: AppConfig) {
   const brainQueryBodySchema = z.object({
     query: z.string().min(1),
     conversationId: z.string().optional(),
+    fileIds: z.array(z.string()).optional(),
   })
 
   /**
-   * Brain Query Endpoint
+   * Brain Query Endpoint - 支持同时上传文件和文字
    *
-   * PROXY to brainService.ts (src brain) for proper LLM-based decision making.
+   * 支持两种格式：
+   * - JSON: { query, conversationId, fileIds }
+   * - Multipart: query + conversationId + files (文件和文字一起发送)
+   *
    * The src brain decides: direct answer, RAG, or CAD skill.
    * Returns SSE stream or JSON based on the brain's decision.
    */
@@ -1318,12 +1325,59 @@ export function createServer(config: AppConfig) {
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
 
-    const parsed = brainQueryBodySchema.safeParse(req.body)
-    if (!parsed.success) {
-      return reply.code(400).send({ message: 'invalid request body' })
+    let query = ''
+    let conversationId = ''
+    let fileIds: string[] = []
+    let uploadedFiles: { name: string; buffer: Buffer }[] = []
+
+    const contentType = req.headers['content-type'] || ''
+
+    if (contentType.includes('multipart/form-data')) {
+      // 处理 multipart/form-data 格式（文件和文字一起发送）
+      // 使用 req.parts() 逐个处理文件字段
+      const files: { filename: string; mimetype: string; buffer: Buffer }[] = []
+      
+      // 解析其他字段（query, conversationId 等）
+      try {
+        for await (const part of req.parts()) {
+          if (part.type === 'file') {
+            // 这是一个文件字段
+            const buffer = await part.toBuffer()
+            files.push({
+              filename: part.filename,
+              mimetype: part.mimetype,
+              buffer
+            })
+          } else {
+            // 这是一个普通字段
+            if (part.fieldname === 'query') query = String(part.value || '')
+            if (part.fieldname === 'conversationId') conversationId = String(part.value || '')
+          }
+        }
+      } catch (err) {
+        req.log.error({ err }, 'Failed to parse multipart')
+      }
+      
+      for (const file of files) {
+        uploadedFiles.push({
+          name: file.filename || 'upload.bin',
+          buffer: file.buffer
+        })
+      }
+    } else {
+      // 处理 JSON 格式
+      const parsed = brainQueryBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        return reply.code(400).send({ message: 'invalid request body' })
+      }
+      query = parsed.data.query
+      conversationId = parsed.data.conversationId || ''
+      fileIds = parsed.data.fileIds || []
     }
 
-    const { query, conversationId } = parsed.data
+    if (!query.trim()) {
+      return reply.code(400).send({ message: 'query is required' })
+    }
 
     // Get user context (pre-server equivalent)
     const ctx = await loadUserPermissionContext(operator.id, operator.role)
@@ -1331,9 +1385,9 @@ export function createServer(config: AppConfig) {
     // Proxy to brainService.ts (src brain) on port 3100
     // brain uses network_mode: host, so we need host.docker.internal to reach it
     const brainServiceUrl = `http://host.docker.internal:3100/api/query`
-    
+
     try {
-      const brainPayload = {
+      const brainPayload: Record<string, unknown> = {
         query,
         conversationId,
         context: {
@@ -1342,6 +1396,40 @@ export function createServer(config: AppConfig) {
           profileId: ctx.profileId,
         },
       }
+
+      // Always set a unique skillInputDir — even when there are no uploaded files,
+      // we must pass a unique empty directory so the skill runner doesn't accidentally
+      // process stale files from a previous run in the shared volume.
+      const toolCallId = `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const inputDir = path.join(config.SKILL_INPUT_BASE_DIR, toolCallId)
+      await mkdir(inputDir, { recursive: true })
+
+      // 处理直接上传的文件（multipart 格式）
+      if (uploadedFiles.length > 0) {
+        for (const uploadedFile of uploadedFiles) {
+          const targetPath = path.join(inputDir, sanitizeFileName(uploadedFile.name))
+          await writeFile(targetPath, uploadedFile.buffer)
+        }
+      }
+
+      // 如果有 fileIds（预先上传的文件），复制到输入目录
+      if (fileIds && fileIds.length > 0) {
+        for (const fileId of fileIds) {
+          const meta = await getFileAssetById(fileId)
+          if (meta) {
+            const targetPath = path.join(inputDir, meta.fileName)
+            if (useS3Storage && s3Client) {
+              const bytes = await readAssetBytes(meta)
+              await writeFile(targetPath, bytes)
+            } else {
+              await copyFile(meta.storagePath, targetPath)
+            }
+          }
+        }
+      }
+
+      // Pass the input directory to brain service (always — even if empty)
+      brainPayload.skillInputDir = inputDir
 
       const brainResp = await fetch(brainServiceUrl, {
         method: 'POST',
@@ -2966,6 +3054,33 @@ export function createServer(config: AppConfig) {
     return reply.send(createReadStream(meta.storagePath))
   })
 
+  // Proxy file download from brain-service (CAD skill output files)
+  // GET /api/v1/brain/files/download?filename=/path/to/file
+  app.get('/api/v1/brain/files/download', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    const { filename } = req.query as { filename?: string }
+    if (!filename) return reply.code(400).send({ message: 'filename query param required' })
+    const decodedFilename = decodeURIComponent(filename)
+    const url = `${config.BRAIN_SERVICE_URL}/api/files/download?filename=${encodeURIComponent(decodedFilename)}`
+    try {
+      const res = await fetch(url)
+      if (!res.ok) {
+        return reply.code(res.status).send({ message: `brain-service error: ${res.statusText}` })
+      }
+      const buf = await res.arrayBuffer()
+      const fileName = decodedFilename.split('/').pop() || 'download'
+      reply.header('Content-Type', res.headers.get('Content-Type') || 'application/octet-stream')
+      reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`)
+      reply.header('Content-Length', buf.byteLength)
+      return reply.send(Buffer.from(buf))
+    } catch (err) {
+      console.error('brain-service proxy error:', err)
+      return reply.code(502).send({ message: `Failed to proxy download: ${String(err)}` })
+    }
+  })
+
   app.post('/api/v1/skills/indicator-verification/run', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
     const toolCallStartedAt = Date.now()
@@ -3050,7 +3165,7 @@ export function createServer(config: AppConfig) {
     }
 
     try {
-      await execFileAsync(
+      const { stdout, stderr } = await execFileAsync(
         'python3',
         [
           config.SKILL_INDICATOR_SCRIPT_PATH,

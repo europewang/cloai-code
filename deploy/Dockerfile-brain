@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package.json bun.lock* ./
 COPY shims/ ./shims/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-  bun install --frozen-lockfile
+   bun install --frozen-lockfile --registry https://registry.npmjs.org
 
 FROM deps AS build
 WORKDIR /app

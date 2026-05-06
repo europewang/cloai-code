@@ -215,7 +215,8 @@ async function executeForkedSkill(
   console.error('FORK_EXECUTE: Calling prepareForkedCommandContext')
   const { modifiedGetAppState, baseAgent, promptMessages, skillContent } =
     await prepareForkedCommandContext(command, args || '', context)
-  console.error('FORK_EXECUTE: prepareForkedCommandContext returned')
+  console.error('FORK_EXECUTE: prepareForkedCommandContext returned, skillContent length:', skillContent?.length || 0)
+  console.error('FORK_EXECUTE: skillContent preview:', (skillContent || '').substring(0, 500))
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
@@ -249,7 +250,9 @@ async function executeForkedSkill(
     console.error('FORK SKILL DEBUG: promptMessages count:', promptMessages.length)
     console.error('FORK SKILL DEBUG: agentDefinition:', JSON.stringify({agentType: agentDefinition.agentType, effort: agentDefinition.effort}).substring(0, 200))
     // Run the sub-agent
+    console.error('FORK SKILL DEBUG: About to call runAgent')
     try {
+      let messageCount = 0
       for await (const message of runAgent({
         agentDefinition,
         promptMessages,
@@ -264,8 +267,9 @@ async function executeForkedSkill(
         availableTools: toolsWithBash,
         override: { agentId },
       })) {
+        messageCount++
         agentMessages.push(message)
-        console.error('FORK SKILL DEBUG: got message type:', message.type)
+        console.error('FORK SKILL DEBUG: got message type:', message.type, 'total:', messageCount)
 
         // Report progress for tool uses (like AgentTool does)
         if (

@@ -69,6 +69,13 @@ function getAuthToken() {
   return loadAuthSession()?.token || ''
 }
 
+function appendAuthToken(url) {
+  const token = getAuthToken()
+  if (!token) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
+}
+
 async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {})
   const token = getAuthToken()
@@ -691,49 +698,35 @@ async function fetchChunks(datasetId, docId, page = 1, pageSize = 10000) {
   return json.data || []
 }
 
+// 使用 FormData 同时发送文件和文字查询
 async function startAgentStream(conversationId, query, options = {}) {
-  const payload = {
-    conversationId,
-    query,
-    adjustmentInstruction: options.adjustmentInstruction || '',
-    editedSteps: Array.isArray(options.editedSteps) ? options.editedSteps : [],
-    rerunMode: options.rerunMode || 'AUTO',
-    restartFromStep: Number.isFinite(Number(options.restartFromStep)) ? Number(options.restartFromStep) : 1,
-    replanOnly: !!options.replanOnly,
-    memoryProfileId: options.memoryProfileId || ''
-  }
+  const formData = new FormData()
+  formData.append('conversationId', conversationId)
+  formData.append('query', query)
+  formData.append('adjustmentInstruction', options.adjustmentInstruction || '')
+  formData.append('editedSteps', JSON.stringify(Array.isArray(options.editedSteps) ? options.editedSteps : []))
+  formData.append('rerunMode', options.rerunMode || 'AUTO')
+  formData.append('restartFromStep', String(Number.isFinite(Number(options.restartFromStep)) ? Number(options.restartFromStep) : 1))
+  formData.append('replanOnly', String(!!options.replanOnly))
+  formData.append('memoryProfileId', options.memoryProfileId || '')
 
-  // 如果有文件，先上传
+  // 如果有文件，直接附加到 FormData 中
   let uploadedFiles = []
   if (options.files && options.files.length > 0) {
     for (const fileData of options.files) {
-      try {
-        const result = await uploadFileToChat(fileData.file, conversationId)
-        if (result) {
-          uploadedFiles.push({
-            fileId: result.fileId || result.file_id || '',
-            fileName: fileData.file.name,
-            fileSize: result.size || 0,
-            filePath: result.filePath || result.file_path || ''
-          })
-        }
-      } catch (err) {
-        console.error('上传文件失败:', err)
-      }
-    }
-    if (uploadedFiles.length > 0) {
-      payload.fileIds = uploadedFiles.map(f => f.fileId)
+      formData.append('files', fileData.file)
     }
   }
 
-  const res = await apiFetch('/v1/agent/chat/stream', {
+  // 调用 brain-server 的 brain/query 接口（使用 FormData 同时发送文件和查询）
+  const res = await apiFetch('/v1/brain/query', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: formData
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return { response: res, uploaded: uploadedFiles }
 }
+
 
 // 上传文件到聊天
 async function uploadFileToChat(file, conversationId) {
@@ -4428,7 +4421,7 @@ function ChatInterface() {
     }
   }, [])
 
-  const normalizeMessageFromHistory = useCallback((item) => {
+    const normalizeMessageFromHistory = useCallback((item) => {
     const payload = normalizeStoredMessagePayload(item)
     const fallbackContent = typeof payload?.content === 'string' ? payload.content : ''
     const refs = Array.isArray(payload?.references)
@@ -4458,6 +4451,16 @@ function ChatInterface() {
     const clarify = payload?.clarify && typeof payload.clarify === 'object'
       ? payload.clarify
       : (item?.clarify && typeof item.clarify === 'object' ? item.clarify : null)
+    const ragContent = typeof payload?.ragContent === 'string'
+      ? payload.ragContent
+      : (typeof item?.ragContent === 'string' ? item.ragContent : '')
+    const outputFiles = Array.isArray(payload?.outputFiles)
+      ? payload.outputFiles
+      : (Array.isArray(item?.outputFiles) ? item.outputFiles : [])
+    // 解析消息中的附件信息
+    const attachments = Array.isArray(payload?.attachments)
+      ? payload.attachments
+      : (Array.isArray(item?.attachments) ? item.attachments : [])
     const messageId = item?.id ?? item?.messageId ?? item?.message_id ?? item?.recordId ?? item?.record_id ?? null
     return {
       id: messageId,
@@ -4467,11 +4470,14 @@ function ChatInterface() {
       sourceTag,
       logicFlow,
       skillHint,
+      ragContent,
+      outputFiles,
       analysisPlan,
       analysisSteps,
       analysisSummary,
       toolDraft,
-      clarify
+      clarify,
+      attachments
     }
   }, [normalizeMessageContent, normalizeMessageRole, normalizeStoredMessagePayload])
 
@@ -4483,6 +4489,8 @@ function ChatInterface() {
       sourceTag: String(msg.sourceTag || ''),
       logicFlow: String(msg.logicFlow || ''),
       skillHint: String(msg.skillHint || ''),
+      ragContent: typeof msg.ragContent === 'string' ? msg.ragContent : '',
+      outputFiles: Array.isArray(msg.outputFiles) ? msg.outputFiles : [],
       analysisPlan: msg.analysisPlan && typeof msg.analysisPlan === 'object' ? msg.analysisPlan : null,
       analysisSteps: Array.isArray(msg.analysisSteps) ? msg.analysisSteps : [],
       analysisSummary: msg.analysisSummary && typeof msg.analysisSummary === 'object' ? msg.analysisSummary : null,
@@ -4493,6 +4501,8 @@ function ChatInterface() {
       || payload.sourceTag
       || payload.logicFlow
       || payload.skillHint
+      || payload.ragContent
+      || payload.outputFiles.length > 0
       || payload.analysisPlan
       || payload.analysisSteps.length > 0
       || payload.analysisSummary
@@ -5110,6 +5120,7 @@ function ChatInterface() {
       references: [],
       sourceTag: '',
       logicFlow: '',
+      hasSkillEndResult: false,
       skillHint: '',
       analysisPlan: null,
       analysisSteps: [],
@@ -5210,10 +5221,11 @@ function ChatInterface() {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           // Store RAG content separately for dedicated block display
           if (answer) {
+            assistantPayloadState.hasSkillEndResult = true
             assistantPayloadState.ragContent = answer
             updateStreamingMessage(nextMsgId, old => ({
               content: old.content,
@@ -5222,7 +5234,14 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
-              hasRagContent: true
+              hasRagContent: true,
+              // Preserve outputFiles from previous skill_end events
+              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+            }))
+          } else {
+            // No answer text but still preserve outputFiles
+            updateStreamingMessage(nextMsgId, old => ({
+              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
             }))
           }
           return
@@ -5234,14 +5253,16 @@ function ChatInterface() {
           const result = payload.result || payload.answer || ''
           const refs = normalizeRefs(payload)
           const skillName = payload.skillName || ''
+          const outputFiles = payload.outputFiles || []
           if (refs.length > 0) {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           // Store RAG content separately
           if (result) {
+            assistantPayloadState.hasSkillEndResult = true
             assistantPayloadState.ragContent = result
             updateStreamingMessage(nextMsgId, old => ({
               content: old.content,
@@ -5250,7 +5271,21 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
+              hasRagContent: true,
+              outputFiles: outputFiles
+            }))
+          } else if (outputFiles.length > 0) {
+            // No result text but has output files
+            assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
+            updateStreamingMessage(nextMsgId, old => ({
+              ragContent: assistantPayloadState.ragContent,
+              outputFiles: outputFiles,
+              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               hasRagContent: true
+            }))
+          } else {
+            updateStreamingMessage(nextMsgId, old => ({
+              outputFiles: outputFiles.length > 0 ? outputFiles : old.outputFiles
             }))
           }
           return
@@ -5295,6 +5330,11 @@ function ChatInterface() {
           const payload = parseJsonSafe(dataStr)
           // Skip if this is a rag_content or skill_end message (already handled by dedicated events)
           if (payload && (payload.type === 'rag_content' || payload.type === 'skill_end')) {
+            return
+          }
+          // Skip RAG skill summarization - these are already sent via skill_end/rag_content
+          // brain-server sends a final 'message' event with source='RAG检索' after skill completes
+          if (payload && payload.source === 'RAG检索') {
             return
           }
           if (!payload) {
@@ -5523,12 +5563,32 @@ function ChatInterface() {
     }
 
     const conversationTitle = activeConversationTitle || finalInput.slice(0, 20)
-    const userMsg = { role: 'user', content: finalInput }
+    const filesToUpload = [...uploadedFiles]
+    setUploadedFiles([])
+    
+    // 创建用户消息，包含文件信息用于UI显示
+    const userMsg = { 
+      role: 'user', 
+      content: finalInput,
+      isFile: filesToUpload.length > 0,
+      fileNames: filesToUpload.map(f => f.name)
+    }
     setMessages(prev => [...prev, userMsg])
     setInput('')
     setLoading(true)
     try {
-      await saveConversationMessage(conversationIdRef.current, 'user', finalInput, conversationTitle)
+      // 保存用户消息时包含文件信息，以便大脑在读取历史消息时能看到文件关联
+      const payloadText = filesToUpload.length > 0
+        ? JSON.stringify({
+            content: finalInput,
+            attachments: filesToUpload.map(f => ({
+              name: f.name,
+              size: f.size,
+              type: f.type || 'application/octet-stream'
+            }))
+          })
+        : ''
+      await saveConversationMessage(conversationIdRef.current, 'user', finalInput, conversationTitle, payloadText)
     } catch (persistErr) {
       console.error('保存用户消息失败:', persistErr)
     }
@@ -5544,6 +5604,7 @@ function ChatInterface() {
       references: [],
       sourceTag: '',
       logicFlow: '',
+      hasSkillEndResult: false,
       skillHint: '',
       analysisPlan: null,
       analysisSteps: [],
@@ -5553,10 +5614,6 @@ function ChatInterface() {
     }
 
     try {
-      // 获取并清空上传的文件
-      const filesToUpload = [...uploadedFiles]
-      setUploadedFiles([])
-
       const { response, uploaded: uploadedFromStream } = await startAgentStream(conversationIdRef.current, userMsg.content, {
         memoryProfileId: selectedMemoryProfileId,
         files: filesToUpload
@@ -5675,7 +5732,7 @@ function ChatInterface() {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           if (answer) {
             assistantPayloadState.ragContent = answer
@@ -5686,7 +5743,14 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
-              hasRagContent: true
+              hasRagContent: true,
+              // Preserve outputFiles from previous skill_end events
+              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+            }))
+          } else {
+            // No answer text but still preserve outputFiles
+            updateStreamingMessage(aiMsgId, old => ({
+              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
             }))
           }
           return
@@ -5698,11 +5762,12 @@ function ChatInterface() {
           const result = payload.result || payload.answer || ''
           const refs = normalizeRefs(payload)
           const skillName = payload.skillName || ''
+          const outputFiles = payload.outputFiles || []
           if (refs.length > 0) {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           if (result) {
             assistantPayloadState.ragContent = result
@@ -5713,7 +5778,20 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
+              hasRagContent: true,
+              outputFiles: outputFiles
+            }))
+          } else if (outputFiles.length > 0) {
+            // No result text but has output files
+            updateStreamingMessage(aiMsgId, old => ({
+              ragContent: `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`,
+              outputFiles: outputFiles,
+              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               hasRagContent: true
+            }))
+          } else {
+            updateStreamingMessage(aiMsgId, old => ({
+              outputFiles: outputFiles.length > 0 ? outputFiles : old.outputFiles
             }))
           }
           return
@@ -5739,11 +5817,12 @@ function ChatInterface() {
           const result = payload.result || payload.answer || ''
           const refs = normalizeRefs(payload)
           const skillName = payload.skillName || ''
+          const outputFiles = payload.outputFiles || []
           if (refs.length > 0) {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           if (result) {
             assistantPayloadState.ragContent = result
@@ -5754,7 +5833,8 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
-              hasRagContent: true
+              hasRagContent: true,
+              outputFiles: outputFiles
             }))
           }
           return
@@ -5768,6 +5848,11 @@ function ChatInterface() {
           const payload = parseJsonSafe(dataStr)
           // Skip if this is a rag_content or skill_end message (already handled by dedicated events)
           if (payload && (payload.type === 'rag_content' || payload.type === 'skill_end')) {
+            return
+          }
+          // Skip RAG skill summarization - these are already sent via skill_end/rag_content
+          // brain-server sends a final 'message' event with source='RAG检索' after skill completes
+          if (payload && payload.source === 'RAG检索') {
             return
           }
           if (!payload) {
@@ -5827,6 +5912,17 @@ function ChatInterface() {
           // Add LLM marker header if this is the first LLM output after RAG content
           if (delta && assistantPayloadState.references?.length > 0 && !aiContent.includes('🤖 AI回答')) {
             aiContent += '\n\n---\n\n> **🤖 AI回答**\n\n'
+          }
+          // If skill result was already shown via skill_end, skip appending duplicate LLM summary
+          if (assistantPayloadState.hasSkillEndResult && delta.trim()) {
+            updateStreamingMessage(aiMsgId, old => ({
+              content: aiContent,
+              references: refs.length > 0 ? refs : old.references,
+              sourceTag: sourceTag || old.sourceTag,
+              logicFlow: logicFlow || old.logicFlow,
+              skillHint: skillHint || old.skillHint
+            }))
+            return
           }
           aiContent += delta
           finalAssistantContent = aiContent
@@ -6085,6 +6181,7 @@ function ChatInterface() {
       references: [],
       sourceTag: '',
       logicFlow: '',
+      hasSkillEndResult: false,
       skillHint: ''
     }
     try {
@@ -6121,7 +6218,7 @@ function ChatInterface() {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           if (answer) {
             if (aiContent.trim()) {
@@ -6136,7 +6233,14 @@ function ChatInterface() {
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
-              hasRagContent: true
+              hasRagContent: true,
+              // Preserve outputFiles from previous skill_end events
+              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+            }))
+          } else {
+            // No answer text but still preserve outputFiles (from skill_end)
+            updateStreamingMessage(aiMsgId, old => ({
+              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
             }))
           }
           return
@@ -6154,7 +6258,7 @@ function ChatInterface() {
             assistantPayloadState.references = refs
           }
           if (skillName) {
-            assistantPayloadState.sourceTag = 'RAG检索'
+            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           if (result) {
             if (aiContent.trim()) {
@@ -6166,7 +6270,7 @@ function ChatInterface() {
             if (outputFiles.length > 0) {
               aiContent += '\n\n---\n\n**📥 下载文件:**\n\n'
               outputFiles.forEach(f => {
-                aiContent += `- [${f.file_name}](${f.download_url})\n`
+                aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
               })
             }
             finalAssistantContent = aiContent
@@ -6178,6 +6282,31 @@ function ChatInterface() {
               skillHint: old.skillHint,
               hasRagContent: true,
               outputFiles: outputFiles
+            }))
+          } else if (outputFiles.length > 0) {
+            // No result text but has output files - still show download section
+            if (aiContent.trim()) {
+              aiContent += '\n\n'
+            }
+            aiContent += `> **📚 ${skillName || 'Skill'} 执行完成**\n\n`
+            aiContent += '文件已生成，请点击下方下载链接获取结果。\n\n---\n\n**📥 下载文件:**\n\n'
+            outputFiles.forEach(f => {
+              aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
+            })
+            finalAssistantContent = aiContent
+            updateStreamingMessage(aiMsgId, old => ({
+              content: aiContent,
+              references: refs.length > 0 ? refs : (old.references || []),
+              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
+              logicFlow: old.logicFlow,
+              skillHint: old.skillHint,
+              hasRagContent: true,
+              outputFiles: outputFiles
+            }))
+          } else {
+            // Neither result nor output files - just update outputFiles if any
+            updateStreamingMessage(aiMsgId, old => ({
+              outputFiles: outputFiles.length > 0 ? outputFiles : old.outputFiles
             }))
           }
           return
@@ -6197,6 +6326,11 @@ function ChatInterface() {
           const payload = parseJsonSafe(dataStr)
           // Skip if this is a rag_content or skill_end message (already handled by dedicated events)
           if (payload && (payload.type === 'rag_content' || payload.type === 'skill_end')) {
+            return
+          }
+          // Skip RAG skill summarization - these are already sent via skill_end/rag_content
+          // brain-server sends a final 'message' event with source='RAG检索' after skill completes
+          if (payload && payload.source === 'RAG检索') {
             return
           }
           if (!payload) {
@@ -6226,6 +6360,17 @@ function ChatInterface() {
           }
           if (!delta && refs.length > 0 && !aiContent.trim()) {
             aiContent += buildReferenceOnlyNotice(refs)
+          }
+          // If skill result was already shown via skill_end, skip appending duplicate LLM summary
+          if (assistantPayloadState.hasSkillEndResult && delta.trim()) {
+            updateStreamingMessage(aiMsgId, old => ({
+              content: aiContent,
+              references: refs.length > 0 ? refs : old.references,
+              sourceTag: sourceTag || old.sourceTag,
+              logicFlow: logicFlow || old.logicFlow,
+              skillHint: skillHint || old.skillHint
+            }))
+            return
           }
           aiContent += delta
           finalAssistantContent = aiContent
@@ -6450,6 +6595,14 @@ function ChatInterface() {
                     <span className="font-medium">{msg.fileNames?.join(', ')}</span>
                   </div>
                 )}
+                {/* 显示从历史消息加载的附件 */}
+                {msg.attachments && msg.attachments.length > 0 && !msg.isFile && (
+                  <div className="mb-2 flex items-center gap-2 text-xs text-slate-600">
+                    <Paperclip size={14} className="text-blue-500" />
+                    <span>附件:</span>
+                    <span className="font-medium">{msg.attachments.map(a => a.name).join(', ')}</span>
+                  </div>
+                )}
                 {msg.toolDraft && (
                   <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
                     <div className="text-xs text-blue-700 font-semibold mb-2">
@@ -6511,7 +6664,7 @@ function ChatInterface() {
                             {toolResults[msg.toolDraft.toolCallId].files.map((f) => (
                               <a
                                 key={f.file_id}
-                                href={f.download_url}
+                                href={appendAuthToken(f.download_url)}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="flex items-center gap-1 text-xs text-blue-700 hover:underline"
@@ -6873,7 +7026,7 @@ function ChatInterface() {
                       {msg.outputFiles.map((f, i) => (
                         <a
                           key={i}
-                          href={f.download_url}
+                          href={appendAuthToken(f.download_url)}
                           target="_blank"
                           rel="noreferrer"
                           className="flex items-center gap-2 p-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-left transition-colors"

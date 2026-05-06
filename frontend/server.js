@@ -590,6 +590,7 @@ async function handleAgentChatStream(req, res) {
     const brainPayload = {
       query,
       conversationId: body.conversationId || '',
+      fileIds: Array.isArray(body.fileIds) ? body.fileIds : [],
     }
     const brainBuf = Buffer.from(JSON.stringify(brainPayload), 'utf-8')
     const isHttps = BACKEND_URL.protocol === 'https:'

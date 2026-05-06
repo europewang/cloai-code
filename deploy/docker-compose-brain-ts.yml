@@ -19,6 +19,9 @@ services:
       - MONGO_URL=mongodb://brain-mongo:27017
       - MONGO_DB_NAME=ai4kb_brain
       - SKILL_INPUT_BASE_DIR=/shared/brain-skill-files/inputs
+      - SKILL_OUTPUT_BASE_DIR=/shared/brain-skill-files/outputs
+      - SKILL_INDICATOR_SCRIPT_PATH=/opt/skills/cad_text_extractor/run_skill.py
+      - BRAIN_SERVICE_URL=http://host.docker.internal:3100
     depends_on:
       brain-postgres:
         condition: service_healthy
@@ -45,16 +48,13 @@ services:
     network_mode: host
     volumes:
       - ../skills:/opt/skills:ro
-      - brain_skill_files:/shared/brain-skill-files:ro
-      - brain_output_files:/tmp/cad_output
+      - brain_skill_files:/shared/brain-skill-files
     env_file:
       - ../.env.brain
     environment:
       - NODE_ENV=production
       - PORT=3100
       - BRAIN_SERVER_BASE_URL=http://localhost:8091
-      - BRAIN_SERVICE_URL=http://localhost:3100
-      - BRAIN_SERVER_ACCESS_TOKEN=${BRAIN_SERVER_ACCESS_TOKEN:-}
       - OPENAI_BASE_URL=http://localhost:11434/v1
       - ANTHROPIC_BASE_URL=http://localhost:11434/v1
       - ANTHROPIC_MODEL=qwen3.5:9b
@@ -63,6 +63,11 @@ services:
       - ANTHROPIC_API_KEY=ollama
       - CLOAI_API_KEY=ollama-dummy
       - SKILL_INPUT_BASE_DIR=/shared/brain-skill-files/inputs
+      - SKILL_OUTPUT_BASE_DIR=/shared/brain-skill-files/outputs
+      # qwen3.5 模型 thinking 内容可能长达 8K-20K tokens，需要更大的 output budget
+      # 当前 thinking 模式会把 context 填满，导致 content 被截断
+      # 此参数确保 total output（包括 thinking + content）有足够空间
+      - CLAUDE_CODE_MAX_OUTPUT_TOKENS=20000
 
   brain-maintenance:
     image: deploy-brain-server
@@ -193,6 +198,34 @@ services:
     networks:
       - ai4kb-brain-net
 
+  ollama-local:
+    image: ollama/ollama:latest
+    container_name: ollama-local
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MODELS=/root/.ollama/models
+      # OLLAMA_DISABLE_THINKING: qwen3.5 模型默认开启 thinking，会导致 context 膨胀后卡死，强烈建议保持为 true
+      - OLLAMA_DISABLE_THINKING=true
+      # 模型保活时间（默认5分钟，0为永久）
+      - OLLAMA_KEEP_ALIVE=5m
+      # 最大并发数（qwen3.5:9b 建议设为1，避免显存竞争）
+      - OLLAMA_NUM_PARALLEL=1
+      # 加载超时（模型较大时可调大）
+      - OLLAMA_LOAD_TIMEOUT=5m0s
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
 networks:
   ai4kb-brain-net:
     driver: bridge
@@ -203,3 +236,5 @@ volumes:
   brain_mongo_data:
   brain_skill_files:
   brain_output_files:
+  ollama_data:
+    external: true

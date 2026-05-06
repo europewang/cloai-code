@@ -191,8 +191,16 @@ export async function getMongoDBSkills(): Promise<Command[]> {
         // The skill script is located at /opt/skills/<skill_name>/run_skill.py in the brain container
         const skillScriptDir = skill.scriptPath ? skill.scriptPath.replace(/\/run_skill\.py$/, '') : `/opt/skills/${skill.name}`
         
+        // Get the uploaded files directory if set by brainService
+        // Uses globalThis.__SKILL_INPUT_DIR__ (set by brainService per-request)
+        // Falls back to SKILL_INPUT_BASE_DIR env var for backwards compatibility
+        const skillInputDir = (globalThis as any).__SKILL_INPUT_DIR__
+          || process.env.SKILL_INPUT_BASE_DIR
+          || '/shared/brain-skill-files/inputs'
+        
         // Prepend execution instruction to ensure the model executes the skill
-        const executionInstruction = `You are executing the "${skill.name}" skill. Follow the instructions below to complete the task.\n\n`
+        const executionInstruction = `You are executing the "${skill.name}" skill. Follow the instructions below to complete the task.\n\n` +
+          `IMPORTANT: If user has uploaded files, they are located in: ${skillInputDir}\n\n`
         
         let content = `${executionInstruction}Base directory for this skill: ${skillScriptDir}\n\n${markdownContent}`
         
@@ -201,6 +209,14 @@ export async function getMongoDBSkills(): Promise<Command[]> {
         
         // Replace ${CLAUDE_SKILL_DIR} with actual skill script directory
         content = content.replace(/\$\{CLAUDE_SKILL_DIR\}/g, skillScriptDir.replace(/\\/g, '/'))
+        
+        // Replace __SKILL_INPUT_DIR__ with actual uploaded files directory
+        content = content.replace(/__SKILL_INPUT_DIR__/g, skillInputDir)
+
+        // Replace __SKILL_OUTPUT_DIR__ with the shared output directory
+        // This ensures the skill always outputs to the correct shared path regardless of markdown
+        const skillOutputDir = process.env.SKILL_OUTPUT_BASE_DIR || '/shared/brain-skill-files/outputs'
+        content = content.replace(/__SKILL_OUTPUT_DIR__/g, skillOutputDir)
         
         return [{ type: 'text' as const, text: content }]
       },

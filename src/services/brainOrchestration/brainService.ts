@@ -52,11 +52,13 @@ type MemoryContent = {
 type BrainRequest = {
   query: string
   conversationId?: string
+  skillInputDir?: string
 }
 
 const PORT = Number(process.env.BRAIN_SERVICE_PORT || '3100')
 const MAX_LOOPS = 5
 const BRAIN_SERVER_BASE_URL = process.env.BRAIN_SERVER_BASE_URL || 'http://127.0.0.1:8091'
+const BRAIN_SERVICE_URL = process.env.BRAIN_SERVICE_URL || 'http://host.docker.internal:3100'
 const BRAIN_SERVER_ACCESS_TOKEN = process.env.BRAIN_SERVER_ACCESS_TOKEN || ''
 
 /**
@@ -545,9 +547,11 @@ function handleBrainQueryStream(req: any, res: any): void {
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       })
 
+      let hasSentSkillResult = false
+
       try {
         // Process through src brain with streaming
-        const streamResult = await processQueryThroughBrainStream(request.query, authHeader)
+        const streamResult = await processQueryThroughBrainStream(request.query, authHeader, request.skillInputDir)
 
         for await (const event of streamResult) {
           if (event.type === 'chunk') {
@@ -558,12 +562,14 @@ function handleBrainQueryStream(req: any, res: any): void {
             res.write(`event: skill_start\ndata: ${JSON.stringify({ type: 'skill_start', skillName: event.skillName })}\n\n`)
           } else if (event.type === 'skill_end') {
             // Skill execution completed - include result, references, and output files
+            hasSentSkillResult = true
             res.write(`event: skill_end\ndata: ${JSON.stringify({
               type: 'skill_end',
               skillName: event.skillName,
               result: event.result,
               references: event.references || [],
               outputFiles: event.outputFiles || [],
+              source: 'skill',
             })}\n\n`)
           } else if (event.type === 'rag_token') {
             // Real-time RAG token streaming - send as 'rag_token' event for immediate display
@@ -575,6 +581,7 @@ function handleBrainQueryStream(req: any, res: any): void {
           } else if (event.type === 'rag_content') {
             // Structured RAG result - send as 'rag_content' event only
             // (do NOT duplicate to 'message' to avoid frontend showing content twice)
+            hasSentSkillResult = true
             const structuredData = event.data
             const answer = structuredData?.answer || structuredData?.result || ''
             const references = event.references || structuredData?.references || []
@@ -585,8 +592,10 @@ function handleBrainQueryStream(req: any, res: any): void {
               references: references
             })}\n\n`)
           } else if (event.type === 'done') {
-            // Final answer from LLM - only send if there's actual content
-            if (event.content && event.content.trim()) {
+            // Final answer from LLM - only send if:
+            // 1. There's actual content AND
+            // 2. We haven't already sent a skill result (to avoid duplicate content)
+            if (event.content && event.content.trim() && !hasSentSkillResult) {
               res.write(`event: message\ndata: ${JSON.stringify({ answer: event.content })}\n\n`)
             }
           } else if (event.type === 'error') {
@@ -626,7 +635,7 @@ type StreamEventType =
 /**
  * Stream query through the src brain - yields events in real-time
  */
-async function* processQueryThroughBrainStream(queryText: string, _authHeader: string): AsyncGenerator<StreamEventType, void, unknown> {
+async function* processQueryThroughBrainStream(queryText: string, _authHeader: string, skillInputDir?: string): AsyncGenerator<StreamEventType, void, unknown> {
   // Enable config reading (required before any config access)
   ensureBootstrapMacro()
   enableConfigs()
@@ -648,6 +657,14 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
 
   const memoryContent = memory?.content || null
   const memoryProfileId = memory?.profileId || preCtx.profileId
+
+  // Always set a unique skillInputDir — even when no files are uploaded,
+  // we must isolate this request from any stale files in the shared volume.
+  const skillInputBaseDir = process.env.SKILL_INPUT_BASE_DIR || '/shared/brain-skill-files/inputs'
+  const effectiveSkillInputDir = skillInputDir
+    || `${skillInputBaseDir}/empty-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  // Store skillInputDir in a global variable so SkillTool can access it
+  ;(globalThis as any).__SKILL_INPUT_DIR__ = effectiveSkillInputDir
 
   // Step 3: Build system prompt with memory and skill context
   const systemPrompt = buildSystemPromptWithMemory(
@@ -711,10 +728,15 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
       lastStreamEvent = event
       
       // Check if this was a structured result (RAG completed)
-      // This is tracked by rag_content event type
+      // This is tracked by rag_content event type OR skill_end with non-empty result
       if (event.type === 'rag_content' && event.references?.length > 0) {
         // RAG completed - the skill_end already contains the answer
         // No need for second LLM call, just track and exit
+        turnHasStructuredResult = true
+        hasStructuredResult = true
+      }
+      // CAD skill also has structured result (answer) even without references
+      if (event.type === 'skill_end' && event.result?.trim()) {
         turnHasStructuredResult = true
         hasStructuredResult = true
       }
@@ -746,11 +768,34 @@ type ExtractedSkillResult = {
 }
 
 /**
- * Extract skill result from tool_result content.
- * SkillTool writes structured result to a temp file, and the result
- * contains a reference to that. We need to read the temp file.
+ * Read structured result from the temp file written by the skill runner.
+ * Used for skills that write structured data via _write_structured_result().
  */
-function extractSkillResultFromToolResult(block: any): ExtractedSkillResult | null {
+async function readStructuredResultFromFile(
+  tmpdirPath: string,
+  toolUseId: string,
+): Promise<StructuredSkillResult | null> {
+  const structuredPath = `${tmpdirPath}/skill-structured-result-${toolUseId.split('_').pop() || toolUseId}.json`
+  try {
+    const { readFileSync } = await import('node:fs')
+    const content = readFileSync(structuredPath, 'utf-8')
+    const parsed = JSON.parse(content) as StructuredSkillResult
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extract skill result from tool_result content.
+ * Tries two approaches:
+ * 1. Parse __STRUCTURED_RESULT__ marker embedded in content (for RAG skill)
+ * 2. Read from SKILL_STRUCTURED_RESULT_PATH temp file (for all forked skills)
+ */
+async function extractSkillResultFromToolResult(
+  block: any,
+  toolUseId: string,
+): Promise<ExtractedSkillResult | null> {
   let content = block?.content
 
   // Handle array content: [{type: 'text', text: '...'}]
@@ -759,18 +804,20 @@ function extractSkillResultFromToolResult(block: any): ExtractedSkillResult | nu
   }
 
   if (!content || typeof content !== 'string') {
-    console.error('DEBUG extractToolResult: no content')
     return null
   }
 
   // The content contains "Skill \"xxx\" completed (forked execution)"
   const match = content.match(/Skill\s+"([^"]+)"\s+completed/)
   if (!match) {
-    console.error('DEBUG extractToolResult: no skill match, content preview:', content.substring(0, 200))
     return null
   }
 
   const skillName = match[1]
+
+  // Try to read structured result from file (most reliable - works for all forked skills)
+  const tmpdirPath = (await import('os')).tmpdir()
+  const fileStructuredResult = await readStructuredResultFromFile(tmpdirPath, toolUseId)
 
   // Extract result text from content
   const resultMatch = content.match(/Result:\s*\n([\s\S]+?)(?:\n\n__STRUCTURED_RESULT__|$)/)
@@ -784,39 +831,63 @@ function extractSkillResultFromToolResult(block: any): ExtractedSkillResult | nu
       const parsed = JSON.parse(structuredMatch[1])
       if (parsed && typeof parsed === 'object') {
         structuredResult = parsed as StructuredSkillResult
-        console.error('DEBUG extractToolResult: structuredResult extracted, answer length:', parsed.answer?.length, 'references:', parsed.references?.length)
       }
     } catch (e) {
-      console.error('DEBUG extractToolResult: parse error:', e)
+      // ignore parse error
     }
-  } else {
-    console.error('DEBUG extractToolResult: no structured result marker found')
   }
 
-  // Extract output files from __OUTPUT_FILES__ marker in result
-  const outputFiles: Array<{ file_name: string; file_id: string; download_url: string }> = []
+  // Use file-based result if available (preferred - more reliable)
+  if (fileStructuredResult) {
+    structuredResult = fileStructuredResult
+  }
+
+  // Build outputFiles from structured result if present
+  let outputFiles: Array<{ file_name: string; file_id: string; download_url: string }> = []
+  if (structuredResult) {
+    const baseUrl = BRAIN_SERVER_BASE_URL
+    const rawFiles = (structuredResult as any).outputFiles as Array<any> | undefined
+    if (rawFiles && Array.isArray(rawFiles)) {
+      rawFiles.forEach((f: any, idx: number) => {
+        const filePath = f.file_path || f.filePath || f.file_name || ''
+        outputFiles.push({
+          file_name: f.file_name || `file-${idx}`,
+          file_id: `output-${Date.now()}-${idx}`,
+          download_url: `${baseUrl}/api/v1/brain/files/download?filename=${encodeURIComponent(filePath)}`,
+        })
+      })
+    }
+  }
+
+  // Also try to extract output files from __OUTPUT_FILES__ marker in result text
+  // (for skills that use the LLM output approach)
   const outputFilesMatch = result.match(/__OUTPUT_FILES__\s*\n([\s\S]+?)\n__OUTPUT_FILES_END__/)
-  if (outputFilesMatch) {
+  if (outputFilesMatch && outputFiles.length === 0) {
     try {
       const files = JSON.parse(outputFilesMatch[1])
       if (Array.isArray(files)) {
-        // Use brain service URL for downloads
-        const baseUrl = process.env.BRAIN_SERVICE_URL || 'http://localhost:3100'
+        const baseUrl = BRAIN_SERVER_BASE_URL
         files.forEach((f: any, idx: number) => {
           outputFiles.push({
             file_name: f.file_name || f.fileName || `file-${idx}`,
             file_id: `output-${Date.now()}-${idx}`,
-            download_url: `${baseUrl}/api/files/download?filename=${encodeURIComponent(f.file_path || f.filePath || f.file_name)}`
+            download_url: `${baseUrl}/api/v1/brain/files/download?filename=${encodeURIComponent(f.file_path || f.filePath || f.file_name)}`,
           })
         })
-        console.error('DEBUG extractToolResult: found outputFiles:', outputFiles.length)
       }
     } catch (e) {
-      console.error('DEBUG extractToolResult: parse outputFiles error:', e)
+      // ignore parse error
     }
-    // Clean up the result by removing the output files marker
-    result = result.replace(/__OUTPUT_FILES__\s*\n[\s\S]+?\n__OUTPUT_FILES_END__/g, '').trim()
   }
+
+  // Clean up: strip __OUTPUT_FILES__ marker and markdown download links from result.
+  // Download links are handled by outputFiles (and rendered by frontend outputFiles section),
+  // so they should not appear in the AI text content.
+  result = result.replace(/__OUTPUT_FILES__\s*\n[\s\S]+?\n__OUTPUT_FILES_END__/g, '').trim()
+  // Remove markdown links that are download links (contain /files/download)
+  result = result.replace(/\[([^\]]*)\]\([^)]*\/files\/download[^)]*\)/g, '').trim()
+  // Clean up any leftover blank lines from removed content
+  result = result.replace(/\n{3,}/g, '\n\n').trim()
 
   return { skillName, result, structuredResult, outputFiles }
 }
@@ -953,7 +1024,7 @@ async function* runSingleTurnStream(
             if (block?.type === 'tool_result') {
               // Check if this is a SkillTool result
               const toolUseId = block.tool_use_id || ''
-              const skillResult = extractSkillResultFromToolResult(block)
+              const skillResult = await extractSkillResultFromToolResult(block, toolUseId)
               if (skillResult) {
                 hasSkillResult = true
 
