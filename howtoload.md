@@ -1,158 +1,125 @@
-# RagFlow 配置指南
+# 知识库文档解析配置指南
 
 ## 概述
 
-本系统使用 RagFlow 作为知识库文档解析引擎。RagFlow 的某些 API（如文档解析）需要用户会话认证，而不仅仅是 API Key。
+本系统使用 RagFlow 作为知识库后端。文档解析功能需要 RagFlow 用户会话认证，本指南说明如何配置用户凭证。
 
-## 当前配置状态
+## RagFlow 账号配置
 
-### 1. API Key 配置（已工作）
+### 步骤 1: 编辑配置文件
 
-API Key 用于访问不需要用户会话的 API：
-
-```
-RAGFLOW_BASE_URL=http://host.docker.internal:8084
-RAGFLOW_AUTHORIZATION=Bearer ragflow-rKofJZKLNgh_2Pv9A-0y_3sUbC9MIOkw9n99Cl5hvc4
-```
-
-**可用的 API（使用 API Key）**：
-- 获取知识库列表
-- 获取文档列表
-- 获取文档切片
-- 获取文档文件
-
-### 2. 用户凭证配置（需要设置）
-
-用户凭证用于需要会话认证的 API：
-
-```
-RAGFLOW_USER=europewang@foxmail.com
-RAGFLOW_PASSWORD=你的密码
-```
-
-**需要的 API（使用用户凭证）**：
-- 触发文档解析
-- 上传并解析文档
-
-## 如何设置 RagFlow 用户密码
-
-### 方法一：通过 RagFlow Web 界面
-
-1. 访问 RagFlow Web 界面：http://localhost:8084
-2. 使用现有账号登录
-3. 进入「设置」→「个人信息」
-4. 修改密码
-
-### 方法二：通过数据库直接修改
-
-如果无法登录 Web 界面，可以通过数据库重置密码：
+编辑 `.env.brain` 文件，修改以下配置项：
 
 ```bash
-# 1. 连接到 RagFlow MySQL 数据库
-docker exec -it ragflow-mysql mysql -uroot -p"infini_rag_flow" rag_flow
-
-# 2. 生成新密码的 scrypt hash
-# 在 RagFlow 容器中执行：
-docker exec ragflow-server bash -c 'cd /ragflow && source .venv/bin/activate && python3 << "PYEOF"
-from werkzeug.security import generate_password_hash
-password = "你的新密码"
-print(generate_password_hash(password))
-PYEOF
-'
-
-# 3. 在 MySQL 中更新密码
-UPDATE rag_flow.user SET password = '生成的scrypt hash' WHERE email = 'europewang@foxmail.com';
-
-# 4. 验证
-SELECT id, email, LENGTH(password) FROM rag_flow.user WHERE email = 'europewang@foxmail.com';
+# RagFlow 用户凭证（用于文档解析，需要用户会话认证）
+RAGFLOW_USER=your_email@domain.com    # 你的 RagFlow 登录邮箱
+RAGFLOW_PASSWORD=your_password        # 你的 RagFlow 登录密码
 ```
 
-### 方法三：创建新用户
+**注意**: 邮箱地址中的 `foxmial` 拼写是用户提供的原始输入，实际 RagFlow 系统中的邮箱可能略有不同。
+
+### 步骤 2: 重启服务
+
+修改配置后，需要重启 brain-server 服务使配置生效：
 
 ```bash
-# 在 RagFlow 容器中初始化新用户
-docker exec ragflow-server bash -c 'cd /ragflow && source .venv/bin/activate && python3 << "PYEOF"
-import sys
-sys.path.insert(0, "/ragflow")
-from api.db.init_data import init_superuser
-
-# 创建新用户（email 不能是 admin@ragflow.io）
-init_superuser(nickname="apiuser", email="apiuser@ragflow.io", password="yourpassword123")
-print("User created!")
-PYEOF
-'
+cd /home/ubutnu/code/cloai-code/deploy
+docker compose -f docker-compose-brain-ts.yml restart brain-server
 ```
 
-## 文档解析工作流程
+### 步骤 3: 验证配置
 
-### 当前支持的解析方式
+重启后，可以通过 API 测试验证配置是否正确：
 
-1. **手动解析**（推荐）：
-   - 登录 RagFlow Web 界面
-   - 进入知识库
-   - 点击文档的「解析」按钮
+```bash
+# 获取 admin token
+TOKEN=$(curl -s -X POST http://localhost:8091/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123456"}' | \
+  jq -r '.accessToken')
 
-2. **API 触发解析**：
-   - 配置 `RAGFLOW_USER` 和 `RAGFLOW_PASSWORD`
-   - 系统会自动尝试用户登录获取会话
-   - 调用 `/v1/document/run` 触发解析
-
-### 已知限制
-
-- RagFlow 的 `/v1/document/run` 端点需要 `@login_required`
-- API Key 认证无法用于此端点
-- 需要有效的用户会话 cookie
-
-## 配置示例
-
-完整配置示例（`.env.brain`）：
-
-```env
-# RagFlow 服务器地址
-RAGFLOW_BASE_URL=http://host.docker.internal:8084
-
-# API Key（用于知识库列表、文档列表、切片等）
-RAGFLOW_AUTHORIZATION=Bearer ragflow-rKofJZKLNgh_2Pv9A-0y_3sUbC9MIOkw9n99Cl5hvc4
-
-# 用户凭证（用于文档解析）
-RAGFLOW_USER=europewang@foxmail.com
-RAGFLOW_PASSWORD=你的密码
-
-# 查询配置
-RAGFLOW_QUERY_PATH=/api/v1/chats_openai/{chatId}/chat/completions
-RAGFLOW_MODEL=qwen3.5:9b
+# 测试文档解析 API
+curl -X POST "http://localhost:8091/api/v1/admin/datasets/{dataset_id}/documents/run" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"doc_ids":["{document_id}"]}'
 ```
 
-## 故障排除
+## 配置说明
 
-### 问题：API 返回 "Unauthorized"
+### 为什么需要用户凭证？
 
-**原因**：API Key 认证失败或过期
+RagFlow 的文档解析 API (`POST /v1/document/run`) 使用 `@login_required` 装饰器保护，这意味着：
+- API Key 认证（如 `Bearer ragflow-xxx`）只能访问部分 API
+- 文档解析需要完整的用户会话认证
 
-**解决**：
-1. 检查 `RAGFLOW_AUTHORIZATION` 配置是否正确
-2. 在 RagFlow Web 界面验证 API Key 是否有效
-3. 如果需要，重新生成 API Key
+当配置了 `RAGFLOW_USER` 和 `RAGFLOW_PASSWORD` 后，系统会自动：
+1. 首先尝试使用 API Key 认证
+2. 如果返回 401/403 错误，自动尝试使用配置的凭证登录
+3. 使用返回的会话 Cookie 进行文档解析
 
-### 问题：文档解析返回 "jwt malformed"
+### 配置优先级
 
-**原因**：用户会话认证失败
+RagFlow 认证配置优先级（从上到下）：
+1. `RAGFLOW_AUTHORIZATION` - 直接设置 Authorization 头
+2. `RAGFLOW_BEARER_TOKEN` - 使用 Bearer Token
+3. `RAGFLOW_API_KEY` - 使用 API Key
+4. `RAGFLOW_USER` + `RAGFLOW_PASSWORD` - 用户名密码登录（仅用于解析 API）
 
-**解决**：
-1. 确认 `RAGFLOW_USER` 和 `RAGFLOW_PASSWORD` 正确
-2. 测试登录：`curl -X POST http://host.docker.internal:8084/v1/user/login -H "Content-Type: application/json" -d '{"email":"你的邮箱","password":"你的密码"}'`
-3. 如果登录失败，重置密码
+## 故障排查
 
-### 问题：解析任务没有响应
+### 问题 1: 文档解析返回 401/403 错误
 
-**原因**：RagFlow 内部配置问题（如存储配置）
+**症状**: 调用解析 API 返回认证错误
 
-**解决**：
-1. 检查 RagFlow 存储服务是否正常运行
-2. 查看 RagFlow 日志：`docker logs ragflow-server`
-3. 确认 MinIO/S3 存储配置正确
+**解决方案**:
+1. 检查 `.env.brain` 中的 `RAGFLOW_USER` 和 `RAGFLOW_PASSWORD` 是否正确
+2. 确保 RagFlow 服务正在运行
+3. 测试 RagFlow 登录是否成功：
+   ```bash
+   curl -X POST "http://localhost:8084/v1/login" \
+     -H "Content-Type: application/json" \
+     -d '{"email":"your_email@domain.com","password":"your_password"}'
+   ```
 
-## 相关信息
+### 问题 2: 文档上传成功但解析失败
 
-- RagFlow 官方文档：https://github.com/infiniflow/ragflow
-- RagFlow API 文档：在 RagFlow Web 界面 → API 文档
+**症状**: 文档可以上传到知识库，但点击解析后没有反应
+
+**可能原因**:
+- RagFlow 存储配置问题（STORAGE_IMPL 为 null）
+- LLM 模型未配置
+
+**解决方案**: 在 RagFlow Web 界面 (http://localhost:8084) 中手动触发解析
+
+### 问题 3: 切片加载失败
+
+**症状**: 点击文档后看不到切片内容
+
+**解决方案**: 确认文档已经完成解析（`run` 状态为 `DONE`）
+
+## RagFlow 服务管理
+
+### 查看 RagFlow 容器状态
+
+```bash
+docker ps | grep ragflow
+```
+
+### 查看 RagFlow 日志
+
+```bash
+docker logs ragflow-server -f
+```
+
+### 重启 RagFlow 服务
+
+```bash
+docker restart ragflow-server
+```
+
+## 相关文件
+
+- `.env.brain` - 主要配置文件
+- `brain-server/src/server.ts` - 后端 API 实现
+- `brain-server/src/config.ts` - 配置定义
