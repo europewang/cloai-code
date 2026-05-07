@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen } from 'lucide-react'
+import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
@@ -161,22 +161,40 @@ async function loginByPassword(username, password) {
 }
 
 async function fetchDatasets() {
-  // 兼容 brain-server：从权限快照反推可选数据集列表（只读视图）。
+  // 从 brain-server 获取 RagFlow 知识库列表
+  try {
+    const res = await apiFetch('/v1/admin/datasets')
+    if (res.ok) {
+      const data = await res.json()
+      return Array.isArray(data) ? data : []
+    }
+  } catch (e) {
+    console.warn('Failed to fetch datasets:', e)
+  }
+  // Fallback: 从用户权限反推
   const users = await fetchUsers()
   const datasetSet = new Set()
   for (const user of users) {
-    const perms = await apiFetch(`/v1/admin/users/${user.id}/permissions`).then(async (r) => (r.ok ? r.json() : []))
-    ;(Array.isArray(perms) ? perms : []).forEach((p) => {
-      if ((p?.resourceType === 'DATASET' || p?.resourceType === 'DATASET_OWNER') && p?.resourceId) {
-        datasetSet.add(String(p.resourceId))
+    try {
+      const permsData = await apiFetch(`/v1/admin/users/${user.id}/permissions`)
+      if (permsData.ok) {
+        const permsJson = await permsData.json()
+        const perms = Array.isArray(permsJson) ? permsJson : (permsJson?.permissions || [])
+        if (Array.isArray(perms)) {
+          perms.forEach((p) => {
+            if ((p?.resourceType === 'DATASET' || p?.resourceType === 'DATASET_OWNER') && p?.resourceId) {
+              datasetSet.add(String(p.resourceId))
+            }
+          })
+        }
       }
-    })
+    } catch (e) { /* skip */ }
   }
   return Array.from(datasetSet).map((id) => ({ id, name: id }))
 }
 
 async function createDataset(name) {
-  const res = await apiFetch('/admin/datasets', {
+  const res = await apiFetch('/v1/admin/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name })
@@ -186,7 +204,7 @@ async function createDataset(name) {
 }
 
 async function deleteDataset(id) {
-  const res = await apiFetch(`/admin/datasets/${id}`, {
+  const res = await apiFetch(`/v1/admin/datasets/${id}`, {
     method: 'DELETE'
   })
   if (!res.ok) throw new Error('Failed to delete dataset')
@@ -194,7 +212,7 @@ async function deleteDataset(id) {
 }
 
 async function deleteDatasets(ids) {
-  const res = await apiFetch('/admin/datasets', {
+  const res = await apiFetch('/v1/admin/datasets', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids })
@@ -209,7 +227,7 @@ async function updateDataset(id, name, description, language, permission, parser
   if (permission) body.permission = permission
   if (parser_config) body.parser_config = parser_config
 
-  const res = await apiFetch(`/admin/datasets/${id}`, {
+  const res = await apiFetch(`/v1/admin/datasets/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -297,13 +315,17 @@ async function updateManagedUser(userId, { username, password }) {
 }
 
 async function fetchUserPermissions(username) {
-  // 兼容 brain-server：旧 username 维度查询改为 userId 维度查询。
+  // 兼容 brain-server：返回 { userId, permissions: [...] } 格式
   const users = await fetchUsers()
   const target = users.find((u) => u.username === username)
   if (!target?.id) return []
   const res = await apiFetch(`/v1/admin/users/${target.id}/permissions`)
   if (!res.ok) throw new Error('Failed to fetch permissions')
-  return res.json()
+  const data = await res.json()
+  // 提取 permissions 数组
+  if (data && Array.isArray(data)) return data
+  if (data && Array.isArray(data.permissions)) return data.permissions
+  return []
 }
 
 async function fetchRouteSamples({ page = 1, pageSize = 20, username, source, chosenRoute, startTime, endTime, queryKeyword } = {}) {
@@ -393,9 +415,15 @@ async function fetchSuperAdminOverview() {
   }
 
   const enrichOne = async (user) => {
-    const perms = await apiFetch(`/v1/admin/users/${user.id}/permissions`).then(async (r) => (r.ok ? r.json() : []))
+    const permsData = await apiFetch(`/v1/admin/users/${user.id}/permissions`).then(async (r) => {
+      if (!r.ok) return []
+      const data = await r.json()
+      if (Array.isArray(data)) return data
+      if (data && Array.isArray(data.permissions)) return data.permissions
+      return []
+    })
     const datasetIds = Array.from(
-      new Set((Array.isArray(perms) ? perms : [])
+      new Set((Array.isArray(permsData) ? permsData : [])
         .filter((p) => p?.resourceType === 'DATASET' || p?.resourceType === 'DATASET_OWNER')
         .map((p) => String(p.resourceId)))
     )
@@ -405,7 +433,7 @@ async function fetchSuperAdminOverview() {
       username: user.username,
       role: user.role,
       ownedDatasetCount: datasetIds.length,
-      totalGrantedPermissionCount: Array.isArray(perms) ? perms.length : 0,
+      totalGrantedPermissionCount: Array.isArray(permsData) ? permsData.length : 0,
       totalConversations: userStats.totalConversations || 0,
       totalMessages: userStats.totalMessages || 0,
       conversationsLast7Days: userStats.conversationsLast7Days || 0,
@@ -2105,86 +2133,88 @@ function DatasetManager() {
   }
 
   return (
-    <div className="p-8 max-w-7xl mx-auto h-full overflow-y-auto">
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <Database className="text-blue-500" size={24} />
-            知识库管理
-          </h2>
-          <div className="flex items-center gap-3 mt-1">
-            <p className="text-slate-500 text-sm">创建和管理您的本地知识库</p>
+    <div className="h-full overflow-y-auto" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">
+              知识库管理
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">创建和管理知识库</p>
+          </div>
+          <div className="flex items-center gap-3">
             {manageableDatasets.length > 0 && (
               <button 
                 onClick={handleSelectAll}
-                className="text-xs text-blue-600 hover:underline ml-2"
+                className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50"
               >
                 {selectedDatasets.length === manageableDatasets.length ? '取消全选' : '全选'}
               </button>
             )}
-          </div>
-        </div>
-        <div className="flex gap-2">
-          {selectedDatasets.length > 0 && (
-            <button 
-              onClick={handleBatchDelete}
-              disabled={batchDeleting}
-              className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg hover:bg-red-100 flex items-center gap-2 disabled:opacity-50 transition-colors mr-2"
+            {selectedDatasets.length > 0 && (
+              <button 
+                onClick={handleBatchDelete}
+                disabled={batchDeleting}
+                className="px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
+              >
+                {batchDeleting ? <Loader2 size={14} className="animate-spin inline" /> : null}
+                删除 ({selectedDatasets.length})
+              </button>
+            )}
+            <input
+              type="text"
+              placeholder="新知识库名称"
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
+              value={newDatasetName}
+              onChange={(e) => setNewDatasetName(e.target.value)}
+            />
+            <button
+              onClick={handleCreate}
+              disabled={creating || !newDatasetName.trim()}
+              className="px-4 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
             >
-              {batchDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-              批量删除 ({selectedDatasets.length})
+              新建
             </button>
-          )}
-          <input
-            type="text"
-            placeholder="新知识库名称"
-            className="px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={newDatasetName}
-            onChange={(e) => setNewDatasetName(e.target.value)}
-          />
-          <button
-            onClick={handleCreate}
-            disabled={creating || !newDatasetName.trim()}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
-          >
-            {creating ? <Loader2 size={16} className="animate-spin" /> : <Database size={16} />}
-            新建
-          </button>
+          </div>
         </div>
       </div>
 
-      {loading ? (
-        <div className="flex justify-center items-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-        </div>
-      ) : (
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {datasets.map((ds) => (
-            <DatasetCard 
-              key={ds.id} 
-              dataset={ds} 
-              onClick={() => {
-                if (ds?.manageable === false) {
-                  alert('该知识库不是你创建的，仅可查看存在，不可进入内部内容。')
-                  return
-                }
-                setViewingDataset(ds)
-              }} 
-              onDelete={handleDelete}
-              onRename={handleRenameDataset}
-              selected={selectedDatasets.includes(ds.id)}
-              onSelect={handleSelectDataset}
-              selectionMode={selectedDatasets.length > 0}
-            />
-          ))}
-          {datasets.length === 0 && (
-            <div className="col-span-full flex flex-col items-center justify-center py-16 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-              <Database size={48} className="mb-4 text-slate-300" />
-              <p>暂无知识库，请点击右上角新建</p>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Content */}
+      <div className="p-6">
+        {loading ? (
+          <div className="flex justify-center items-center h-64">
+            <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+          </div>
+        ) : datasets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
+            <Database size={48} className="mb-4 text-gray-300" />
+            <p className="text-sm">暂无知识库</p>
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {datasets.map((ds) => (
+              <DatasetCard 
+                key={ds.id} 
+                dataset={ds} 
+                onClick={() => {
+                  if (ds?.manageable === false) {
+                    alert('该知识库不是你创建的，仅可查看存在，不可进入内部内容。')
+                    return
+                  }
+                  setViewingDataset(ds)
+                }} 
+                onDelete={handleDelete}
+                onRename={handleRenameDataset}
+                selected={selectedDatasets.includes(ds.id)}
+                onSelect={handleSelectDataset}
+                selectionMode={selectedDatasets.length > 0}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
       <RenameModal 
         isOpen={renameModal.isOpen}
         title="编辑知识库"
@@ -2205,17 +2235,23 @@ function PermissionManager() {
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedDatasetIds, setSelectedDatasetIds] = useState([])
   const [selectedSkillIds, setSelectedSkillIds] = useState([])
-  const [activeTab, setActiveTab] = useState('datasets') // 'datasets' or 'skills'
   const [loading, setLoading] = useState(false)
   const [processing, setProcessing] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState(false)
 
   // Load datasets, skills and users on mount
   useEffect(() => {
-    fetchDatasets().then(data => setDatasets(Array.isArray(data) ? data : []))
-    fetchAvailableSkills().then(data => setSkills(Array.isArray(data) ? data : []))
-    fetchUsers().then(data => {
-      setUsers(Array.isArray(data) ? data : [])
-      if (data.length > 0) setSelectedUser(data[0].username)
+    Promise.all([
+      fetchDatasets().catch(() => []),
+      fetchAvailableSkills().catch(() => []),
+      fetchUsers().catch(() => [])
+    ]).then(([dsData, skData, usData]) => {
+      setDatasets(Array.isArray(dsData) ? dsData : [])
+      setSkills(Array.isArray(skData) ? skData : [])
+      setUsers(Array.isArray(usData) ? usData : [])
+      if (Array.isArray(usData) && usData.length > 0) {
+        setSelectedUser(usData[0].username)
+      }
     })
   }, [])
 
@@ -2225,54 +2261,44 @@ function PermissionManager() {
     setLoading(true)
     fetchUserPermissions(selectedUser)
       .then(perms => {
-        const dsIds = perms.filter(p => p.resourceType === 'DATASET').map(p => p.resourceId)
-        const skIds = perms.filter(p => p.resourceType === 'SKILL').map(p => p.resourceId)
+        const dsIds = (perms || []).filter(p => p.resourceType === 'DATASET').map(p => p.resourceId)
+        const skIds = (perms || []).filter(p => p.resourceType === 'SKILL').map(p => p.resourceId)
         setSelectedDatasetIds(dsIds)
         setSelectedSkillIds(skIds)
       })
-      .catch(console.error)
+      .catch(err => console.error('加载权限失败:', err))
       .finally(() => setLoading(false))
   }, [selectedUser])
 
-  const handleCheckboxChange = (dsId, isSkill = false) => {
+  const handleCheckboxChange = (id, isSkill = false) => {
     if (isSkill) {
-      setSelectedSkillIds(prev =>
-        prev.includes(dsId)
-          ? prev.filter(id => id !== dsId)
-          : [...prev, dsId]
-      )
+      setSelectedSkillIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id])
     } else {
-      setSelectedDatasetIds(prev =>
-        prev.includes(dsId)
-          ? prev.filter(id => id !== dsId)
-          : [...prev, dsId]
-      )
+      setSelectedDatasetIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id])
     }
+    setSaveSuccess(false)
   }
 
   const handleSelectAll = (type) => {
     if (type === 'datasets') {
-      if (selectedDatasetIds.length === datasets.length) {
-        setSelectedDatasetIds([])
-      } else {
-        setSelectedDatasetIds(datasets.map(ds => ds.id))
-      }
+      const ids = datasets.map(ds => ds.id)
+      setSelectedDatasetIds(prev => prev.length === ids.length ? [] : ids)
     } else {
-      if (selectedSkillIds.length === skills.length) {
-        setSelectedSkillIds([])
-      } else {
-        setSelectedSkillIds(skills.map(sk => sk.name || sk.tool_code || sk.tool_name))
-      }
+      const ids = skills.map(sk => sk.name || sk.tool_code || sk.tool_name || '')
+      setSelectedSkillIds(prev => prev.length === ids.length ? [] : ids)
     }
+    setSaveSuccess(false)
   }
 
   const handleSave = async () => {
     if (!selectedUser) return
     setProcessing(true)
+    setSaveSuccess(false)
     try {
       await syncPermissions(selectedUser, selectedDatasetIds)
       await syncSkillPermissions(selectedUser, selectedSkillIds)
-      alert('权限已保存')
+      setSaveSuccess(true)
+      setTimeout(() => setSaveSuccess(false), 3000)
     } catch (e) {
       alert('保存失败: ' + e.message)
     } finally {
@@ -2280,205 +2306,222 @@ function PermissionManager() {
     }
   }
 
-  const renderDatasetList = () => (
-    <>
-      <div className="flex justify-between items-center mb-4 pb-4 border-b">
-        <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-          <Database className="text-blue-500" size={20} />
-          选择知识库
-        </h3>
-        <div className="flex gap-3">
-          <button
-            onClick={() => handleSelectAll('datasets')}
-            className="text-sm text-blue-600 hover:underline"
-          >
-            {selectedDatasetIds.length === datasets.length ? '取消全选' : '全选'}
-          </button>
-          <span className="text-sm text-slate-400">
-            已选: {selectedDatasetIds.length}
-          </span>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto space-y-2 pr-2">
-        {loading ? (
-          <div className="flex justify-center py-8"><Loader2 className="animate-spin text-slate-400" /></div>
-        ) : datasets.map(ds => (
-          <label
-            key={ds.id}
-            className={cn(
-              "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
-              selectedDatasetIds.includes(ds.id)
-                ? "bg-blue-50 border-blue-200"
-                : "hover:bg-slate-50 border-slate-100"
-            )}
-          >
-            <div className={cn(
-              "w-5 h-5 rounded border flex items-center justify-center transition-colors",
-              selectedDatasetIds.includes(ds.id)
-                ? "bg-blue-500 border-blue-500 text-white"
-                : "bg-white border-slate-300"
-            )}>
-              {selectedDatasetIds.includes(ds.id) && <CheckSquare size={14} />}
-            </div>
-            <input
-              type="checkbox"
-              className="hidden"
-              checked={selectedDatasetIds.includes(ds.id)}
-              onChange={() => handleCheckboxChange(ds.id)}
-            />
-            <div className="flex-1 min-w-0">
-              <div className="font-medium text-slate-700 truncate">{ds.name}</div>
-              <div className="text-xs text-slate-400 font-mono">{ds.id.slice(0, 8)}</div>
-            </div>
-          </label>
-        ))}
-        {datasets.length === 0 && (
-          <div className="text-center py-12 text-slate-400">
-            暂无知识库，请先创建
-          </div>
-        )}
-      </div>
-    </>
-  )
-
-  const renderSkillList = () => (
-    <>
-      <div className="flex justify-between items-center mb-4 pb-4 border-b">
-        <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-          <Layers className="text-purple-500" size={20} />
-          选择技能
-        </h3>
-        <div className="flex gap-3">
-          <button
-            onClick={() => handleSelectAll('skills')}
-            className="text-sm text-purple-600 hover:underline"
-          >
-            {selectedSkillIds.length === skills.length ? '取消全选' : '全选'}
-          </button>
-          <span className="text-sm text-slate-400">
-            已选: {selectedSkillIds.length}
-          </span>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto space-y-2 pr-2">
-        {loading ? (
-          <div className="flex justify-center py-8"><Loader2 className="animate-spin text-slate-400" /></div>
-        ) : skills.map(sk => {
-          const skillId = sk.name || sk.tool_code || sk.tool_name || ''
-          return (
-            <label
-              key={skillId}
-              className={cn(
-                "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
-                selectedSkillIds.includes(skillId)
-                  ? "bg-purple-50 border-purple-200"
-                  : "hover:bg-slate-50 border-slate-100"
-              )}
-            >
-              <div className={cn(
-                "w-5 h-5 rounded border flex items-center justify-center transition-colors",
-                selectedSkillIds.includes(skillId)
-                  ? "bg-purple-500 border-purple-500 text-white"
-                  : "bg-white border-slate-300"
-              )}>
-                {selectedSkillIds.includes(skillId) && <CheckSquare size={14} />}
-              </div>
-              <input
-                type="checkbox"
-                className="hidden"
-                checked={selectedSkillIds.includes(skillId)}
-                onChange={() => handleCheckboxChange(skillId, true)}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-slate-700 truncate">{sk.displayName || skillId}</div>
-                <div className="text-xs text-slate-400 font-mono">{skillId}</div>
-              </div>
-            </label>
-          )
-        })}
-        {skills.length === 0 && (
-          <div className="text-center py-12 text-slate-400">
-            暂无可用技能
-          </div>
-        )}
-      </div>
-    </>
-  )
+  const selectedUserInfo = users.find(u => u.username === selectedUser)
+  const totalDatasets = datasets.length
+  const selectedDsCount = selectedDatasetIds.length
+  const totalSkills = skills.length
+  const selectedSkCount = selectedSkillIds.length
 
   return (
-    <div className="p-8 max-w-5xl mx-auto h-full overflow-y-auto">
-      <h2 className="text-2xl font-bold text-slate-800 mb-6">权限分配</h2>
-
-      {/* Tab switcher */}
-      <div className="flex gap-2 mb-6 border-b">
-        <button
-          onClick={() => setActiveTab('datasets')}
-          className={cn(
-            "px-4 py-2 font-medium border-b-2 transition-colors",
-            activeTab === 'datasets'
-              ? "border-blue-500 text-blue-600"
-              : "border-transparent text-slate-500 hover:text-slate-700"
+    <div className="h-full overflow-hidden flex flex-col" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">
+              权限分配
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">为用户分配知识库和技能访问权限</p>
+          </div>
+          {selectedUser && (
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              当前编辑: <span className="font-medium text-gray-900">{selectedUser}</span>
+            </div>
           )}
-        >
-          <Database size={16} className="inline mr-1" />
-          知识库权限
-        </button>
-        <button
-          onClick={() => setActiveTab('skills')}
-          className={cn(
-            "px-4 py-2 font-medium border-b-2 transition-colors",
-            activeTab === 'skills'
-              ? "border-purple-500 text-purple-600"
-              : "border-transparent text-slate-500 hover:text-slate-700"
-          )}
-        >
-          <Layers size={16} className="inline mr-1" />
-          技能权限
-        </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* User Selection */}
-        <div className="bg-white p-6 rounded-xl border shadow-sm h-fit">
-          <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <Users className="text-blue-500" size={20} />
-            选择用户
-          </h3>
-          <div className="space-y-2">
-            {users.map(u => (
-              <button
-                key={u.username}
-                onClick={() => setSelectedUser(u.username)}
-                className={cn(
-                  "w-full px-4 py-3 rounded-lg border text-left transition-all flex items-center justify-between",
-                  selectedUser === u.username
-                    ? "bg-blue-50 border-blue-500 text-blue-700 shadow-sm"
-                    : "hover:bg-slate-50 border-slate-200 text-slate-600"
-                )}
-              >
-                <span className="font-medium">{u.username}</span>
-                {selectedUser === u.username && <CheckSquare size={18} />}
-              </button>
-            ))}
+      <div className="flex-1 overflow-hidden flex">
+        {/* Left: User List */}
+        <div className="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
+          <div className="p-4 border-b border-gray-100">
+            <h3 className="text-sm font-medium text-gray-500">
+              用户列表 ({users.length})
+            </h3>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2">
+            {users.map(u => {
+              const isSelected = selectedUser === u.username
+              return (
+                <button
+                  key={u.username}
+                  onClick={() => setSelectedUser(u.username)}
+                  className={cn(
+                    "w-full text-left p-3 rounded-lg transition-all mb-1",
+                    isSelected
+                      ? "bg-gray-100 border border-gray-300"
+                      : "hover:bg-gray-50 border border-transparent"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium",
+                      isSelected ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-600"
+                    )}>
+                      {u.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className={cn("text-sm font-medium truncate", isSelected ? "text-gray-900" : "text-gray-800")}>
+                        {u.username}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {u.role === 'super_admin' ? '超级管理员' : u.role === 'admin' ? '管理员' : '普通用户'}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
           </div>
         </div>
 
-        {/* Dataset/Skill Selection */}
-        <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm flex flex-col h-[600px]">
-          {activeTab === 'datasets' ? renderDatasetList() : renderSkillList()}
+        {/* Right: Permission Panel */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {!selectedUser ? (
+            <div className="h-full flex items-center justify-center text-gray-400">
+              <p>请从左侧选择一个用户</p>
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto space-y-6">
+              {/* Stats */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-white rounded-xl border border-gray-200 p-5">
+                  <div className="text-sm text-gray-500">知识库权限</div>
+                  <div className="text-2xl font-semibold text-gray-900 mt-1">{selectedDsCount} <span className="text-base text-gray-400">/ {totalDatasets}</span></div>
+                </div>
+                <div className="bg-white rounded-xl border border-gray-200 p-5">
+                  <div className="text-sm text-gray-500">技能权限</div>
+                  <div className="text-2xl font-semibold text-gray-900 mt-1">{selectedSkCount} <span className="text-base text-gray-400">/ {totalSkills}</span></div>
+                </div>
+              </div>
 
-          <div className="pt-4 mt-4 border-t flex justify-end">
-            <button
-              onClick={handleSave}
-              disabled={processing || !selectedUser}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
-            >
-              {processing && <Loader2 size={16} className="animate-spin" />}
-              保存权限
-            </button>
-          </div>
+              {/* Datasets Section */}
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-900">知识库权限</h3>
+                  <button
+                    onClick={() => handleSelectAll('datasets')}
+                    className="text-sm text-gray-600 hover:text-gray-900"
+                  >
+                    {selectedDsCount === totalDatasets && totalDatasets > 0 ? '取消全选' : '全选'}
+                  </button>
+                </div>
+                <div className="p-4 max-h-64 overflow-y-auto">
+                  {loading ? (
+                    <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-400" /></div>
+                  ) : totalDatasets === 0 ? (
+                    <div className="text-center py-8 text-gray-400 text-sm">暂无知识库</div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {datasets.map(ds => {
+                        const isSelected = selectedDatasetIds.includes(ds.id)
+                        return (
+                          <label
+                            key={ds.id}
+                            className={cn(
+                              "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
+                              isSelected
+                                ? "bg-gray-50 border-gray-300"
+                                : "hover:bg-gray-50 border-gray-200"
+                            )}
+                          >
+                            <div className={cn(
+                              "w-4 h-4 rounded border flex items-center justify-center flex-shrink-0",
+                              isSelected ? "bg-gray-900 border-gray-900" : "border-gray-300"
+                            )}>
+                              {isSelected && <CheckSquare size={10} className="text-white" />}
+                            </div>
+                            <input
+                              type="checkbox"
+                              className="hidden"
+                              checked={isSelected}
+                              onChange={() => handleCheckboxChange(ds.id)}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium text-gray-800 truncate">{ds.name}</div>
+                            </div>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Skills Section */}
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-900">技能权限</h3>
+                  <button
+                    onClick={() => handleSelectAll('skills')}
+                    className="text-sm text-gray-600 hover:text-gray-900"
+                  >
+                    {selectedSkCount === totalSkills && totalSkills > 0 ? '取消全选' : '全选'}
+                  </button>
+                </div>
+                <div className="p-4 max-h-64 overflow-y-auto">
+                  {loading ? (
+                    <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-400" /></div>
+                  ) : totalSkills === 0 ? (
+                    <div className="text-center py-8 text-gray-400 text-sm">暂无可用技能</div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {skills.map(sk => {
+                        const skillId = sk.name || sk.tool_code || sk.tool_name || ''
+                        const isSelected = selectedSkillIds.includes(skillId)
+                        return (
+                          <label
+                            key={skillId}
+                            className={cn(
+                              "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
+                              isSelected
+                                ? "bg-gray-50 border-gray-300"
+                                : "hover:bg-gray-50 border-gray-200"
+                            )}
+                          >
+                            <div className={cn(
+                              "w-4 h-4 rounded border flex items-center justify-center flex-shrink-0",
+                              isSelected ? "bg-gray-900 border-gray-900" : "border-gray-300"
+                            )}>
+                              {isSelected && <CheckSquare size={10} className="text-white" />}
+                            </div>
+                            <input
+                              type="checkbox"
+                              className="hidden"
+                              checked={isSelected}
+                              onChange={() => handleCheckboxChange(skillId, true)}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium text-gray-800 truncate">{sk.displayName || skillId}</div>
+                            </div>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Save Button */}
+              <div className="flex justify-end items-center gap-4 pt-2">
+                {saveSuccess && (
+                  <div className="text-sm text-green-600">保存成功</div>
+                )}
+                <button
+                  onClick={handleSave}
+                  disabled={processing}
+                  className={cn(
+                    "px-6 py-2.5 rounded-lg text-sm font-medium transition-all",
+                    processing
+                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                      : "bg-gray-900 text-white hover:bg-gray-800"
+                  )}
+                >
+                  {processing ? '保存中...' : '保存权限'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -2642,147 +2685,199 @@ function UserManagement({ currentRole, currentUserId }) {
   }
 
   return (
-    <div className="p-8 max-w-6xl mx-auto h-full overflow-y-auto">
-      <h2 className="text-2xl font-bold text-slate-800 mb-6">用户管理</h2>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="bg-white p-6 rounded-xl border shadow-sm h-fit">
-          <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-            <Plus className="text-blue-500" size={20} />
-            创建用户
-          </h3>
-          <div className="space-y-3">
-            <input
-              value={createForm.username}
-              onChange={(e) => setCreateForm(prev => ({ ...prev, username: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="新用户名"
-            />
-            <input
-              type="password"
-              value={createForm.password}
-              onChange={(e) => setCreateForm(prev => ({ ...prev, password: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="新用户密码"
-            />
-            <select
-              value={createForm.role}
-              onChange={(e) => setCreateForm(prev => ({ ...prev, role: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-            >
-              <option value="user">普通用户</option>
-              {canCreateAdmin && <option value="admin">普通管理员</option>}
-            </select>
-            {canCreateAdmin && createForm.role === 'user' && (
-              <input
-                value={createForm.managerUserId}
-                onChange={(e) => setCreateForm(prev => ({ ...prev, managerUserId: e.target.value }))}
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="直属管理员ID（必填）"
-              />
-            )}
-            <button
-              onClick={handleCreateUser}
-              disabled={createLoading}
-              className="w-full px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {createLoading && <Loader2 size={16} className="animate-spin" />}
-              创建用户
-            </button>
+    <div className="h-full overflow-y-auto" style={{ background: '#f5f5f7' }}>
+      {/* Header */}
+      <div className="bg-white border-b px-6 py-4">
+        <div className="flex items-center justify-between max-w-6xl mx-auto">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+              用户管理
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">管理用户账号和权限</p>
           </div>
+          <button
+            onClick={loadUsers}
+            className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 flex items-center gap-2 rounded-lg hover:bg-gray-100 transition-colors"
+          >
+            <RefreshCw size={16} />
+            刷新
+          </button>
         </div>
-        <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-              <Users className="text-blue-500" size={20} />
-              用户列表
-            </h3>
-            <button onClick={loadUsers} className="text-sm text-blue-600 hover:underline">刷新</button>
-          </div>
-          {loading ? (
-            <div className="py-8 flex justify-center"><Loader2 className="animate-spin text-slate-400" /></div>
-          ) : (
-            <div className="space-y-2">
-              {users.map((u) => (
-                <div key={u.id || u.username}>
-                  <div className="border rounded-lg px-4 py-3 flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-medium text-slate-800">{u.username}</div>
-                      <div className="text-xs text-slate-500">
-                        ID: {u.id} | 角色: {u.role} | 直属管理员ID: {u.managerUserId ?? '-'}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {canEditUser(u) && (
-                        <button
-                          onClick={() => openEdit(u)}
-                          disabled={actionLoadingId === u.id}
-                          className="px-3 py-1.5 rounded border border-blue-300 text-blue-600 hover:bg-blue-50 text-xs disabled:opacity-50"
-                        >
-                          修改账号
-                        </button>
-                      )}
-                      {isSuperAdminRole(currentRole) && u.role === 'user' && (
-                        <button
-                          onClick={() => handlePromote(u)}
-                          disabled={actionLoadingId === u.id}
-                          className="px-3 py-1.5 rounded border border-emerald-300 text-emerald-600 hover:bg-emerald-50 text-xs disabled:opacity-50"
-                        >
-                          升级为管理员
-                        </button>
-                      )}
-                      {canDeleteUser(u) && (
-                        <button
-                          onClick={() => handleDeleteUser(u)}
-                          disabled={actionLoadingId === u.id}
-                          className="px-3 py-1.5 rounded border border-red-300 text-red-600 hover:bg-red-50 text-xs disabled:opacity-50"
-                        >
-                          删除
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {editingUserId === u.id && (
-                    <div className="mt-2 p-3 border rounded-lg bg-slate-50">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                        <input
-                          value={editForm.username}
-                          onChange={(e) => setEditForm(prev => ({ ...prev, username: e.target.value }))}
-                          className="w-full px-3 py-2 rounded border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          placeholder="新用户名（可改）"
-                        />
-                        <input
-                          type="password"
-                          value={editForm.password}
-                          onChange={(e) => setEditForm(prev => ({ ...prev, password: e.target.value }))}
-                          className="w-full px-3 py-2 rounded border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          placeholder="新密码（不改可留空）"
-                        />
-                      </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <button
-                          onClick={() => handleSaveEdit(u)}
-                          disabled={actionLoadingId === u.id}
-                          className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
-                        >
-                          保存修改
-                        </button>
-                        <button
-                          onClick={() => {
-                            setEditingUserId(null)
-                            setEditForm({ username: '', password: '' })
-                          }}
-                          className="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-              {users.length === 0 && <div className="text-center py-8 text-slate-400">暂无可管理用户</div>}
+      </div>
+
+      <div className="max-w-6xl mx-auto px-6 py-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Create User Panel */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+                <Plus size={18} className="text-gray-400" />
+                创建用户
+              </h3>
             </div>
-          )}
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">用户名</label>
+                <input
+                  value={createForm.username}
+                  onChange={(e) => setCreateForm(prev => ({ ...prev, username: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400 transition-shadow"
+                  placeholder="输入用户名"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">密码</label>
+                <input
+                  type="password"
+                  value={createForm.password}
+                  onChange={(e) => setCreateForm(prev => ({ ...prev, password: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400 transition-shadow"
+                  placeholder="输入密码"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">角色</label>
+                <select
+                  value={createForm.role}
+                  onChange={(e) => setCreateForm(prev => ({ ...prev, role: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400 bg-white transition-shadow"
+                >
+                  <option value="user">普通用户</option>
+                  {canCreateAdmin && <option value="admin">普通管理员</option>}
+                </select>
+              </div>
+              {canCreateAdmin && createForm.role === 'user' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">直属管理员</label>
+                  <input
+                    value={createForm.managerUserId}
+                    onChange={(e) => setCreateForm(prev => ({ ...prev, managerUserId: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400 transition-shadow"
+                    placeholder="管理员ID"
+                  />
+                </div>
+              )}
+              <button
+                onClick={handleCreateUser}
+                disabled={createLoading}
+                className="w-full px-4 py-2.5 rounded-lg text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
+              >
+                {createLoading && <Loader2 size={16} className="animate-spin" />}
+                创建用户
+              </button>
+            </div>
+          </div>
+
+          {/* User List */}
+          <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+                <Users size={18} className="text-gray-400" />
+                用户列表
+                <span className="ml-1 text-sm font-normal text-gray-400">({users.length})</span>
+              </h3>
+            </div>
+            <div className="p-2">
+              {loading ? (
+                <div className="py-12 flex justify-center"><Loader2 className="animate-spin text-gray-400" /></div>
+              ) : users.length === 0 ? (
+                <div className="py-12 text-center text-gray-400 text-sm">暂无可管理用户</div>
+              ) : (
+                <div className="divide-y divide-gray-100">
+                  {users.map((u) => (
+                    <div key={u.id || u.username} className="px-4 py-4 hover:bg-gray-50 transition-colors">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 font-medium text-sm">
+                            {u.username.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">{u.username}</div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              ID: {u.id} · {u.role === 'super_admin' ? '超级管理员' : u.role === 'admin' ? '管理员' : '普通用户'}
+                              {u.managerUserId && ` · 直属管理员: ${u.managerUserId}`}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {canEditUser(u) && (
+                            <button
+                              onClick={() => openEdit(u)}
+                              disabled={actionLoadingId === u.id}
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-colors"
+                            >
+                              修改
+                            </button>
+                          )}
+                          {isSuperAdminRole(currentRole) && u.role === 'user' && (
+                            <button
+                              onClick={() => handlePromote(u)}
+                              disabled={actionLoadingId === u.id}
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-colors"
+                            >
+                              升级
+                            </button>
+                          )}
+                          {canDeleteUser(u) && (
+                            <button
+                              onClick={() => handleDeleteUser(u)}
+                              disabled={actionLoadingId === u.id}
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                            >
+                              删除
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {editingUserId === u.id && (
+                        <div className="mt-4 p-4 rounded-lg bg-gray-50 border border-gray-200">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 mb-1">用户名</label>
+                              <input
+                                value={editForm.username}
+                                onChange={(e) => setEditForm(prev => ({ ...prev, username: e.target.value }))}
+                                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 transition-shadow"
+                                placeholder="新用户名"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 mb-1">密码</label>
+                              <input
+                                type="password"
+                                value={editForm.password}
+                                onChange={(e) => setEditForm(prev => ({ ...prev, password: e.target.value }))}
+                                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 transition-shadow"
+                                placeholder="留空则不修改"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-3 flex items-center gap-2">
+                            <button
+                              onClick={() => handleSaveEdit(u)}
+                              disabled={actionLoadingId === u.id}
+                              className="px-4 py-1.5 rounded-lg text-xs font-medium text-white bg-gray-900 hover:bg-gray-800 disabled:opacity-50 transition-colors"
+                            >
+                              保存
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingUserId(null)
+                                setEditForm({ username: '', password: '' })
+                              }}
+                              className="px-4 py-1.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-200 transition-colors"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -3899,9 +3994,9 @@ function SuperAdminOverview({ role }) {
   const [admins, setAdmins] = useState([])
   const [users, setUsers] = useState([])
   const [generatedAt, setGeneratedAt] = useState('')
-  const [expandedDatasets, setExpandedDatasets] = useState({})
-  const [expandedConversations, setExpandedConversations] = useState({})
-  const [expandedConversationRecords, setExpandedConversationRecords] = useState({})
+  const [selectedUserId, setSelectedUserId] = useState(null)
+  const [userConversations, setUserConversations] = useState([])
+  const [convLoading, setConvLoading] = useState(false)
 
   const loadOverview = async () => {
     setLoading(true)
@@ -3921,9 +4016,21 @@ function SuperAdminOverview({ role }) {
     }
   }
 
-  useEffect(() => {
-    loadOverview()
-  }, [])
+  useEffect(() => { loadOverview() }, [])
+
+  const loadUserConversations = async (userId) => {
+    setSelectedUserId(userId)
+    setConvLoading(true)
+    try {
+      const data = await fetchUserConversations(userId)
+      setUserConversations(Array.isArray(data?.items) ? data.items : [])
+    } catch (e) {
+      console.error('Failed to load conversations:', e)
+      setUserConversations([])
+    } finally {
+      setConvLoading(false)
+    }
+  }
 
   const formatTime = (value) => {
     if (!value) return '-'
@@ -3932,209 +4039,186 @@ function SuperAdminOverview({ role }) {
     return dt.toLocaleString()
   }
 
-  const toggleDataset = (adminKey, datasetId) => {
-    const key = `${adminKey}-${datasetId}`
-    setExpandedDatasets(prev => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const toggleConversation = (adminKey, conversationId) => {
-    const key = `${adminKey}-${conversationId}`
-    setExpandedConversations(prev => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const toggleConversationRecords = (adminKey, conversationId) => {
-    const key = `${adminKey}-${conversationId}`
-    setExpandedConversationRecords(prev => ({ ...prev, [key]: !prev[key] }))
+  const formatDuration = (ms) => {
+    if (!ms) return '-'
+    if (ms < 1000) return `${ms}ms`
+    return `${(ms / 1000).toFixed(1)}s`
   }
 
   const isSuper = isSuperAdminRole(role)
   const pageTitle = isSuper ? '超级管理员总览' : '管理员总览'
-  const pageDesc = isSuper
-    ? '展示管理员与普通用户的知识库、授权时间、会话与对话记录明细'
-    : '仅展示你管辖的普通用户知识库、授权时间、会话与对话记录明细'
 
-  // 统一卡片渲染，避免管理员/普通用户两套重复 JSX。
-  const renderItems = (items, defaultRole) => (
-    items.map((subject) => {
-      const subjectId = subject.userId || subject.adminUserId || subject.username || subject.adminUsername
-      const subjectName = subject.username || subject.adminUsername || '-'
-      const subjectRole = subject.role || defaultRole
-      return (
-        <div key={subjectId} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b bg-slate-50">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Users size={18} className="text-indigo-600" />
-                <div className="font-semibold text-slate-800">{subjectName}</div>
-                <span className="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">{subjectRole}</span>
-              </div>
-              <div className="text-xs text-slate-600">
-                知识库 {subject.ownedDatasetCount || 0} · 授权记录 {subject.totalGrantedPermissionCount || 0} · 总会话 {subject.totalConversations || 0} · 总消息 {subject.totalMessages || 0} · 近7天会话 {subject.conversationsLast7Days || 0} · 近30天会话 {subject.conversationsLast30Days || 0}
-              </div>
-            </div>
-          </div>
-          <div className="p-4 space-y-3">
-            {(!Array.isArray(subject.ownedDatasets) || subject.ownedDatasets.length === 0) && (
-              <div className="text-sm text-slate-400 px-1">该用户暂无登记的知识库。</div>
-            )}
-            {Array.isArray(subject.ownedDatasets) && subject.ownedDatasets.map((dataset) => (
-              <div key={`${subjectId}-${dataset.datasetId}`} className="rounded-lg border border-slate-200">
-                <div className="px-4 py-3 bg-slate-50 border-b flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-slate-800 font-medium">
-                    <Database size={16} className="text-blue-600" />
-                    <span>{dataset.datasetName || dataset.datasetId}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="text-xs text-slate-600">
-                      文档数 {dataset.documentCount ?? 0}
-                    </div>
-                    <button
-                      onClick={() => toggleDataset(subjectId, dataset.datasetId)}
-                      className="text-xs text-blue-600 hover:text-blue-800"
-                    >
-                      {expandedDatasets[`${subjectId}-${dataset.datasetId}`] ? '收起' : '展开'}
-                    </button>
-                  </div>
-                </div>
-                {expandedDatasets[`${subjectId}-${dataset.datasetId}`] && (
-                  <div className="px-4 py-3 space-y-2">
-                    <div className="text-xs text-slate-600">
-                      知识库创建时间：{formatTime(dataset.datasetCreatedAt)}
-                    </div>
-                    <div className="text-xs text-slate-500">已授权用户</div>
-                    {(!Array.isArray(dataset.grantedUsers) || dataset.grantedUsers.length === 0) ? (
-                      <div className="text-sm text-slate-400">暂无授权用户</div>
-                    ) : (
-                      <div className="space-y-1">
-                        {dataset.grantedUsers.map((u) => (
-                          <div key={`${dataset.datasetId}-${u.userId}`} className="text-xs text-slate-700">
-                            {u.username} ({u.role}) · 授权时间 {formatTime(u.authorizedAt)}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-            <div className="rounded-lg border border-slate-200">
-              <div className="px-4 py-3 bg-slate-50 border-b text-sm font-medium text-slate-800">
-                用户会话总览
-              </div>
-              <div className="px-4 py-3 space-y-2">
-                {(!Array.isArray(subject.conversations) || subject.conversations.length === 0) ? (
-                  <div className="text-sm text-slate-400">暂无会话记录</div>
-                ) : (
-                  subject.conversations.map((conversation) => {
-                    const conversationKey = `${subjectId}-${conversation.conversationId}`
-                    const expanded = !!expandedConversations[conversationKey]
-                    const recordExpanded = !!expandedConversationRecords[conversationKey]
-                    return (
-                      <div key={conversationKey} className="rounded border border-slate-200">
-                        <div className="px-3 py-2 flex items-center justify-between bg-white">
-                          <div className="text-xs text-slate-800">
-                            {conversation.title || conversation.conversationId} · 消息 {conversation.messageCount || 0}
-                          </div>
-                          <button
-                            onClick={() => toggleConversation(subjectId, conversation.conversationId)}
-                            className="text-xs text-blue-600 hover:text-blue-800"
-                          >
-                            {expanded ? '收起' : '展开'}
-                          </button>
-                        </div>
-                        {expanded && (
-                          <div className="px-3 py-2 border-t bg-slate-50 space-y-2">
-                            <div className="text-xs text-slate-600">
-                              创建时间：{formatTime(conversation.createdAt)} · 更新时间：{formatTime(conversation.updatedAt)}
-                            </div>
-                            <button
-                              onClick={() => toggleConversationRecords(subjectId, conversation.conversationId)}
-                              className="text-xs text-indigo-600 hover:text-indigo-800"
-                            >
-                              {recordExpanded ? '收起对话细节' : '展开对话细节'}
-                            </button>
-                            {recordExpanded && (
-                              <div className="space-y-1">
-                                {(!Array.isArray(conversation.records) || conversation.records.length === 0) ? (
-                                  <div className="text-xs text-slate-400">暂无对话明细</div>
-                                ) : (
-                                  conversation.records.map((record) => (
-                                    <div key={`${conversationKey}-${record.id}`} className="text-xs text-slate-700 bg-white border border-slate-200 rounded px-2 py-1.5">
-                                      [{record.role}] {record.content} · {formatTime(record.recordTime)}
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    })
-  )
+  const allUsers = [...admins, ...users]
+  const totalUsers = allUsers.length
+  const totalConversations = allUsers.reduce((sum, u) => sum + (u.totalConversations || 0), 0)
+  const totalMessages = allUsers.reduce((sum, u) => sum + (u.totalMessages || 0), 0)
+  const avgConversationsPerUser = totalUsers > 0 ? (totalConversations / totalUsers).toFixed(1) : 0
+  const avgMessagesPerUser = totalUsers > 0 ? (totalMessages / totalUsers).toFixed(1) : 0
+  const conversations7d = allUsers.reduce((sum, u) => sum + (u.conversationsLast7Days || 0), 0)
+  const conversations30d = allUsers.reduce((sum, u) => sum + (u.conversationsLast30Days || 0), 0)
+
+  const selectedUser = allUsers.find(u => String(u.userId) === String(selectedUserId))
 
   return (
-    <div className="p-8 h-full overflow-y-auto">
-      <div className="max-w-[1400px] mx-auto space-y-6">
+    <div className="h-full overflow-hidden flex flex-col" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-2xl font-bold text-slate-800">{pageTitle}</h2>
-            <p className="text-sm text-slate-500 mt-1">
-              {pageDesc}
-            </p>
+            <h2 className="text-xl font-semibold text-gray-900">
+              {pageTitle}
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">用户活跃度和会话统计概览</p>
           </div>
           <button
             onClick={loadOverview}
             disabled={loading}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2"
           >
-            <RefreshCw size={16} />
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             刷新
           </button>
         </div>
+      </div>
 
-        <div className="bg-white rounded-xl border shadow-sm px-4 py-3 text-sm text-slate-600">
-          最近生成时间：{formatTime(generatedAt)}
+      <div className="flex-1 overflow-hidden flex">
+        {/* Left Panel: Stats & User List */}
+        <div className="w-96 flex-shrink-0 border-r border-gray-200 bg-white overflow-y-auto">
+          {/* Stats */}
+          <div className="p-5 space-y-3 border-b border-gray-100">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-gray-50 rounded-lg p-3">
+                <div className="text-2xl font-semibold text-gray-900">{totalUsers}</div>
+                <div className="text-xs text-gray-500 mt-0.5">总用户</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <div className="text-2xl font-semibold text-gray-900">{totalConversations}</div>
+                <div className="text-xs text-gray-500 mt-0.5">总会话</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <div className="text-2xl font-semibold text-gray-900">{totalMessages.toLocaleString()}</div>
+                <div className="text-xs text-gray-500 mt-0.5">总消息</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <div className="text-2xl font-semibold text-gray-900">{conversations30d}</div>
+                <div className="text-xs text-gray-500 mt-0.5">近30天</div>
+              </div>
+            </div>
+          </div>
+
+          {/* User List */}
+          <div className="p-4">
+            <h3 className="text-sm font-medium text-gray-500 mb-3">用户列表 ({allUsers.length})</h3>
+            <div className="space-y-2">
+              {allUsers.map((user, index) => (
+                <button
+                  key={user.userId || index}
+                  onClick={() => loadUserConversations(user.userId)}
+                  className={`w-full text-left p-3 rounded-lg border transition-all ${
+                    selectedUserId === user.userId
+                      ? 'border-gray-400 bg-gray-50'
+                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                      user.role === 'super_admin' ? 'bg-amber-100 text-amber-700' :
+                      user.role === 'admin' ? 'bg-blue-100 text-blue-700' :
+                      'bg-gray-100 text-gray-600'
+                    }`}>
+                      {user.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900 truncate">{user.username}</div>
+                      <div className="text-xs text-gray-500">
+                        {user.totalConversations || 0} 会话 · {user.totalMessages || 0} 消息
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
-
-        {loading && (
-          <div className="bg-white rounded-xl border shadow-sm px-4 py-10 text-slate-500 flex items-center justify-center gap-2">
-            <Loader2 size={16} className="animate-spin" />
-            加载中...
-          </div>
-        )}
-
-        {!loading && isSuper && (
-          <div className="space-y-3">
-            <div className="text-sm font-medium text-slate-700">管理员总览</div>
-            {admins.length === 0 ? (
-              <div className="bg-white rounded-xl border shadow-sm px-4 py-10 text-center text-slate-400">暂无管理员资产数据</div>
-            ) : renderItems(admins, 'admin')}
-          </div>
-        )}
-        {!loading && (
-          <div className="space-y-3">
-            <div className="text-sm font-medium text-slate-700">{isSuper ? '普通用户总览' : '我的管辖普通用户总览'}</div>
-            {users.length === 0 ? (
-              <div className="bg-white rounded-xl border shadow-sm px-4 py-10 text-center text-slate-400">
-                {isSuper ? '暂无普通用户资产数据' : '暂无你管辖的普通用户数据'}
+        {/* Right Panel: Detail View */}
+        <div className="flex-1 overflow-y-auto">
+          {!selectedUserId ? (
+            <div className="h-full flex items-center justify-center text-gray-400">
+              <div className="text-center">
+                <Users size={48} className="mx-auto mb-3 opacity-30" />
+                <p className="text-sm">从左侧选择一个用户查看详情</p>
               </div>
-            ) : renderItems(users, 'user')}
-          </div>
-        )}
+            </div>
+          ) : convLoading ? (
+            <div className="h-full flex items-center justify-center">
+              <Loader2 size={24} className="animate-spin text-gray-400" />
+            </div>
+          ) : (
+            <div className="p-6">
+              {/* User Stats */}
+              <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+                <div className="flex items-center gap-4 mb-4">
+                  <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-xl font-medium text-gray-600">
+                    {selectedUser?.username?.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">{selectedUser?.username}</h3>
+                    <p className="text-sm text-gray-500">
+                      {selectedUser?.role === 'super_admin' ? '超级管理员' : selectedUser?.role === 'admin' ? '管理员' : '普通用户'}
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 gap-4">
+                  <div className="text-center p-3 bg-gray-50 rounded-lg">
+                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.totalConversations || 0}</div>
+                    <div className="text-xs text-gray-500">总会话</div>
+                  </div>
+                  <div className="text-center p-3 bg-gray-50 rounded-lg">
+                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.totalMessages || 0}</div>
+                    <div className="text-xs text-gray-500">总消息</div>
+                  </div>
+                  <div className="text-center p-3 bg-gray-50 rounded-lg">
+                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.conversationsLast7Days || 0}</div>
+                    <div className="text-xs text-gray-500">近7天会话</div>
+                  </div>
+                  <div className="text-center p-3 bg-gray-50 rounded-lg">
+                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.conversationsLast30Days || 0}</div>
+                    <div className="text-xs text-gray-500">近30天会话</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Conversations List */}
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100">
+                  <h3 className="text-base font-semibold text-gray-900">会话历史 ({userConversations.length})</h3>
+                </div>
+                {userConversations.length === 0 ? (
+                  <div className="px-5 py-12 text-center text-gray-400 text-sm">暂无会话记录</div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
+                    {userConversations.map((conv) => (
+                      <div key={conv.id} className="px-5 py-4 hover:bg-gray-50">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">{conv.title || '未命名会话'}</div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {conv.messageCount || 0} 条消息 · 创建于 {formatTime(conv.createdAt)}
+                            </div>
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            {conv.lastMessageAt && `最后活动: ${formatTime(conv.lastMessageAt)}`}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

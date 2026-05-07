@@ -1092,6 +1092,49 @@ export function createServer(config: AppConfig) {
     return users.map((user: any) => formatUser(user))
   })
 
+  // GET /api/v1/admin/datasets - List all datasets from RagFlow
+  app.get('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    if (config.RAGFLOW_AUTHORIZATION) {
+      headers.Authorization = config.RAGFLOW_AUTHORIZATION
+    } else if (config.RAGFLOW_BEARER_TOKEN) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
+    } else if (config.RAGFLOW_API_KEY) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
+    }
+
+    try {
+      const resp = await fetch(`${base}/api/v1/datasets`, { headers })
+      if (!resp.ok) {
+        const errText = await resp.text()
+        return reply.code(resp.status).send({ message: `RagFlow error: ${errText.slice(0, 200)}` })
+      }
+      const data = await resp.json() as any
+      // Handle both array and object responses
+      const datasets = Array.isArray(data) ? data : (data?.data || data?.datasets || [])
+      return datasets.map((ds: any) => ({
+        id: String(ds.id),
+        name: ds.name || ds.id,
+        description: ds.description || '',
+        document_count: ds.document_count || 0,
+        created_at: ds.created_at,
+        updated_at: ds.updated_at,
+      }))
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to fetch datasets from RagFlow' })
+    }
+  })
+
   app.patch('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
