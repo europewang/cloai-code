@@ -753,7 +753,7 @@ async function fetchAvailableSkills() {
 }
 
 async function fetchDocuments(datasetId, page = 1, pageSize = 100) {
-  const res = await apiFetch(`/admin/datasets/${datasetId}/documents?page=${page}&page_size=${pageSize}&t=${Date.now()}`)
+  const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents?page=${page}&page_size=${pageSize}&t=${Date.now()}`)
   if (!res.ok) throw new Error('Failed to fetch documents')
   const json = await res.json()
   // Handle both array and object response (RAGFlow returns { data: { docs: [...] } })
@@ -767,7 +767,7 @@ async function uploadDocument(datasetId, file) {
   const formData = new FormData()
   formData.append('file', file)
   
-  const res = await apiFetch(`/admin/datasets/${datasetId}/documents`, {
+  const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents`, {
     method: 'POST',
     body: formData
   })
@@ -776,7 +776,7 @@ async function uploadDocument(datasetId, file) {
 }
 
 async function deleteDocuments(datasetId, ids) {
-  const res = await apiFetch(`/admin/datasets/${datasetId}/documents`, {
+  const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids })
@@ -786,7 +786,7 @@ async function deleteDocuments(datasetId, ids) {
 }
 
 async function runDocuments(datasetId, docIds) {
-  const res = await apiFetch(`/admin/datasets/${datasetId}/documents/run`, {
+  const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ doc_ids: docIds })
@@ -796,13 +796,13 @@ async function runDocuments(datasetId, docIds) {
 }
 
 async function getDocumentFile(datasetId, docId) {
-  const res = await apiFetch(`/admin/datasets/${datasetId}/documents/${docId}/file`)
+  const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents/${docId}/file`)
   if (!res.ok) throw new Error('Failed to fetch document file')
   return res.blob()
 }
 
 async function fetchChunks(datasetId, docId, page = 1, pageSize = 10000) {
-  const res = await apiFetch(`/admin/datasets/${datasetId}/documents/${docId}/chunks?page=${page}&page_size=${pageSize}`)
+  const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents/${docId}/chunks?page=${page}&page_size=${pageSize}`)
   if (!res.ok) throw new Error('Failed to fetch chunks')
   const json = await res.json()
   return json.data || []
@@ -1262,49 +1262,50 @@ function Sidebar({ role, username, activeTab, setActiveTab, onLogout }) {
   ])
 
   return (
-    <div className="w-64 bg-slate-900 text-white flex flex-col h-screen shrink-0">
-      <div className="p-6 border-b border-slate-800">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Layers className="text-blue-400" />
+    <div className="w-56 bg-white border-r border-gray-200 flex flex-col h-screen shrink-0" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+      <div className="p-5 border-b border-gray-100">
+        <h1 className="text-lg font-semibold text-gray-900">
           AI4KB
         </h1>
-        <p className="text-xs text-slate-500 mt-1">Local Knowledge Base</p>
+        <p className="text-xs text-gray-400 mt-0.5">智能知识库系统</p>
       </div>
       
-      <nav className="flex-1 p-4 space-y-2">
+      <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
         {menuItems.map((item) => (
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}
             className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors",
+              "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left",
               activeTab === item.id 
-                ? "bg-blue-600 text-white" 
-                : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                ? "bg-gray-100 text-gray-900 font-medium" 
+                : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
             )}
           >
-            <item.icon size={20} />
+            <item.icon size={18} className={activeTab === item.id ? "text-gray-700" : "text-gray-400"} />
             <span>{item.label}</span>
           </button>
         ))}
       </nav>
 
-      <div className="p-4 border-t border-slate-800">
-        <div className="flex items-center gap-3 px-4 py-2 mb-4">
+      <div className="p-3 border-t border-gray-100">
+        <div className="flex items-center gap-3 px-3 py-2 mb-2">
           <div className={cn(
-            "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold",
-            isAdminLikeRole(role) ? "bg-purple-500" : "bg-emerald-500"
+            "w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium",
+            isAdminLikeRole(role) ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-600"
           )}>
-            {isAdminLikeRole(role) ? 'AD' : 'US'}
+            {username?.charAt(0).toUpperCase() || 'U'}
           </div>
           <div className="overflow-hidden">
-            <p className="text-sm font-medium truncate">{username}</p>
-            <p className="text-xs text-slate-500 uppercase">{role}</p>
+            <p className="text-sm font-medium text-gray-900 truncate">{username}</p>
+            <p className="text-xs text-gray-400">
+              {role === 'super_admin' ? '超级管理员' : role === 'admin' ? '管理员' : '用户'}
+            </p>
           </div>
         </div>
         <button 
           onClick={onLogout}
-          className="w-full flex items-center gap-2 text-slate-400 hover:text-white px-4 py-2 text-sm transition-colors"
+          className="w-full flex items-center gap-2 text-gray-500 hover:text-gray-900 px-3 py-2 text-sm transition-colors rounded-lg hover:bg-gray-50"
         >
           <LogOut size={16} />
           退出登录

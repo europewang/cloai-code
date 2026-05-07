@@ -1135,6 +1135,311 @@ export function createServer(config: AppConfig) {
     }
   })
 
+  // GET /api/v1/admin/datasets/:id/documents - List documents in a dataset
+  app.get('/api/v1/admin/datasets/:id/documents', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id } = req.params as { id: string }
+    const { page = '1', page_size = '100' } = req.query as { page?: string, page_size?: string }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const headers: Record<string, string> = {}
+    if (config.RAGFLOW_AUTHORIZATION) {
+      headers.Authorization = config.RAGFLOW_AUTHORIZATION
+    } else if (config.RAGFLOW_BEARER_TOKEN) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
+    } else if (config.RAGFLOW_API_KEY) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
+    }
+
+    try {
+      const resp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/documents?page=${page}&page_size=${page_size}`, { headers })
+      if (!resp.ok) {
+        const errText = await resp.text()
+        return reply.code(resp.status).send({ message: `RagFlow error: ${errText.slice(0, 200)}` })
+      }
+      const data = await resp.json() as any
+      return data
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to fetch documents from RagFlow' })
+    }
+  })
+
+  // POST /api/v1/admin/datasets/:id/documents - Upload document to dataset
+  app.post('/api/v1/admin/datasets/:id/documents', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id } = req.params as { id: string }
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+
+    // Get the file from multipart
+    const data = await req.file()
+    if (!data) {
+      return reply.code(400).send({ message: 'No file uploaded' })
+    }
+
+    // Convert file to Buffer
+    const fileBuffer = await data.toBuffer()
+
+    // Build RagFlow headers
+    const ragHeaders: Record<string, string> = {}
+    if (config.RAGFLOW_AUTHORIZATION) {
+      ragHeaders.Authorization = config.RAGFLOW_AUTHORIZATION
+    } else if (config.RAGFLOW_BEARER_TOKEN) {
+      ragHeaders.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
+    } else if (config.RAGFLOW_API_KEY) {
+      ragHeaders.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
+    }
+
+    try {
+      // Forward the multipart request to RagFlow
+      // Build FormData for RagFlow
+      const ragFormData = new FormData()
+      const fileArrayBuffer = fileBuffer.buffer.slice(
+        fileBuffer.byteOffset,
+        fileBuffer.byteOffset + fileBuffer.byteLength
+      ) as ArrayBuffer
+      ragFormData.append('file', new Blob([fileArrayBuffer]), data.filename)
+
+      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/documents`, {
+        method: 'POST',
+        headers: ragHeaders,
+        body: ragFormData,
+      })
+      const result = await ragResp.json()
+      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+    } catch (err) {
+      req.log.error({ err }, 'Failed to upload document to RagFlow')
+      return reply.code(502).send({ message: 'Failed to upload document to RagFlow' })
+    }
+  })
+
+  // DELETE /api/v1/admin/datasets/:id/documents - Delete documents
+  app.delete('/api/v1/admin/datasets/:id/documents', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id } = req.params as { id: string }
+    const { ids } = req.body as { ids?: string[] }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    if (config.RAGFLOW_AUTHORIZATION) {
+      headers.Authorization = config.RAGFLOW_AUTHORIZATION
+    } else if (config.RAGFLOW_BEARER_TOKEN) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
+    } else if (config.RAGFLOW_API_KEY) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
+    }
+
+    try {
+      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/documents`, {
+        method: 'DELETE',
+        headers,
+        body: JSON.stringify({ ids }),
+      })
+      const result = await ragResp.json()
+      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to delete documents from RagFlow' })
+    }
+  })
+
+  // POST /api/v1/admin/datasets/:id/documents/run - Parse documents
+  app.post('/api/v1/admin/datasets/:id/documents/run', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id } = req.params as { id: string }
+    const { doc_ids } = req.body as { doc_ids?: string[] }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    if (config.RAGFLOW_AUTHORIZATION) {
+      headers.Authorization = config.RAGFLOW_AUTHORIZATION
+    } else if (config.RAGFLOW_BEARER_TOKEN) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_BEARER_TOKEN}`
+    } else if (config.RAGFLOW_API_KEY) {
+      headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
+    }
+
+    try {
+      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/documents/run`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ doc_ids }),
+      })
+      const result = await ragResp.json()
+      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to run documents in RagFlow' })
+    }
+  })
+
+  // GET /api/v1/admin/datasets/:id/documents/:docId/file - Get document file
+  app.get('/api/v1/admin/datasets/:id/documents/:docId/file', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { docId } = req.params as { id: string, docId: string }
+    if (!docId) {
+      return reply.code(400).send({ message: 'documentId is required' })
+    }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    try {
+      const resp = await fetch(`${base}/v1/document/get/${encodeURIComponent(docId)}`, {
+        method: 'GET',
+        headers: buildRagflowHeaders(''),
+      })
+      if (!resp.ok) {
+        const text = await resp.text()
+        return reply.code(resp.status).send({ message: text || `HTTP ${resp.status}` })
+      }
+      const contentType = resp.headers.get('content-type') || 'application/octet-stream'
+      const buf = Buffer.from(await resp.arrayBuffer())
+      reply.header('content-type', contentType)
+      reply.header('content-disposition', `inline; filename="${docId}"`)
+      return reply.send(buf)
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to fetch document from RagFlow' })
+    }
+  })
+
+  // GET /api/v1/admin/datasets/:id/documents/:docId/chunks - Get document chunks
+  app.get('/api/v1/admin/datasets/:id/documents/:docId/chunks', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id, docId } = req.params as { id: string, docId: string }
+    const { page = '1', page_size = '100' } = req.query as { page?: string, page_size?: string }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    try {
+      const resp = await fetch(`${base}/api/v1/documents/${encodeURIComponent(docId)}/chunks?page=${page}&page_size=${page_size}`, {
+        headers: buildRagflowHeaders(''),
+      })
+      if (!resp.ok) {
+        const text = await resp.text()
+        return reply.code(resp.status).send({ message: text || `HTTP ${resp.status}` })
+      }
+      return resp.json()
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to fetch chunks from RagFlow' })
+    }
+  })
+
+  // POST /api/v1/admin/datasets - Create a new dataset
+  app.post('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { name, description } = req.body as { name?: string, description?: string }
+    if (!name) {
+      return reply.code(400).send({ message: 'name is required' })
+    }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    try {
+      const ragResp = await fetch(`${base}/api/v1/datasets`, {
+        method: 'POST',
+        headers: { ...buildRagflowHeaders('application/json'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: description || '' }),
+      })
+      const result = await ragResp.json()
+      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to create dataset in RagFlow' })
+    }
+  })
+
+  // PUT /api/v1/admin/datasets/:id - Update a dataset
+  app.put('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id } = req.params as { id: string }
+    const { name, description } = req.body as { name?: string, description?: string }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    try {
+      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { ...buildRagflowHeaders('application/json'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: description || '' }),
+      })
+      const result = await ragResp.json()
+      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to update dataset in RagFlow' })
+    }
+  })
+
+  // DELETE /api/v1/admin/datasets/:id - Delete a dataset
+  app.delete('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const { id } = req.params as { id: string }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+    try {
+      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: buildRagflowHeaders(''),
+      })
+      if (!ragResp.ok && ragResp.status !== 404) {
+        const text = await ragResp.text()
+        return reply.code(ragResp.status).send({ message: text || `HTTP ${ragResp.status}` })
+      }
+      return { success: true }
+    } catch (err) {
+      return reply.code(502).send({ message: 'Failed to delete dataset from RagFlow' })
+    }
+  })
+
   app.patch('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
