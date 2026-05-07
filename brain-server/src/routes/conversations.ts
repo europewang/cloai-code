@@ -227,8 +227,9 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
     if (!operator) return
 
     const { id } = req.params as { id: string }
+    const body = req.body as Record<string, unknown>
     const parsed = sendMessageSchema.safeParse({
-      ...req.body,
+      ...body,
       conversationId: parseInt(id, 10),
     })
     if (!parsed.success) {

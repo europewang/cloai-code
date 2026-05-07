@@ -385,7 +385,7 @@ async function fetchSuperAdminOverview() {
     const statsRes = await fetchConversationStats()
     if (statsRes?.stats) {
       convStats = Object.fromEntries(
-        statsRes.stats.map((s: any) => [String(s.userId), s])
+        statsRes.stats.map((s) => [String(s.userId), s])
       )
     }
   } catch (e) {
