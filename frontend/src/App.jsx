@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import { Document, Page, pdfjs } from 'react-pdf'
+import mammoth from 'mammoth'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 
@@ -947,6 +948,8 @@ function DocumentViewer({ doc, datasetId, onClose }) {
   const [scale, setScale] = useState(1.0)
   const [pdfError, setPdfError] = useState(null)
   const [activeChunk, setActiveChunk] = useState(null)
+  const [docxContent, setDocxContent] = useState(null)
+  const [loadingDocx, setLoadingDocx] = useState(false)
 
   useEffect(() => {
     // Check status using 'run' or 'run_status'
@@ -970,6 +973,33 @@ function DocumentViewer({ doc, datasetId, onClose }) {
         .finally(() => setLoadingChunks(false))
     }
   }, [datasetId, doc.id, doc.run, doc.run_status])
+
+  // Load docx content
+  useEffect(() => {
+    const isDocx = doc.suffix === 'docx' || doc.name?.toLowerCase().endsWith('.docx')
+    if (isDocx && doc.url) {
+      setLoadingDocx(true)
+      fetch(doc.url)
+        .then(res => res.arrayBuffer())
+        .then(buffer => {
+          // Use mammoth.js to convert docx to HTML
+          if (typeof mammoth !== 'undefined') {
+            return mammoth.convertToHtml({ arrayBuffer: buffer })
+          }
+          return null
+        })
+        .then(result => {
+          if (result) {
+            setDocxContent(result.value)
+          }
+        })
+        .catch(err => {
+          console.error('Failed to load docx:', err)
+          setDocxContent(null)
+        })
+        .finally(() => setLoadingDocx(false))
+    }
+  }, [doc.id, doc.url, doc.suffix, doc.name])
 
   const onDocumentLoadSuccess = ({ numPages }) => {
     setNumPages(numPages)
@@ -1084,9 +1114,28 @@ function DocumentViewer({ doc, datasetId, onClose }) {
                         </div>
                     )}
                  </div>
-             ) : (
-                 <iframe src={doc.url} className="w-full h-full bg-white rounded-lg border p-4 font-mono whitespace-pre-wrap" />
-             )}
+             ) : doc.suffix === 'docx' || doc.name?.toLowerCase().endsWith('.docx') ? (
+                <div className="w-full h-full bg-white rounded-lg border overflow-auto p-6">
+                    {loadingDocx ? (
+                        <div className="flex items-center justify-center h-64">
+                            <Loader2 className="animate-spin mr-2" /> 加载文档中...
+                        </div>
+                    ) : docxContent ? (
+                        <div 
+                            className="prose prose-slate max-w-none"
+                            dangerouslySetInnerHTML={{ __html: docxContent }} 
+                        />
+                    ) : (
+                        <div className="flex flex-col items-center justify-center h-64 text-slate-500">
+                            <FileText size={48} className="mb-4 opacity-50" />
+                            <p>无法预览此文档</p>
+                            <p className="text-sm mt-2">文档内容已解析为 {chunks.length} 个切片，可在右侧查看</p>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <iframe src={doc.url} className="w-full h-full bg-white rounded-lg border" />
+            )}
            </div>
 
            {/* Right: Chunks & Search */}
@@ -1749,7 +1798,8 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
       setViewingDoc({ 
           ...doc, 
           url, 
-          type: doc.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'text' 
+          type: doc.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'text',
+          suffix: doc.name.split('.').pop().toLowerCase()
       })
     } catch (e) {
       alert('无法预览文件: ' + e.message)

@@ -29,6 +29,8 @@ const envSchema = z.object({
   RAGFLOW_API_KEY: z.string().optional(),
   RAGFLOW_BEARER_TOKEN: z.string().optional(),
   RAGFLOW_AUTHORIZATION: z.string().optional(),
+  RAGFLOW_USER: z.string().optional(),
+  RAGFLOW_PASSWORD: z.string().optional(),
   RAGFLOW_QUERY_PATH: z.string().default('/api/v1/chats_openai/{chatId}/chat/completions'),
   RAGFLOW_CHAT_ID: z.string().optional(),
   RAGFLOW_MODEL: z.string().default('deepseek-r1-distill-qwen-14b@Xinference'),

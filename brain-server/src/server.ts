@@ -1290,15 +1290,48 @@ export function createServer(config: AppConfig) {
     }
 
     try {
-      // RagFlow uses POST /v1/documents/run with doc_ids and run="1" to start parsing
+      // First try with API key authentication
       // Note: The correct prefix is /v1/ not /api/v1/ for document endpoints
-      const ragResp = await fetch(`${base}/v1/documents/run`, {
+      // Also uses singular /document/run not /documents/run
+      let ragResp = await fetch(`${base}/v1/document/run`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ doc_ids, run: '1' }),
       })
+
+      // If unauthorized, try to get a session cookie using configured credentials
+      if (ragResp.status === 401 || ragResp.status === 403) {
+        const ragUser = config.RAGFLOW_USER || 'admin@ragflow.io'
+        const ragPass = config.RAGFLOW_PASSWORD || 'admin'
+        const loginResp = await fetch(`${base}/v1/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: ragUser, password: ragPass }),
+        })
+        if (loginResp.ok) {
+          const loginData = await loginResp.json()
+          const cookies = loginResp.headers.getSetCookie?.() || []
+          if (cookies.length > 0) {
+            // Try with session cookie
+            const sessionHeaders = {
+              'Content-Type': 'application/json',
+              'Cookie': cookies.join('; '),
+            }
+            ragResp = await fetch(`${base}/v1/document/run`, {
+              method: 'POST',
+              headers: sessionHeaders,
+              body: JSON.stringify({ doc_ids, run: '1' }),
+            })
+          }
+        }
+      }
+
       const result = await ragResp.json()
-      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+      if (ragResp.ok) {
+        return result
+      } else {
+        return reply.code(ragResp.status).send(result)
+      }
     } catch (err) {
       req.log.error({ err }, 'Failed to run documents in RagFlow')
       return reply.code(502).send({ message: 'Failed to run documents in RagFlow' })
@@ -1353,7 +1386,8 @@ export function createServer(config: AppConfig) {
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     try {
-      const resp = await fetch(`${base}/api/v1/documents/${encodeURIComponent(docId)}/chunks?page=${page}&page_size=${page_size}`, {
+      // Note: Chunks are under datasets API: /api/v1/datasets/{id}/documents/{doc_id}/chunks
+      const resp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}/chunks?page=${page}&page_size=${page_size}`, {
         headers: buildRagflowHeaders(''),
       })
       if (!resp.ok) {
