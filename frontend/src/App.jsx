@@ -1666,14 +1666,21 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
   const handleParseDoc = async (docId) => {
     setParsingId(docId)
     try {
-      await runDocuments(dataset.id, [docId])
+      const result = await runDocuments(dataset.id, [docId])
+      // Check if parsing was triggered successfully
+      if (result && result.code === 0) {
+        alert('解析任务已提交，请稍候...')
+      } else {
+        // Show RagFlow UI message if available
+        const msg = result?.message || '解析请求失败'
+        alert(`${msg}\n\n提示：文档解析需要 RagFlow 用户认证。请登录 RagFlow 界面 (http://localhost:8084) 手动触发解析，或联系管理员配置用户认证。`)
+      }
       // Trigger immediate reload
       loadDocs()
     } catch (e) {
-      alert('解析失败: ' + e.message)
+      // If API call failed, show helpful message
+      alert('解析失败: ' + e.message + '\n\n提示：请联系管理员检查 RagFlow 配置。')
     } finally {
-      // Keep parsingId set for a moment or until status changes?
-      // Actually we should rely on doc.run_status or doc.progress from now on.
       setParsingId(null)
     }
   }

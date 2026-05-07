@@ -1262,6 +1262,7 @@ export function createServer(config: AppConfig) {
   })
 
   // POST /api/v1/admin/datasets/:id/documents/run - Parse documents
+  // RagFlow API: POST /api/v1/documents/run with body { doc_ids, run }
   app.post('/api/v1/admin/datasets/:id/documents/run', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -1270,7 +1271,6 @@ export function createServer(config: AppConfig) {
       return reply.code(403).send({ message: 'forbidden' })
     }
 
-    const { id } = req.params as { id: string }
     const { doc_ids } = req.body as { doc_ids?: string[] }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
@@ -1285,15 +1285,22 @@ export function createServer(config: AppConfig) {
       headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
     }
 
+    if (!doc_ids || !Array.isArray(doc_ids) || doc_ids.length === 0) {
+      return reply.code(400).send({ message: 'doc_ids is required' })
+    }
+
     try {
-      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/documents/run`, {
+      // RagFlow uses POST /v1/documents/run with doc_ids and run="1" to start parsing
+      // Note: The correct prefix is /v1/ not /api/v1/ for document endpoints
+      const ragResp = await fetch(`${base}/v1/documents/run`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ doc_ids }),
+        body: JSON.stringify({ doc_ids, run: '1' }),
       })
       const result = await ragResp.json()
       return ragResp.ok ? result : reply.code(ragResp.status).send(result)
     } catch (err) {
+      req.log.error({ err }, 'Failed to run documents in RagFlow')
       return reply.code(502).send({ message: 'Failed to run documents in RagFlow' })
     }
   })
