@@ -48,8 +48,9 @@ model User {
 
   manager      User?  @relation("UserManager", fields: [managerUserId], references: [id])
   subordinates User[] @relation("UserManager")
-  permissions  Permission[]
-  memoryProfile MemoryProfile?
+  permissions       Permission[]
+  datasetOwnerships  DatasetOwnership[]
+  memoryProfile     MemoryProfile?
   auditSubject AuditLog[] @relation("AuditSubject")
   auditOperator AuditLog[] @relation("AuditOperator")
   toolCallAuditSubject ToolCallAudit[] @relation("ToolCallAuditSubject")
@@ -63,6 +64,21 @@ model User {
   @@index([role], map: "idx_users_role")
   @@index([managerUserId], map: "idx_users_manager")
   @@map("users")
+}
+
+model DatasetOwnership {
+  id             BigInt   @id @default(autoincrement())
+  datasetId      String   @map("dataset_id") @db.VarChar(128)
+  ownerUserId    BigInt   @map("owner_user_id")
+  creatorUsername String? @map("creator_username") @db.VarChar(128)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([datasetId], map: "uk_do_dataset")
+  @@index([ownerUserId], map: "idx_do_owner")
+  @@index([datasetId], map: "idx_do_dataset")
+  @@map("dataset_ownerships")
 }
 
 model Conversation {

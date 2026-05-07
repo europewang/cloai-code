@@ -790,9 +790,13 @@ async function runDocuments(datasetId, docIds) {
   const res = await apiFetch(`/v1/admin/datasets/${datasetId}/documents/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ doc_ids: docIds })
+    // RagFlow API expects "document_ids", not "doc_ids"
+    body: JSON.stringify({ document_ids: docIds })
   })
-  if (!res.ok) throw new Error('Failed to run documents')
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`HTTP ${res.status}: ${errText}`)
+  }
   return res.json()
 }
 
@@ -1625,7 +1629,9 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
+  // parsingId is set when a parse is triggered; the poll clears it when done
   const [parsingId, setParsingId] = useState(null)
+  const [parsingError, setParsingError] = useState(null) // per-doc error message
   const [viewingDoc, setViewingDoc] = useState(null)
   const [selectedDocs, setSelectedDocs] = useState([])
   const [batchDeleting, setBatchDeleting] = useState(false)
@@ -1641,28 +1647,40 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
   })
 
   const loadDocs = useCallback(() => {
-    // Only set loading on initial load to avoid flickering during polling
-    if (docs.length === 0) setLoading(true)
-    setSelectedDocs([]) // Reset selection on reload
+    setLoading(true)
+    setSelectedDocs([])
     fetchDocuments(dataset.id)
       .then(data => setDocs(Array.isArray(data) ? data : []))
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [dataset.id, docs.length])
+  }, [dataset.id])
 
+  // Poll every 5s; clears parsingId when the target doc reaches a terminal state.
+  // This keeps the loading spinner alive until RagFlow actually finishes.
   useEffect(() => {
     loadDocs()
-    // Poll for status updates if there are parsing documents
-      const interval = setInterval(() => {
-          // Simple check: if any doc is not parsed (run != 'DONE'), poll. 
-          // Or if we just triggered parsing.
-          // For now, poll every 5s to keep UI fresh
-          fetchDocuments(dataset.id).then(data => {
-              if (Array.isArray(data)) setDocs(data)
-          }).catch(console.error)
-      }, 5000)
+    const interval = setInterval(async () => {
+      try {
+        const data = await fetchDocuments(dataset.id)
+        if (!Array.isArray(data)) return
+        setDocs(data)
+        // If no parse is in flight, nothing to do
+        if (!parsingId) return
+        const target = data.find(d => d.id === parsingId)
+        if (!target) return
+        const isDone = target.run === 'DONE'
+        const isFail = target.run === 'FAIL'
+        const isProcessing = target.progress > 0 && target.progress < 1
+        if (isDone || isFail) {
+          setParsingId(null)
+          setParsingError(isFail ? target.error_msg || '解析失败' : null)
+        }
+      } catch {
+        // swallow poll errors to keep interval alive
+      }
+    }, 5000)
     return () => clearInterval(interval)
-  }, [dataset.id, loadDocs])
+  }, [dataset.id, parsingId])
 
   const handleUpdateSettings = async (newSettings) => {
     setSettingsModal(prev => ({ ...prev, isSubmitting: true }))
@@ -1714,23 +1732,22 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
 
   const handleParseDoc = async (docId) => {
     setParsingId(docId)
+    setParsingError(null)
     try {
       const result = await runDocuments(dataset.id, [docId])
-      // Check if parsing was triggered successfully
-      if (result && result.code === 0) {
-        alert('解析任务已提交，请稍候...')
-      } else {
-        // Show RagFlow UI message if available
-        const msg = result?.message || '解析请求失败'
-        alert(`${msg}\n\n提示：文档解析需要 RagFlow 用户认证。请登录 RagFlow 界面 (http://localhost:8084) 手动触发解析，或联系管理员配置用户认证。`)
+      // RagFlow returns {code: 0, data: false} on success (async chunking started).
+      // The poll will track progress and clear parsingId when done.
+      if (result?.code === 0) {
+        // Success — no alert, let the progress bar & spinner keep running
+        return
       }
-      // Trigger immediate reload
-      loadDocs()
-    } catch (e) {
-      // If API call failed, show helpful message
-      alert('解析失败: ' + e.message + '\n\n提示：请联系管理员检查 RagFlow 配置。')
-    } finally {
+      // Non-zero code = RagFlow returned an error message
+      const msg = result?.message || '解析请求失败'
       setParsingId(null)
+      setParsingError(msg)
+    } catch (e) {
+      setParsingId(null)
+      setParsingError(e.message || '解析失败')
     }
   }
 
@@ -1923,20 +1940,39 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
                   </td>
                   <td className="px-6 py-4">
                      <div className="flex flex-col gap-1">
+                         {/* Status badge — expanded to show all states */}
                          <span className={cn(
                            "px-2 py-1 rounded-full text-xs font-medium w-fit",
-                           (doc.run === 'DONE' || doc.run_status === '1') ? "bg-emerald-100 text-emerald-700" : 
+                           (doc.run === 'DONE' || doc.run_status === '1') ? "bg-emerald-100 text-emerald-700" :
                            (doc.progress > 0 && doc.progress < 1) ? "bg-amber-100 text-amber-700" :
+                           (doc.run === '1') ? "bg-amber-100 text-amber-700" :
                            "bg-slate-100 text-slate-500"
                          )}>
-                           {(doc.run === 'DONE' || doc.run_status === '1') ? '已解析' : 
-                            (doc.progress > 0 && doc.progress < 1) ? `解析中 ${Math.round(doc.progress * 100)}%` : '未解析'}
+                           {/* Show loading spinner when this doc is currently parsing */}
+                           {parsingId === doc.id ? (
+                             <span className="flex items-center gap-1">
+                               <Loader2 size={10} className="animate-spin" />
+                               解析中…
+                             </span>
+                           ) : (doc.run === 'DONE' || doc.run_status === '1') ? '已解析' :
+                            (doc.progress > 0 && doc.progress < 1) ? `解析中 ${Math.round(doc.progress * 100)}%` :
+                            (doc.run === '1') ? '解析中…' :
+                            parsingError && parsingId === null ? (
+                              <span className="text-red-500" title={parsingError}>解析失败</span>
+                            ) : '未解析'}
                          </span>
-                         {(doc.progress > 0 && doc.progress < 1) && (
-                             <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                <div 
-                                    className="h-full bg-blue-500 animate-pulse" 
-                                    style={{ width: `${(doc.progress || 0) * 100}%` }}
+                         {/* Error message shown when parse failed */}
+                         {parsingError && parsingId === null && (
+                           <span className="text-xs text-red-500 max-w-40 truncate" title={parsingError}>
+                             {parsingError}
+                           </span>
+                         )}
+                         {/* Progress bar during active parsing */}
+                         {(parsingId === doc.id || (doc.progress > 0 && doc.progress < 1)) && (
+                             <div className="w-28 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div
+                                    className="h-full bg-blue-500 animate-pulse"
+                                    style={{ width: doc.progress > 0 ? `${(doc.progress || 0) * 100}%` : '100%' }}
                                 />
                              </div>
                          )}
@@ -2040,6 +2076,9 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, selected, onSelect,
       <p className="text-sm text-slate-400 mb-4 line-clamp-2">{dataset.description || '暂无描述'}</p>
       <div className="text-xs text-slate-500 mb-3">
         创建人：{dataset.creatorUsername || dataset.creator_username || dataset.creatorUserName || dataset.owner_username || dataset.ownerUsername || dataset.created_by || '未知'}
+        {dataset.created_at && (
+          <> · {new Date(dataset.created_at).toLocaleDateString()}</>
+        )}
       </div>
       {!manageable && (
         <div className="text-[11px] text-amber-600 mb-3">仅可查看该知识库存在，不可进入内部内容</div>
@@ -2052,7 +2091,7 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, selected, onSelect,
         </span>
         <span className="flex items-center gap-1">
           <Clock size={14} />
-          {new Date(dataset.create_time).toLocaleDateString()}
+          {dataset.created_at ? new Date(dataset.created_at).toLocaleDateString() : (dataset.create_time ? new Date(dataset.create_time).toLocaleDateString() : '未知')}
         </span>
       </div>
     </div>
@@ -2107,14 +2146,13 @@ function DatasetManager() {
     e.stopPropagation()
     if (!window.confirm('确定要删除这个知识库吗？此操作不可恢复。')) return
     try {
-      // Optimistic update to immediately remove from UI
-      setDatasets(prev => prev.filter(d => d.id !== id))
-      await deleteDataset(id)
-      // Wait a bit before reloading to allow backend consistency
-      setTimeout(() => loadData(), 500)
+      console.log('[delete] calling deleteDataset with id:', id)
+      const res = await deleteDataset(id)
+      console.log('[delete] response:', res)
+      loadData()
     } catch (e) {
+      console.error('[delete] error:', e)
       alert('删除失败: ' + e.message)
-      loadData() // Revert if failed
     }
   }
 
@@ -2149,15 +2187,22 @@ function DatasetManager() {
   const handleBatchDelete = async () => {
     if (selectedDatasets.length === 0) return
     if (!window.confirm(`确定要删除选中的 ${selectedDatasets.length} 个知识库吗？此操作不可恢复。`)) return
-    
+
     setBatchDeleting(true)
     try {
-      await deleteDatasets(selectedDatasets)
-      // Optimistic update
-      setDatasets(prev => prev.filter(d => !selectedDatasets.includes(d.id)))
+      const result = await deleteDatasets(selectedDatasets)
+      // On 207 partial success, use server data to update UI correctly
+      if (result && result.partial && Array.isArray(result.results)) {
+        const deletedIds = result.results.filter(r => r.ok).map(r => r.id)
+        setDatasets(prev => prev.filter(d => !deletedIds.includes(d.id)))
+        const failedCount = result.results.filter(r => !r.ok).length
+        if (failedCount > 0) {
+          alert(`已删除 ${deletedIds.length} 个知识库，${failedCount} 个删除失败。`)
+        }
+      } else {
+        loadData()
+      }
       setSelectedDatasets([])
-      // Wait a bit before reloading
-      setTimeout(() => loadData(), 500)
     } catch (e) {
       alert('批量删除失败: ' + e.message)
       loadData()

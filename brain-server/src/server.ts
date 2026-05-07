@@ -453,6 +453,51 @@ export function createServer(config: AppConfig) {
     }
   }
 
+  // ─── Dataset ownership helpers (tenant isolation) ────────────────────────────
+
+  interface DatasetOwnershipInfo {
+    datasetId: string
+    ownerUserId: bigint
+    creatorUsername: string | null
+    createdAt: Date
+  }
+
+  /** Returns dataset IDs owned by the given user. */
+  async function getOwnedDatasetIds(userId: bigint): Promise<Set<string>> {
+    const rows = await prisma.datasetOwnership.findMany({
+      where: { ownerUserId: userId },
+      select: { datasetId: true },
+    })
+    return new Set(rows.map(r => r.datasetId))
+  }
+
+  /** Returns all DatasetOwnership records for the given user. */
+  async function getOwnedDatasetOwnerships(userId: bigint): Promise<DatasetOwnershipInfo[]> {
+    return prisma.datasetOwnership.findMany({
+      where: { ownerUserId: userId },
+      select: { datasetId: true, ownerUserId: true, creatorUsername: true, createdAt: true },
+    })
+  }
+
+  /** Returns all DatasetOwnership records (for super_admin). */
+  async function getAllDatasetOwnerships(): Promise<DatasetOwnershipInfo[]> {
+    return prisma.datasetOwnership.findMany({
+      select: { datasetId: true, ownerUserId: true, creatorUsername: true, createdAt: true },
+    })
+  }
+
+  /** Checks if operator owns the dataset. super_admin can do everything. */
+  async function isDatasetOwner(operator: { id: bigint; role: Role }, datasetId: string): Promise<boolean> {
+    if (operator.role === 'super_admin') return true
+    const owned = await getOwnedDatasetIds(operator.id)
+    return owned.has(datasetId)
+  }
+
+  /** Removes ownership record when a dataset is deleted. */
+  async function removeDatasetOwnership(datasetId: string): Promise<void> {
+    await prisma.datasetOwnership.deleteMany({ where: { datasetId } })
+  }
+
   // 用户记忆以 profile 为隔离单元，统一落盘到 brain 存储目录下。
   function getMemoryBaseDir() {
     return path.resolve(config.SKILL_FILE_BASE_DIR, 'memory-profiles')
@@ -1092,7 +1137,7 @@ export function createServer(config: AppConfig) {
     return users.map((user: any) => formatUser(user))
   })
 
-  // GET /api/v1/admin/datasets - List all datasets from RagFlow
+  // GET /api/v1/admin/datasets - List datasets (tenant-isolated for non-super_admin)
   app.get('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -1121,15 +1166,38 @@ export function createServer(config: AppConfig) {
       }
       const data = await resp.json() as any
       // Handle both array and object responses
-      const datasets = Array.isArray(data) ? data : (data?.data || data?.datasets || [])
-      return datasets.map((ds: any) => ({
-        id: String(ds.id),
-        name: ds.name || ds.id,
-        description: ds.description || '',
-        document_count: ds.document_count || 0,
-        created_at: ds.created_at,
-        updated_at: ds.updated_at,
-      }))
+      let datasets = Array.isArray(data) ? data : (data?.data || data?.datasets || [])
+
+      // Tenant isolation:
+      // - super_admin sees & manages all datasets
+      // - non-super_admin admin sees all datasets, but can only modify those they own
+      const allDatasets = datasets
+      const ownershipMap = new Map<string, DatasetOwnershipInfo>()
+      if (operator.role === 'super_admin') {
+        const allOwnership = await getAllDatasetOwnerships()
+        allOwnership.forEach(o => ownershipMap.set(o.datasetId, o))
+      } else {
+        const ownedOwnership = await getOwnedDatasetOwnerships(operator.id)
+        ownedOwnership.forEach(o => ownershipMap.set(o.datasetId, o))
+        datasets = allDatasets.map((ds: any) => ({
+          ...ds,
+          manageable: ownershipMap.has(ds.id),
+        }))
+      }
+
+      return datasets.map((ds: any) => {
+        const ownership = ownershipMap.get(String(ds.id))
+        return {
+          id: String(ds.id),
+          name: ds.name || ds.id,
+          description: ds.description || '',
+          document_count: ds.document_count || 0,
+          created_at: ownership ? ownership.createdAt.toISOString() : (ds.created_at || null),
+          updated_at: ds.updated_at,
+          manageable: ds.manageable,
+          creatorUsername: ownership?.creatorUsername || null,
+        }
+      })
     } catch (err) {
       return reply.code(502).send({ message: 'Failed to fetch datasets from RagFlow' })
     }
@@ -1262,7 +1330,7 @@ export function createServer(config: AppConfig) {
   })
 
   // POST /api/v1/admin/datasets/:id/documents/run - Parse documents
-  // RagFlow API: POST /api/v1/documents/run with body { doc_ids, run }
+  // RagFlow API: POST /api/v1/datasets/{id}/chunks with body { document_ids }
   app.post('/api/v1/admin/datasets/:id/documents/run', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -1271,7 +1339,14 @@ export function createServer(config: AppConfig) {
       return reply.code(403).send({ message: 'forbidden' })
     }
 
-    const { doc_ids } = req.body as { doc_ids?: string[] }
+    // Accept document_ids (RagFlow standard) — also accept doc_ids for backward compatibility
+    const body = req.body as Record<string, unknown>
+    const docIds: string[] | undefined = (
+      Array.isArray(body.document_ids) ? body.document_ids :
+      Array.isArray(body.doc_ids) ? body.doc_ids :
+      undefined
+    ) as string[] | undefined
+    const { id } = req.params as { id: string }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     const headers: Record<string, string> = {
@@ -1285,47 +1360,17 @@ export function createServer(config: AppConfig) {
       headers.Authorization = `Bearer ${config.RAGFLOW_API_KEY}`
     }
 
-    if (!doc_ids || !Array.isArray(doc_ids) || doc_ids.length === 0) {
-      return reply.code(400).send({ message: 'doc_ids is required' })
+    if (!docIds || docIds.length === 0) {
+      return reply.code(400).send({ message: 'document_ids (or doc_ids) is required' })
     }
 
     try {
-      // First try with API key authentication
-      // Note: The correct prefix is /v1/ not /api/v1/ for document endpoints
-      // Also uses singular /document/run not /documents/run
-      let ragResp = await fetch(`${base}/v1/document/run`, {
+      // RagFlow API: POST /api/v1/datasets/{id}/chunks with document_ids
+      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}/chunks`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ doc_ids, run: '1' }),
+        body: JSON.stringify({ document_ids: docIds }),
       })
-
-      // If unauthorized, try to get a session cookie using configured credentials
-      if (ragResp.status === 401 || ragResp.status === 403) {
-        const ragUser = config.RAGFLOW_USER || 'admin@ragflow.io'
-        const ragPass = config.RAGFLOW_PASSWORD || 'admin'
-        const loginResp = await fetch(`${base}/v1/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: ragUser, password: ragPass }),
-        })
-        if (loginResp.ok) {
-          const loginData = await loginResp.json()
-          const cookies = loginResp.headers.getSetCookie?.() || []
-          if (cookies.length > 0) {
-            // Try with session cookie
-            const sessionHeaders = {
-              'Content-Type': 'application/json',
-              'Cookie': cookies.join('; '),
-            }
-            ragResp = await fetch(`${base}/v1/document/run`, {
-              method: 'POST',
-              headers: sessionHeaders,
-              body: JSON.stringify({ doc_ids, run: '1' }),
-            })
-          }
-        }
-      }
-
       const result = await ragResp.json()
       if (ragResp.ok) {
         return result
@@ -1422,13 +1467,25 @@ export function createServer(config: AppConfig) {
         body: JSON.stringify({ name, description: description || '' }),
       })
       const result = await ragResp.json()
-      return ragResp.ok ? result : reply.code(ragResp.status).send(result)
+      if (!ragResp.ok) {
+        return reply.code(ragResp.status).send(result)
+      }
+      // Record ownership locally with creator info
+      const datasetId = result?.data?.id
+      if (datasetId) {
+        await prisma.datasetOwnership.upsert({
+          where: { datasetId },
+          update: { ownerUserId: operator.id, creatorUsername: operator.username },
+          create: { datasetId, ownerUserId: operator.id, creatorUsername: operator.username },
+        }).catch(err => app.log.warn({ err, datasetId }, 'failed to record dataset ownership'))
+      }
+      return result
     } catch (err) {
       return reply.code(502).send({ message: 'Failed to create dataset in RagFlow' })
     }
   })
 
-  // PUT /api/v1/admin/datasets/:id - Update a dataset
+  // PUT /api/v1/admin/datasets/:id - Update a dataset (tenant-isolated)
   app.put('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -1438,6 +1495,12 @@ export function createServer(config: AppConfig) {
     }
 
     const { id } = req.params as { id: string }
+
+    // Tenant isolation: non-super_admin must own this dataset
+    if (operator.role !== 'super_admin' && !(await isDatasetOwner(operator, id))) {
+      return reply.code(403).send({ message: 'forbidden: you do not own this dataset' })
+    }
+
     const { name, description } = req.body as { name?: string, description?: string }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
@@ -1454,7 +1517,7 @@ export function createServer(config: AppConfig) {
     }
   })
 
-  // DELETE /api/v1/admin/datasets/:id - Delete a dataset
+  // DELETE /api/v1/admin/datasets/:id - Delete a dataset (tenant-isolated)
   app.delete('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -1465,20 +1528,99 @@ export function createServer(config: AppConfig) {
 
     const { id } = req.params as { id: string }
 
+    // Tenant isolation: non-super_admin must own this dataset
+    if (operator.role !== 'super_admin' && !(await isDatasetOwner(operator, id))) {
+      return reply.code(403).send({ message: 'forbidden: you do not own this dataset' })
+    }
+
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     try {
-      const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}`, {
+      // RagFlow only supports batch DELETE via /api/v1/datasets with {ids: [...]} body.
+      // Single-item delete uses the same endpoint.
+      const ragResp = await fetch(`${base}/api/v1/datasets`, {
         method: 'DELETE',
-        headers: buildRagflowHeaders(''),
+        headers: { ...buildRagflowHeaders('application/json'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [id] }),
       })
       if (!ragResp.ok && ragResp.status !== 404) {
         const text = await ragResp.text()
         return reply.code(ragResp.status).send({ message: text || `HTTP ${ragResp.status}` })
       }
+      // Clean up local ownership record
+      await removeDatasetOwnership(id)
       return { success: true }
     } catch (err) {
       return reply.code(502).send({ message: 'Failed to delete dataset from RagFlow' })
     }
+  })
+
+  // DELETE /api/v1/admin/datasets - Batch delete datasets (tenant-isolated)
+  app.delete('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const body = req.body as { ids?: string[] }
+    const ids = Array.isArray(body?.ids) ? body.ids : []
+    if (ids.length === 0) {
+      return reply.code(400).send({ message: 'ids (array) is required' })
+    }
+
+    const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
+
+    // For non-super_admin, filter to only datasets the operator owns
+    const ownedIds = operator.role === 'super_admin'
+      ? null // null = no filter needed
+      : await getOwnedDatasetIds(operator.id)
+
+    const toDelete = ownedIds === null
+      ? ids
+      : ids.filter(id => ownedIds.has(id))
+
+    if (toDelete.length === 0) {
+      return reply.code(403).send({ message: 'forbidden: you do not own any of the specified datasets' })
+    }
+
+    // RagFlow only supports batch DELETE via /api/v1/datasets with {ids: [...]} body.
+    // Call it once with all IDs to delete.
+    const results: { id: string; ok: boolean; message?: string }[] = []
+    try {
+      const ragResp = await fetch(`${base}/api/v1/datasets`, {
+        method: 'DELETE',
+        headers: { ...buildRagflowHeaders('application/json'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: toDelete }),
+      })
+      if (ragResp.ok || ragResp.status === 404) {
+        // All deleted successfully (or already gone)
+        for (const id of toDelete) {
+          await removeDatasetOwnership(id).catch(() => {})
+          results.push({ id, ok: true })
+        }
+      } else {
+        // RagFlow returned an error — treat all as failed
+        const text = await ragResp.text()
+        for (const id of toDelete) {
+          results.push({ id, ok: false, message: text || `HTTP ${ragResp.status}` })
+        }
+      }
+    } catch {
+      for (const id of toDelete) {
+        results.push({ id, ok: false, message: 'network error' })
+      }
+    }
+
+    const failed = results.filter(r => !r.ok)
+    if (failed.length > 0) {
+      return reply.code(207).send({
+        partial: true,
+        results,
+        message: `${failed.length}/${toDelete.length} datasets failed to delete`,
+      })
+    }
+    return { success: true, results }
   })
 
   app.patch('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
