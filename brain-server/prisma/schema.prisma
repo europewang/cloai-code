@@ -57,10 +57,42 @@ model User {
   ragQueryAuditSubject RagQueryAudit[] @relation("RagQueryAuditSubject")
   ragQueryAuditOperator RagQueryAudit[] @relation("RagQueryAuditOperator")
   fileAssets    FileAsset[]
+  conversations Conversation[]
+  skillOwnerships Skill[] @relation("SkillOwner")
 
   @@index([role], map: "idx_users_role")
   @@index([managerUserId], map: "idx_users_manager")
   @@map("users")
+}
+
+model Conversation {
+  id          BigInt   @id @default(autoincrement())
+  userId      BigInt   @map("user_id")
+  title       String   @db.VarChar(256)
+  messageCount Int     @default(0) @map("message_count")
+  lastMessageAt DateTime? @map("last_message_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId, updatedAt], map: "idx_conversations_user_updated")
+  @@map("conversations")
+}
+
+model Message {
+  id             BigInt    @id @default(autoincrement())
+  conversationId BigInt    @map("conversation_id")
+  role           String    @db.VarChar(32)
+  content        String    @db.Text
+  metadata       Json?     @map("metadata")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt], map: "idx_messages_conv_created")
+  @@map("messages")
 }
 
 model MemoryProfile {
@@ -190,13 +222,16 @@ model Skill {
   status       String   @default("active") @map("status") @db.VarChar(32)
   allowedRoles String[] @default(["user"]) @map("allowed_roles")
   scriptPath   String?  @map("script_path") @db.VarChar(512)
+  ownerId      BigInt?  @map("owner_id")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  shortcuts SkillShortcut[]
+  shortcuts    SkillShortcut[]
+  owner        User?    @relation("SkillOwner", fields: [ownerId], references: [id])
 
   @@index([name], map: "idx_skills_name")
   @@index([status], map: "idx_skills_status")
+  @@index([ownerId], map: "idx_skills_owner")
   @@map("skills")
 }
 

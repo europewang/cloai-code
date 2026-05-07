@@ -68,6 +68,14 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
     const skills = await prisma.skill.findMany({
       where: status ? { status } : undefined,
       orderBy: { createdAt: 'desc' },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            username: true,
+          }
+        }
+      }
     })
 
     // Return simplified format for internal use
@@ -76,6 +84,9 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
       displayName: s.displayName,
       status: s.status,
       scriptPath: s.scriptPath,
+      ownerId: s.ownerId ? String(s.ownerId) : null,
+      ownerUsername: s.owner?.username || null,
+      createdAt: s.createdAt,
     }))
   })
 
@@ -150,10 +161,14 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
           status,
           allowedRoles,
           scriptPath,
+          ownerId: operator.id,
         }
       })
 
-      return reply.code(201).send(skill)
+      return reply.code(201).send({
+        ...skill,
+        ownerId: String(skill.ownerId),
+      })
     } catch (err) {
       console.error('Failed to create skill:', err)
       return reply.code(500).send({ error: 'Failed to create skill' })
@@ -184,6 +199,11 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
         return reply.code(404).send({ error: 'Skill not found' })
       }
 
+      // Check ownership: only owner or super_admin can update
+      if (operator.role !== 'super_admin' && existing.ownerId !== operator.id) {
+        return reply.code(403).send({ error: 'Only the owner or super_admin can update this skill' })
+      }
+
       // Update markdown in MongoDB if provided
       if (rawMarkdown !== undefined) {
         await upsertSkillDoc(name, rawMarkdown)
@@ -206,6 +226,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: AuthDeps) {
         status: skill.status,
         allowedRoles: skill.allowedRoles,
         scriptPath: skill.scriptPath,
+        ownerId: skill.ownerId ? String(skill.ownerId) : null,
       }
     } catch (err) {
       console.error('Failed to update skill:', err)

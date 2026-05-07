@@ -17,6 +17,7 @@ import { promisify } from 'node:util'
 import { registerPreServerRoutes } from './routes/preServer.js'
 import { registerPostServerRoutes } from './routes/postServer.js'
 import { registerSkillRoutes } from './routes/skills.js'
+import { registerConversationRoutes } from './routes/conversations.js'
 
 type Role = 'super_admin' | 'admin' | 'user'
 type ResourceType = 'DATASET' | 'DATASET_OWNER' | 'SKILL' | 'MEMORY_PROFILE'
@@ -1298,6 +1299,13 @@ export function createServer(config: AppConfig) {
 
   // Register skill management routes
   registerSkillRoutes(app, {
+    authGuard,
+    getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
+      getActiveOperator(req as AuthedRequest, reply),
+  })
+
+  // Register conversation management routes
+  registerConversationRoutes(app, {
     authGuard,
     getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
       getActiveOperator(req as AuthedRequest, reply),
