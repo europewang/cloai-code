@@ -476,6 +476,10 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
   })
 
   // Admin: Get conversation statistics for all managed users
+  // Query params:
+  //   mode = 'month' | 'week' | 'day'  (default: 'month')
+  //   date = YYYY-MM-DD                   (default: today)
+  //   top = number (default: 20)
   app.get('/api/v1/admin/conversations/stats', { preHandler: deps.authGuard }, async (req, reply) => {
     const operator = await deps.getActiveOperator(req, reply)
     if (!operator) return
@@ -484,12 +488,55 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
       return reply.code(403).send({ error: 'Access denied' })
     }
 
+    // Parse query params
+    const { mode = 'month', date, top = '20' } = req.query as {
+      mode?: string; date?: string; top?: string
+    }
+    const validMode = ['month', 'week', 'day'].includes(mode) ? mode : 'month'
+    const topN = Math.min(100, Math.max(1, parseInt(top, 10) || 20))
+
+    // Resolve target date
+    const now = new Date()
+    let targetDate: Date
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      targetDate = new Date(date + 'T00:00:00.000Z')
+      if (Number.isNaN(targetDate.getTime())) targetDate = now
+    } else {
+      targetDate = now
+    }
+
+    // Compute period boundaries
+    const year = targetDate.getFullYear()
+    const month = targetDate.getMonth() // 0-based
+
+    // Month: 1st of month to last day of month
+    const monthStart = new Date(Date.UTC(year, month, 1))
+    const monthEnd = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999))
+
+    // Week: Monday to Sunday of the week containing targetDate
+    const dow = targetDate.getUTCDay() || 7 // 1=Mon ... 7=Sun
+    const weekStart = new Date(targetDate)
+    weekStart.setUTCDate(targetDate.getUTCDate() - dow + 1)
+    weekStart.setUTCHours(0, 0, 0, 0)
+    const weekEnd = new Date(weekStart)
+    weekEnd.setUTCDate(weekStart.getUTCDate() + 6)
+    weekEnd.setUTCHours(23, 59, 59, 999)
+
+    // Day: midnight to midnight UTC
+    const dayStart = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate()))
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1)
+
+    let periodStart: Date, periodEnd: Date
+    if (validMode === 'month') { periodStart = monthStart; periodEnd = monthEnd }
+    else if (validMode === 'week') { periodStart = weekStart; periodEnd = weekEnd }
+    else { periodStart = dayStart; periodEnd = dayEnd }
+
     // Build user filter based on role
     const userWhereClause = operator.role === 'super_admin'
       ? {}
       : { managerUserId: operator.id }
 
-    // Get all users with their conversation stats
+    // Get all users
     const users = await prisma.user.findMany({
       where: userWhereClause,
       select: {
@@ -509,19 +556,16 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
       },
     })
 
-    const now = new Date()
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
 
+    // ---- Aggregate overall stats ----
     const stats = users.map((user: any) => {
       const totalMessages = user.conversations.reduce((sum: number, c: any) => sum + c.messageCount, 0)
       const conv30d = user.conversations.filter((c: any) => new Date(c.createdAt) >= thirtyDaysAgo).length
       const conv7d = user.conversations.filter((c: any) => new Date(c.lastMessageAt || c.updatedAt) >= sevenDaysAgo).length
       const messages30d = user.conversations
-        .filter((c: any) => {
-          const recentMessages = c.messageCount // Simplified: count all messages in recent conversations
-          return new Date(c.updatedAt) >= thirtyDaysAgo
-        })
+        .filter((c: any) => new Date(c.updatedAt) >= thirtyDaysAgo)
         .reduce((sum: number, c: any) => sum + c.messageCount, 0)
 
       return {
@@ -537,13 +581,115 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
       }
     })
 
+    // ---- Top N users by messages in selected period ----
+    const periodMessages = await prisma.message.findMany({
+      where: {
+        createdAt: { gte: periodStart, lte: periodEnd },
+        ...(operator.role !== 'super_admin' ? { conversation: { userId: operator.id } } : {}),
+      },
+      select: { conversation: { select: { userId: true } }, createdAt: true },
+    })
+    const msgCountByUser: Record<string, number> = {}
+    periodMessages.forEach((m: any) => {
+      const uid = String(m.conversation.userId)
+      msgCountByUser[uid] = (msgCountByUser[uid] || 0) + 1
+    })
+    const userMap: Record<string, { username: string; role: string }> = {}
+    users.forEach((u: any) => { userMap[String(u.id)] = { username: u.username, role: u.role } })
+    const topUsers = Object.entries(msgCountByUser)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topN)
+      .map(([uid, count]) => ({
+        userId: uid,
+        username: userMap[uid]?.username || uid,
+        role: userMap[uid]?.role || 'user',
+        totalMessages: count,
+        totalConversations: 0,
+      }))
+
+    // ---- 7-day bar chart: always the week around targetDate ----
+    const weekDays = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(weekStart)
+      d.setUTCDate(weekStart.getUTCDate() + i)
+      const dayStr = d.toISOString().split('T')[0]
+      return {
+        date: dayStr,
+        label: `${d.getUTCMonth() + 1}/${d.getUTCDate()}`,
+        count: 0,
+        isSelected: dayStr === targetDate.toISOString().split('T')[0],
+      }
+    })
+    const weekMsgs = await prisma.message.findMany({
+      where: {
+        createdAt: { gte: weekStart, lte: weekEnd },
+        ...(operator.role !== 'super_admin' ? { conversation: { userId: operator.id } } : {}),
+      },
+      select: { createdAt: true },
+    })
+    weekDays.forEach((day) => {
+      day.count = weekMsgs.filter((m: any) => {
+        return m.createdAt.toISOString().split('T')[0] === day.date
+      }).length
+    })
+
+    // ---- Hourly distribution: scoped to selected period ----
+    const hourlyDist = Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      label: `${String(h).padStart(2, '0')}:00`,
+      count: 0,
+    }))
+    periodMessages.forEach((m: any) => {
+      // Convert UTC to China local time (UTC+8)
+      const localHour = (new Date(m.createdAt).getUTCHours() + 8) % 24
+      hourlyDist[localHour].count++
+    })
+
+    // ---- Per-user daily frequency (7-day week around targetDate) ----
+    const userDailyFreq: Record<string, { date: string; label: string; count: number; isSelected: boolean }[]> = {}
+    for (const user of users) {
+      const uid = String(user.id)
+      const uMsgs = await prisma.message.findMany({
+        where: {
+          createdAt: { gte: weekStart, lte: weekEnd },
+          conversation: { userId: user.id },
+        },
+        select: { createdAt: true },
+      })
+      userDailyFreq[uid] = weekDays.map((day) => ({
+        date: day.date,
+        label: day.label,
+        count: uMsgs.filter((m: any) => m.createdAt.toISOString().split('T')[0] === day.date).length,
+        isSelected: day.isSelected,
+      }))
+    }
+
+    // ---- Per-user hourly distribution (scoped to selected period) ----
+    const userHourlyDist: Record<string, { hour: number; label: string; count: number }[]> = {}
+    for (const user of users) {
+      const uid = String(user.id)
+      const uMsgs = periodMessages.filter((m: any) => String(m.conversation.userId) === uid)
+      userHourlyDist[uid] = hourlyDist.map((h) => ({
+        hour: h.hour,
+        label: h.label,
+        count: uMsgs.filter((m: any) => (new Date(m.createdAt).getUTCHours() + 8) % 24 === h.hour).length,
+      }))
+    }
+
     return {
       stats,
       generatedAt: now.toISOString(),
+      mode: validMode,
+      date: targetDate.toISOString().split('T')[0],
       period: {
-        last7Days: sevenDaysAgo.toISOString(),
-        last30Days: thirtyDaysAgo.toISOString(),
+        start: periodStart.toISOString(),
+        end: periodEnd.toISOString(),
+        weekStart: weekStart.toISOString(),
       },
+      weekDays,
+      hourlyDistribution: hourlyDist,
+      topUsers,
+      userDailyFrequency: userDailyFreq,
+      userHourlyDistribution: userHourlyDist,
     }
   })
 

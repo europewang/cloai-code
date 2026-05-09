@@ -1,11 +1,16 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp } from 'lucide-react'
+import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import { Document, Page, pdfjs } from 'react-pdf'
 import mammoth from 'mammoth'
+import {
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, AreaChart, Area
+} from 'recharts'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 
@@ -379,8 +384,12 @@ async function fetchRouteSampleSources() {
   }
 }
 
-async function fetchConversationStats() {
-  const res = await apiFetch('/v1/admin/conversations/stats')
+async function fetchConversationStats({ mode = 'month', date, top = 20 } = {}) {
+  const params = new URLSearchParams()
+  params.set('mode', mode)
+  if (date) params.set('date', date)
+  params.set('top', String(top))
+  const res = await apiFetch('/v1/admin/conversations/stats?' + params.toString())
   if (!res.ok) throw new Error('获取会话统计失败')
   return res.json()
 }
@@ -397,20 +406,35 @@ async function fetchAdminConversationDetail(conversationId) {
   return res.json()
 }
 
-async function fetchSuperAdminOverview() {
+async function fetchSuperAdminOverview(chartParams = {}) {
   // 兼容 brain-server：汇总 users + permissions + conversations 生成简版总览结构。
+  // chartParams: { mode, date, top } 控制图表数据范围
   const users = await fetchUsers()
   const now = new Date().toISOString()
 
-  // 获取会话统计数据
+  // 获取会话统计数据（含图表数据）
   let convStats = {}
+  let weekDays = []
+  let hourlyDistribution = []
+  let topUsers = []
+  let userDailyFrequency = {}
+  let userHourlyDistribution = {}
+  let apiMode = 'month'
+  let apiDate = ''
   try {
-    const statsRes = await fetchConversationStats()
+    const statsRes = await fetchConversationStats(chartParams)
+    apiMode = statsRes?.mode || 'month'
+    apiDate = statsRes?.date || ''
     if (statsRes?.stats) {
       convStats = Object.fromEntries(
         statsRes.stats.map((s) => [String(s.userId), s])
       )
     }
+    if (statsRes?.weekDays) weekDays = statsRes.weekDays
+    if (statsRes?.hourlyDistribution) hourlyDistribution = statsRes.hourlyDistribution
+    if (statsRes?.topUsers) topUsers = statsRes.topUsers
+    if (statsRes?.userDailyFrequency) userDailyFrequency = statsRes.userDailyFrequency
+    if (statsRes?.userHourlyDistribution) userHourlyDistribution = statsRes.userHourlyDistribution
   } catch (e) {
     console.warn('Failed to fetch conversation stats:', e)
   }
@@ -455,7 +479,15 @@ async function fetchSuperAdminOverview() {
   return {
     admins,
     users: normalUsers,
-    generatedAt: now
+    generatedAt: now,
+    // Chart data
+    weekDays,
+    hourlyDistribution,
+    topUsers,
+    userDailyFrequency,
+    userHourlyDistribution,
+    mode: apiMode,
+    date: apiDate,
   }
 }
 
@@ -1157,7 +1189,7 @@ function DocumentViewer({ doc, datasetId, onClose }) {
                 </div>
              </div>
              
-             <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+             <div className="flex-1 scroll-container p-4 space-y-3 bg-slate-50">
                 {loadingChunks ? (
                     <div className="text-center py-8 text-slate-500 flex flex-col items-center gap-2">
                         <Loader2 className="animate-spin" />
@@ -1323,7 +1355,7 @@ function Sidebar({ role, username, activeTab, setActiveTab, onLogout }) {
         <p className="text-xs text-gray-400 mt-0.5">智能知识库系统</p>
       </div>
       
-      <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 p-3 space-y-0.5 scroll-container">
         {menuItems.map((item) => (
           <button
             key={item.id}
@@ -1505,7 +1537,7 @@ function SettingsModal({ isOpen, dataset, isSubmitting, onClose, onConfirm }) {
           </button>
         </div>
         
-        <div className="p-6 overflow-y-auto space-y-6">
+        <div className="p-6 scroll-container space-y-6">
           {/* Basic Info */}
           <div className="space-y-4">
             <h4 className="font-semibold text-slate-900 border-b pb-2">基本信息</h4>
@@ -1824,7 +1856,7 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
   }
 
   return (
-    <div className="p-8 max-w-6xl mx-auto h-full overflow-y-auto relative">
+    <div className="p-8 max-w-6xl mx-auto h-full scroll-container relative">
       {viewingDoc && (
         <DocumentViewer 
             doc={viewingDoc} 
@@ -2228,15 +2260,45 @@ function DatasetManager() {
     }
   }
 
+  const [detailVisible, setDetailVisible] = useState(false)
+
+  useEffect(() => {
+    if (viewingDataset) {
+      requestAnimationFrame(() => setDetailVisible(true))
+    } else {
+      setDetailVisible(false)
+    }
+  }, [viewingDataset])
+
   if (viewingDataset) {
-    return <DatasetDetail dataset={viewingDataset} onBack={() => {
-      setViewingDataset(null)
-      loadData() // Reload list when coming back
-    }} />
+    return (
+      <div
+        className="h-full overflow-hidden"
+        style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}
+      >
+        <div
+          style={{
+            transform: detailVisible ? 'translateX(0)' : 'translateX(100%)',
+            opacity: detailVisible ? 1 : 0,
+            transition: 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.25s ease',
+            height: '100%',
+            overflowY: 'scroll',
+          }}
+        >
+          <DatasetDetail dataset={viewingDataset} onBack={() => {
+            setDetailVisible(false)
+            setTimeout(() => {
+              setViewingDataset(null)
+              loadData() // Reload list when coming back
+            }, 320)
+          }} />
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="h-full overflow-y-auto" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+    <div className="h-full scroll-container" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-6 py-4">
         <div className="flex items-center justify-between">
@@ -2296,23 +2358,39 @@ function DatasetManager() {
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {datasets.map((ds) => (
-              <DatasetCard 
-                key={ds.id} 
-                dataset={ds} 
+            {datasets.map((ds, idx) => (
+              <div
+                key={ds.id}
+                style={{
+                    opacity: 0,
+                    transform: 'translateY(16px)',
+                  }}
+                ref={el => {
+                  if (!el) return
+                  el.style.transition = 'none'
+                  requestAnimationFrame(() => {
+                    el.style.transition = `opacity 0.4s ease ${idx * 40}ms, transform 0.4s ease ${idx * 40}ms`
+                    el.style.opacity = '1'
+                    el.style.transform = 'translateY(0)'
+                  })
+                }}
+              >
+              <DatasetCard
+                dataset={ds}
                 onClick={() => {
                   if (ds?.manageable === false) {
                     alert('该知识库不是你创建的，仅可查看存在，不可进入内部内容。')
                     return
                   }
                   setViewingDataset(ds)
-                }} 
+                }}
                 onDelete={handleDelete}
                 onRename={handleRenameDataset}
                 selected={selectedDatasets.includes(ds.id)}
                 onSelect={handleSelectDataset}
                 selectionMode={selectedDatasets.length > 0}
               />
+              </div>
             ))}
           </div>
         )}
@@ -2442,7 +2520,7 @@ function PermissionManager() {
               用户列表 ({users.length})
             </h3>
           </div>
-          <div className="flex-1 overflow-y-auto p-2">
+          <div className="flex-1 scroll-container p-2">
             {users.map(u => {
               const isSelected = selectedUser === u.username
               return (
@@ -2479,7 +2557,7 @@ function PermissionManager() {
         </div>
 
         {/* Right: Permission Panel */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 scroll-container p-6">
           {!selectedUser ? (
             <div className="h-full flex items-center justify-center text-gray-400">
               <p>请从左侧选择一个用户</p>
@@ -2509,7 +2587,7 @@ function PermissionManager() {
                     {selectedDsCount === totalDatasets && totalDatasets > 0 ? '取消全选' : '全选'}
                   </button>
                 </div>
-                <div className="p-4 max-h-64 overflow-y-auto">
+                <div className="p-4 max-h-64 scroll-container">
                   {loading ? (
                     <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-400" /></div>
                   ) : totalDatasets === 0 ? (
@@ -2562,7 +2640,7 @@ function PermissionManager() {
                     {selectedSkCount === totalSkills && totalSkills > 0 ? '取消全选' : '全选'}
                   </button>
                 </div>
-                <div className="p-4 max-h-64 overflow-y-auto">
+                <div className="p-4 max-h-64 scroll-container">
                   {loading ? (
                     <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-400" /></div>
                   ) : totalSkills === 0 ? (
@@ -2788,7 +2866,7 @@ function UserManagement({ currentRole, currentUserId }) {
   }
 
   return (
-    <div className="h-full overflow-y-auto" style={{ background: '#f5f5f7' }}>
+    <div className="h-full scroll-container" style={{ background: '#f5f5f7' }}>
       {/* Header */}
       <div className="bg-white border-b px-6 py-4">
         <div className="flex items-center justify-between max-w-6xl mx-auto">
@@ -3115,7 +3193,7 @@ function RouteSampleManager() {
   }
 
   return (
-    <div className="p-8 h-full overflow-y-auto">
+    <div className="p-8 h-full scroll-container">
       <div className="max-w-[1400px] mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -3725,7 +3803,7 @@ function SkillManager({ role }) {
   }
 
   return (
-    <div className="p-8 h-full overflow-y-auto">
+    <div className="p-8 h-full scroll-container">
       <div className="max-w-[1400px] mx-auto space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -4091,6 +4169,341 @@ function SkillManager({ role }) {
   )
 }
 
+// =============================================================================
+// Recharts global styling — injected once into the document head
+// =============================================================================
+function injectRechartsStyles() {
+  if (document.getElementById('recharts-injected-styles')) return
+  const style = document.createElement('style')
+  style.id = 'recharts-injected-styles'
+  style.textContent = `
+    .rjs-tooltip-wrapper { pointer-events: none !important; }
+    .recharts-surface { overflow: visible; }
+    .recharts-default-tooltip {
+      background: rgba(255,255,255,0.96) !important;
+      border: 1px solid #e5e5e7 !important;
+      border-radius: 10px !important;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08) !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif !important;
+      font-size: 12px !important;
+      color: #1d1d1f !important;
+      padding: 8px 12px !important;
+    }
+    .recharts-tooltip-label { font-weight: 600 !important; margin-bottom: 4px !important; color: #1d1d1f !important; }
+    .recharts-legend-item-text { color: #6e6e73 !important; font-size: 12px !important; font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
+    .recharts-cartesian-axis-tick-value { fill: #86868b !important; font-size: 11px !important; font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
+  `
+  document.head.appendChild(style)
+}
+
+// =============================================================================
+// Chart Card — shared Apple-style card with animated entrance
+// =============================================================================
+function ChartCard({ title, subtitle, children, delay = 0, className = '' }) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(true), delay)
+    return () => clearTimeout(t)
+  }, [delay])
+
+  return (
+    <div
+      className={`bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden transition-all duration-700 ease-out ` + visible + ` translate-y-0 opacity-100` + className}
+      style={{ opacity: visible ? 1 : 0, transform: visible ? 'translateY(0)' : 'translateY(24px)' }}
+    >
+      <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 tracking-tight">{title}</h3>
+            {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
+          </div>
+        </div>
+      </div>
+      <div className="px-4 pt-4 pb-5">{children}</div>
+    </div>
+  )
+}
+
+// =============================================================================
+// Stat Pill — compact stat display
+// =============================================================================
+function StatPill({ label, value, delay = 0, icon: Icon, color = 'blue' }) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(true), delay)
+    return () => clearTimeout(t)
+  }, [delay])
+
+  const colors = {
+    blue: { bg: 'bg-blue-50', text: 'text-blue-600', dot: 'bg-blue-500' },
+    green: { bg: 'bg-green-50', text: 'text-green-600', dot: 'bg-green-500' },
+    purple: { bg: 'bg-purple-50', text: 'text-purple-600', dot: 'bg-purple-500' },
+    amber: { bg: 'bg-amber-50', text: 'text-amber-600', dot: 'bg-amber-500' },
+    gray: { bg: 'bg-gray-50', text: 'text-gray-600', dot: 'bg-gray-400' },
+  }
+  const c = colors[color] || colors.blue
+
+  return (
+    <div
+      className="flex items-center gap-3 px-4 py-3 rounded-xl border border-gray-100 bg-white transition-all duration-700 ease-out"
+      style={{ opacity: visible ? 1 : 0, transform: visible ? 'translateY(0)' : 'translateY(16px)' }}
+    >
+      {Icon && (
+        <div className={`w-9 h-9 rounded-lg ` + c.bg + ` flex items-center justify-center flex-shrink-0`}>
+          <Icon size={16} className={c.text} />
+        </div>
+      )}
+      <div className="min-w-0">
+        <div className={`text-xl font-semibold ` + c.text + ` leading-none`}>{value}</div>
+        <div className="text-xs text-gray-400 mt-0.5">{label}</div>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// Custom Tooltip for Recharts
+// =============================================================================
+function CustomTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.97)',
+      border: '1px solid #e5e5e7',
+      borderRadius: 10,
+      boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
+      padding: '8px 14px',
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+      fontSize: 12,
+      color: '#1d1d1f',
+    }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: '#1d1d1f' }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || '#6e6e73', fontWeight: 500 }}>
+          {p.name}: {p.value} 条
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// =============================================================================
+// Pie chart legend
+// =============================================================================
+function PieLegend({ data }) {
+  return (
+    <div className="flex flex-col gap-1.5 mt-3 px-1">
+      {data.slice(0, 10).map((item, i) => (
+        <div key={i} className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: item.fill }} />
+            <span className="text-xs text-gray-600 truncate">{item.username}</span>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-xs font-medium text-gray-800">{item.value}</span>
+            <span className="text-xs text-gray-400">{item.percent}%</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// =============================================================================
+// Expandable conversation message thread
+// =============================================================================
+function ConversationThread({ conversation, onClose }) {
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [expandedMsg, setExpandedMsg] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setLoading(true)
+      setError('')
+      try {
+        const data = await fetchAdminConversationDetail(conversation.id)
+        if (!cancelled) setMessages(Array.isArray(data?.messages) ? data.messages : [])
+      } catch (e) {
+        if (!cancelled) setError(e.message || '加载失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [conversation.id])
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-gray-800 truncate">{conversation.title || '未命名会话'}</div>
+          <div className="text-xs text-gray-400 mt-0.5">
+            {conversation.messageCount || 0} 条消息 · {conversation.username || ''}
+            {conversation.createdAt ? ` · ` + new Date(conversation.createdAt).toLocaleDateString() : ''}
+          </div>
+        </div>
+        <button onClick={onClose} className="ml-3 p-1.5 hover:bg-gray-200 rounded-lg transition-colors flex-shrink-0">
+          <X size={16} className="text-gray-400" />
+        </button>
+      </div>
+      <div className="divide-y divide-gray-50">
+        {loading && (
+          <div className="py-10 text-center">
+            <Loader2 size={20} className="animate-spin text-gray-300 mx-auto" />
+          </div>
+        )}
+        {error && (
+          <div className="py-8 text-center text-sm text-red-400">{error}</div>
+        )}
+        {!loading && !error && messages.length === 0 && (
+          <div className="py-8 text-center text-sm text-gray-400">暂无消息</div>
+        )}
+        {!loading && !error && messages.map((msg, idx) => {
+          const isUser = msg.role === 'user'
+          const isExpanded = expandedMsg === idx
+          const content = msg.content || ''
+          const truncated = content.length > 300
+          const display = isExpanded || !truncated ? content : content.slice(0, 300) + '...'
+          return (
+            <div key={idx} className={`px-5 py-3 ` + (isUser ? 'bg-white' : 'bg-gray-50/50')}>
+              <div className="flex gap-3">
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ` +
+                  (isUser ? 'bg-blue-500 text-white' : 'bg-gray-300 text-gray-600')}>
+                  {isUser ? <User size={13} /> : <Bot size={13} />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`text-xs font-semibold ` + (isUser ? 'text-blue-600' : 'text-gray-500')}>
+                      {isUser ? '用户' : 'AI 助手'}
+                    </span>
+                    {msg.createdAt && (
+                      <span className="text-xs text-gray-300">
+                        {new Date(msg.createdAt).toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed break-words">
+                    {display}
+                  </div>
+                  {truncated && (
+                    <button
+                      onClick={() => setExpandedMsg(isExpanded ? null : idx)}
+                      className="mt-1 text-xs text-blue-500 hover:text-blue-600 font-medium"
+                    >
+                      {isExpanded ? '收起' : '展开全部'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// Main Admin Overview Component
+// =============================================================================
+// =============================================================================
+// DateRangePicker — Apple-style date mode selector
+// =============================================================================
+function DateRangePicker({ mode, date, onChange }) {
+  // date: "YYYY-MM-DD" string
+  const today = new Date()
+  const todayStr = today.toISOString().split('T')[0]
+
+  // Month label
+  const monthLabel = (() => {
+    if (!date) return ''
+    const d = new Date(date + 'T00:00:00')
+    return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' })
+  })()
+
+  // Week range label
+  const weekLabel = (() => {
+    if (!date) return ''
+    const d = new Date(date + 'T00:00:00')
+    const dow = d.getDay() || 7
+    const monday = new Date(d)
+    monday.setDate(d.getDate() - dow + 1)
+    const sunday = new Date(monday)
+    sunday.setDate(monday.getDate() + 6)
+    const fmt = (x) => x.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+    return `${fmt(monday)} - ${fmt(sunday)}`
+  })()
+
+  const modes = [
+    {
+      key: 'month',
+      label: '当月',
+      sub: monthLabel,
+    },
+    {
+      key: 'week',
+      label: '当周',
+      sub: weekLabel,
+    },
+    {
+      key: 'day',
+      label: '当日',
+      sub: date ? new Date(date + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' }) : '',
+    },
+  ]
+
+  return (
+    <div className="flex items-center gap-3">
+      {/* Mode tabs */}
+      <div className="flex bg-gray-100 rounded-xl p-1 gap-0.5">
+        {modes.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => onChange({ mode: m.key, date: date || todayStr })}
+            className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ` +
+              (mode === m.key
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700')
+            }
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Date input (hidden label, visible display) */}
+      <div className="relative flex items-center">
+        <CalendarIcon size={13} className="absolute left-3 text-gray-400 pointer-events-none" />
+        <input
+          type="date"
+          value={date || todayStr}
+          max={todayStr}
+          onChange={(e) => onChange({ mode, date: e.target.value })}
+          className="pl-8 pr-3 py-1.5 text-xs text-gray-600 bg-white border border-gray-200 rounded-lg hover:border-gray-300 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 transition-all cursor-pointer"
+        />
+      </div>
+    </div>
+  )
+}
+
+function CalendarIcon({ size = 16, className = '' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+      <line x1="16" y1="2" x2="16" y2="6"/>
+      <line x1="8" y1="2" x2="8" y2="6"/>
+      <line x1="3" y1="10" x2="21" y2="10"/>
+    </svg>
+  )
+}
+
+// =============================================================================
+// Main Admin Overview Component
+// =============================================================================
 function SuperAdminOverview({ role }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -4100,20 +4513,34 @@ function SuperAdminOverview({ role }) {
   const [selectedUserId, setSelectedUserId] = useState(null)
   const [userConversations, setUserConversations] = useState([])
   const [convLoading, setConvLoading] = useState(false)
+  const [expandedConvId, setExpandedConvId] = useState(null)
+  // Chart data from API
+  const [chartParams, setChartParams] = useState({ mode: 'month', date: new Date().toISOString().split('T')[0] })
+  const [weekDays, setWeekDays] = useState([])
+  const [hourlyDistribution, setHourlyDistribution] = useState([])
+  const [topUsers, setTopUsers] = useState([])
+  const [userDailyFrequency, setUserDailyFrequency] = useState({})
+  const [userHourlyDistribution, setUserHourlyDistribution] = useState({})
 
-  const loadOverview = async () => {
+  useEffect(() => { injectRechartsStyles() }, [])
+
+  const loadOverview = async (params = chartParams) => {
     setLoading(true)
     setError('')
     try {
-      const data = await fetchSuperAdminOverview()
+      const data = await fetchSuperAdminOverview(params)
       setAdmins(Array.isArray(data?.admins) ? data.admins : [])
       setUsers(Array.isArray(data?.users) ? data.users : [])
       setGeneratedAt(data?.generatedAt || '')
+      setWeekDays(Array.isArray(data?.weekDays) ? data.weekDays : [])
+      setHourlyDistribution(Array.isArray(data?.hourlyDistribution) ? data.hourlyDistribution : [])
+      setTopUsers(Array.isArray(data?.topUsers) ? data.topUsers : [])
+      setUserDailyFrequency(data?.userDailyFrequency || {})
+      setUserHourlyDistribution(data?.userHourlyDistribution || {})
     } catch (e) {
       setError(e?.message || '加载失败')
       setAdmins([])
       setUsers([])
-      setGeneratedAt('')
     } finally {
       setLoading(false)
     }
@@ -4121,8 +4548,14 @@ function SuperAdminOverview({ role }) {
 
   useEffect(() => { loadOverview() }, [])
 
+  const handleChartParamsChange = (newParams) => {
+    setChartParams(newParams)
+    loadOverview(newParams)
+  }
+
   const loadUserConversations = async (userId) => {
     setSelectedUserId(userId)
+    setExpandedConvId(null)
     setConvLoading(true)
     try {
       const data = await fetchUserConversations(userId)
@@ -4135,189 +4568,480 @@ function SuperAdminOverview({ role }) {
     }
   }
 
-  const formatTime = (value) => {
-    if (!value) return '-'
-    const dt = new Date(value)
-    if (Number.isNaN(dt.getTime())) return String(value)
-    return dt.toLocaleString()
-  }
-
-  const formatDuration = (ms) => {
-    if (!ms) return '-'
-    if (ms < 1000) return `${ms}ms`
-    return `${(ms / 1000).toFixed(1)}s`
-  }
-
   const isSuper = isSuperAdminRole(role)
   const pageTitle = isSuper ? '超级管理员总览' : '管理员总览'
-
   const allUsers = [...admins, ...users]
   const totalUsers = allUsers.length
   const totalConversations = allUsers.reduce((sum, u) => sum + (u.totalConversations || 0), 0)
   const totalMessages = allUsers.reduce((sum, u) => sum + (u.totalMessages || 0), 0)
-  const avgConversationsPerUser = totalUsers > 0 ? (totalConversations / totalUsers).toFixed(1) : 0
-  const avgMessagesPerUser = totalUsers > 0 ? (totalMessages / totalUsers).toFixed(1) : 0
   const conversations7d = allUsers.reduce((sum, u) => sum + (u.conversationsLast7Days || 0), 0)
   const conversations30d = allUsers.reduce((sum, u) => sum + (u.conversationsLast30Days || 0), 0)
-
   const selectedUser = allUsers.find(u => String(u.userId) === String(selectedUserId))
 
+  // Pie chart data for top 20 users
+  const pieColors = ['#007AFF', '#5856D6', '#FF9500', '#34C759', '#FF3B30', '#AF52DE', '#00C7BE', '#FF2D55', '#8E8E93', '#FFD60A',
+    '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9']
+  const totalPeriodMessages = topUsers.reduce((s, u) => s + (u.totalMessages || 0), 0)
+  const pieData = topUsers.map((u, i) => ({
+    username: u.username,
+    value: u.totalMessages,
+    fill: pieColors[i % pieColors.length],
+    percent: totalPeriodMessages > 0 ? ((u.totalMessages / totalPeriodMessages) * 100).toFixed(1) : '0',
+  }))
+  const otherTotal = topUsers.reduce((s, u) => s + (u.totalMessages || 0), 0)
+  if (totalPeriodMessages > otherTotal) {
+    pieData.push({
+      username: '其他用户',
+      value: totalPeriodMessages - otherTotal,
+      fill: '#E5E5EA',
+      percent: ((totalPeriodMessages - otherTotal) / totalPeriodMessages * 100).toFixed(1),
+    })
+  }
+
+  const selectedDaily = selectedUserId ? (userDailyFrequency[String(selectedUserId)] || []) : []
+  const selectedHourly = selectedUserId ? (userHourlyDistribution[String(selectedUserId)] || []) : []
+
+  // Mode label for chart subtitles
+  const modeLabels = { month: '当月', week: '当周', day: '当日' }
+
   return (
-    <div className="h-full overflow-hidden flex flex-col" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+    <div
+      className="h-full overflow-hidden flex flex-col"
+      style={{ background: '#F5F5F7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}
+    >
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
+      <div className="bg-white border-b border-gray-200/70 px-6 py-4 flex-shrink-0 z-10">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">
-              {pageTitle}
-            </h2>
-            <p className="text-sm text-gray-500 mt-1">用户活跃度和会话统计概览</p>
+            <h2 className="text-xl font-semibold text-gray-900 tracking-tight">{pageTitle}</h2>
+            <p className="text-sm text-gray-400 mt-0.5">用户活跃度与会话数据分析</p>
           </div>
-          <button
-            onClick={loadOverview}
-            disabled={loading}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2"
-          >
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            刷新
-          </button>
+          <div className="flex items-center gap-4">
+            <DateRangePicker
+              mode={chartParams.mode}
+              date={chartParams.date}
+              onChange={handleChartParamsChange}
+            />
+            {generatedAt && (
+              <span className="text-xs text-gray-300 hidden xl:block">
+                {new Date(generatedAt).toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              onClick={() => loadOverview()}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 active:bg-gray-100 disabled:opacity-50 transition-all"
+            >
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              刷新
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-hidden flex">
         {/* Left Panel: Stats & User List */}
-        <div className="w-96 flex-shrink-0 border-r border-gray-200 bg-white overflow-y-auto">
-          {/* Stats */}
-          <div className="p-5 space-y-3 border-b border-gray-100">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-2xl font-semibold text-gray-900">{totalUsers}</div>
-                <div className="text-xs text-gray-500 mt-0.5">总用户</div>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-2xl font-semibold text-gray-900">{totalConversations}</div>
-                <div className="text-xs text-gray-500 mt-0.5">总会话</div>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-2xl font-semibold text-gray-900">{totalMessages.toLocaleString()}</div>
-                <div className="text-xs text-gray-500 mt-0.5">总消息</div>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-2xl font-semibold text-gray-900">{conversations30d}</div>
-                <div className="text-xs text-gray-500 mt-0.5">近30天</div>
-              </div>
+        <div className="w-80 flex-shrink-0 border-r border-gray-200/60 bg-white scroll-container">
+          {/* KPI Stats */}
+          <div className="p-4 space-y-2 border-b border-gray-100">
+            <div className="grid grid-cols-2 gap-2">
+              <StatPill label="总用户" value={totalUsers} icon={Users} color="blue" delay={0} />
+              <StatPill label="总会话" value={totalConversations} icon={MessageSquare} color="purple" delay={50} />
+              <StatPill label="总消息" value={totalMessages.toLocaleString()} icon={Activity} color="green" delay={100} />
+              <StatPill label="近7天" value={conversations7d} icon={TrendingUp} color="amber" delay={150} />
             </div>
           </div>
 
           {/* User List */}
           <div className="p-4">
-            <h3 className="text-sm font-medium text-gray-500 mb-3">用户列表 ({allUsers.length})</h3>
-            <div className="space-y-2">
-              {allUsers.map((user, index) => (
-                <button
-                  key={user.userId || index}
-                  onClick={() => loadUserConversations(user.userId)}
-                  className={`w-full text-left p-3 rounded-lg border transition-all ${
-                    selectedUserId === user.userId
-                      ? 'border-gray-400 bg-gray-50'
-                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-                      user.role === 'super_admin' ? 'bg-amber-100 text-amber-700' :
-                      user.role === 'admin' ? 'bg-blue-100 text-blue-700' :
-                      'bg-gray-100 text-gray-600'
-                    }`}>
-                      {user.username.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-900 truncate">{user.username}</div>
-                      <div className="text-xs text-gray-500">
-                        {user.totalConversations || 0} 会话 · {user.totalMessages || 0} 消息
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+              用户列表 <span className="font-normal normal-case tracking-normal ml-1">({allUsers.length})</span>
+            </h3>
+            <div className="space-y-1.5">
+              {allUsers.map((user, index) => {
+                const isSelected = String(selectedUserId) === String(user.userId)
+                const roleColor =
+                  user.role === 'super_admin' ? 'bg-amber-50 text-amber-700 border-amber-100' :
+                  user.role === 'admin' ? 'bg-blue-50 text-blue-700 border-blue-100' :
+                  'bg-gray-50 text-gray-600 border-gray-100'
+                const avatarColor =
+                  user.role === 'super_admin' ? 'bg-amber-100 text-amber-700' :
+                  user.role === 'admin' ? 'bg-blue-100 text-blue-700' :
+                  'bg-gray-100 text-gray-500'
+                return (
+                  <button
+                    key={user.userId || index}
+                    onClick={() => loadUserConversations(user.userId)}
+                    className={`w-full text-left p-3 rounded-xl border transition-all duration-200 group ` +
+                      (isSelected ? 'border-blue-300 bg-blue-50/50 shadow-sm' : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50')
+                    }
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 ` + avatarColor}>
+                        {user.username.charAt(0).toUpperCase()}
                       </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium text-gray-900 truncate">{user.username}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium border ` + roleColor + ` ` +
+                            (isSelected ? '' : 'opacity-0 group-hover:opacity-100') + ` transition-opacity`}>
+                            {user.role === 'super_admin' ? '超级' : user.role === 'admin' ? '管理' : '用户'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-400 mt-0.5">
+                          {user.totalConversations || 0} 会话 · {user.totalMessages || 0} 消息
+                        </div>
+                      </div>
+                      <ChevronRight size={14} className={`text-gray-300 flex-shrink-0 transition-transform duration-200 ` +
+                        (isSelected ? 'text-blue-400 translate-x-0.5' : 'group-hover:text-gray-400')} />
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                )
+              })}
             </div>
           </div>
         </div>
 
-        {/* Right Panel: Detail View */}
-        <div className="flex-1 overflow-y-auto">
-          {!selectedUserId ? (
-            <div className="h-full flex items-center justify-center text-gray-400">
+        {/* Right Panel: Charts & Details */}
+        <div className="flex-1 scroll-container">
+          {loading ? (
+            <div className="h-full flex items-center justify-center">
               <div className="text-center">
-                <Users size={48} className="mx-auto mb-3 opacity-30" />
-                <p className="text-sm">从左侧选择一个用户查看详情</p>
+                <Loader2 size={32} className="animate-spin text-gray-300 mx-auto mb-3" />
+                <p className="text-sm text-gray-400">加载中...</p>
               </div>
             </div>
-          ) : convLoading ? (
-            <div className="h-full flex items-center justify-center">
-              <Loader2 size={24} className="animate-spin text-gray-400" />
-            </div>
-          ) : (
-            <div className="p-6">
-              {/* User Stats */}
-              <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
-                <div className="flex items-center gap-4 mb-4">
-                  <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-xl font-medium text-gray-600">
-                    {selectedUser?.username?.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">{selectedUser?.username}</h3>
-                    <p className="text-sm text-gray-500">
-                      {selectedUser?.role === 'super_admin' ? '超级管理员' : selectedUser?.role === 'admin' ? '管理员' : '普通用户'}
+          ) : error ? (
+            <div className="h-full flex items-center justify-center text-red-400 text-sm">{error}</div>
+          ) : !selectedUserId ? (
+            /* Overview Charts (no user selected) */
+            <div className="p-6 space-y-5">
+              <div className="flex items-center gap-2">
+                <BarChart3 size={16} className="text-gray-400" />
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">全员数据概览</span>
+                <span className="text-xs text-blue-500 font-medium ml-1">
+                  {modeLabels[chartParams.mode] || ''} {chartParams.date ? new Date(chartParams.date + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) : ''}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                {/* 7-Day Bar Chart — selected date highlighted */}
+                <div
+                  className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+                  style={{ opacity: 0, transform: 'translateY(24px)' }}
+                  ref={el => { if (el) setTimeout(() => { el.style.transition = 'all 0.7s ease-out'; el.style.opacity = '1'; el.style.transform = 'translateY(0)' }, 100) }}
+                >
+                  <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
+                      {chartParams.mode === 'day' ? '当日聊天频次' : '近7天每日聊天频次'}
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {chartParams.mode === 'day' ? '消息总数' : '选择日期所在周 · 蓝色为所选日期'}
                     </p>
                   </div>
+                  <div className="px-4 pt-4 pb-5">
+                    {weekDays.length > 0 ? (
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={weekDays} barCategoryGap="30%" margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F3" vertical={false} />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fontSize: 11, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }}
+                            axisLine={false} tickLine={false}
+                          />
+                          <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }} axisLine={false} tickLine={false} />
+                          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,122,255,0.04)' }} />
+                          {/* Selected day bar (blue) */}
+                          <Bar
+                            dataKey="count"
+                            name="消息数"
+                            radius={[6, 6, 0, 0]}
+                            maxBarSize={48}
+                            shape={(props) => {
+                              const { x, y, width, height, isSelected } = props
+                              if (!isSelected) {
+                                return (
+                                  <rect x={x} y={y} width={width} height={height}
+                                    rx={6} fill="#E5E5EA" />
+                                )
+                              }
+                              return (
+                                <rect x={x} y={y} width={width} height={height}
+                                  rx={6} fill="#007AFF" />
+                              )
+                            }}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-[200px] flex items-center justify-center text-sm text-gray-300">暂无数据</div>
+                    )}
+                  </div>
                 </div>
-                <div className="grid grid-cols-4 gap-4">
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.totalConversations || 0}</div>
-                    <div className="text-xs text-gray-500">总会话</div>
+
+                {/* Hourly Distribution Area Chart */}
+                <div
+                  className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+                  style={{ opacity: 0, transform: 'translateY(24px)' }}
+                  ref={el => { if (el) setTimeout(() => { el.style.transition = 'all 0.7s ease-out 0.1s'; el.style.opacity = '1'; el.style.transform = 'translateY(0)' }, 100) }}
+                >
+                  <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
+                      每日使用时间段分布
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {modeLabels[chartParams.mode] || ''}各时段消息量
+                    </p>
                   </div>
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.totalMessages || 0}</div>
-                    <div className="text-xs text-gray-500">总消息</div>
+                  <div className="px-4 pt-4 pb-5">
+                    {hourlyDistribution.length > 0 ? (
+                      <ResponsiveContainer width="100%" height={200}>
+                        <AreaChart data={hourlyDistribution} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="hourlyGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#007AFF" stopOpacity={0.15} />
+                              <stop offset="95%" stopColor="#007AFF" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F3" vertical={false} />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fontSize: 10, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }}
+                            axisLine={false} tickLine={false}
+                            interval={3}
+                          />
+                          <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }} axisLine={false} tickLine={false} />
+                          <Tooltip content={<CustomTooltip />} />
+                          <Area type="monotone" dataKey="count" name="消息数" stroke="#007AFF" strokeWidth={2} fill="url(#hourlyGrad)" dot={false} activeDot={{ r: 4, fill: '#007AFF', strokeWidth: 0 }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-[200px] flex items-center justify-center text-sm text-gray-300">暂无数据</div>
+                    )}
                   </div>
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.conversationsLast7Days || 0}</div>
-                    <div className="text-xs text-gray-500">近7天会话</div>
+                </div>
+
+                {/* Top Users Pie Chart */}
+                <div
+                  className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden lg:col-span-2"
+                  style={{ opacity: 0, transform: 'translateY(24px)' }}
+                  ref={el => { if (el) setTimeout(() => { el.style.transition = 'all 0.7s ease-out 0.2s'; el.style.opacity = '1'; el.style.transform = 'translateY(0)' }, 100) }}
+                >
+                  <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
+                      高频使用用户 Top 20
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {modeLabels[chartParams.mode] || ''}消息占比 · 共 {topUsers.length} 位用户
+                    </p>
                   </div>
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <div className="text-xl font-semibold text-gray-900">{selectedUser?.conversationsLast30Days || 0}</div>
-                    <div className="text-xs text-gray-500">近30天会话</div>
+                  <div className="px-4 pt-4 pb-5">
+                    {pieData.length > 0 && pieData.some(d => d.value > 0) ? (
+                      <div className="flex flex-col lg:flex-row items-center gap-6">
+                        <ResponsiveContainer width={220} height={220}>
+                          <PieChart>
+                            <Pie
+                              data={pieData}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={58}
+                              outerRadius={96}
+                              paddingAngle={2}
+                              dataKey="value"
+                            >
+                              {pieData.map((entry, index) => (
+                                <Cell key={index} fill={entry.fill} stroke="none" />
+                              ))}
+                            </Pie>
+                            <Tooltip content={<CustomTooltip />} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                        <div className="flex-1 min-w-0 w-full lg:max-w-md">
+                          <PieLegend data={pieData} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-[120px] flex items-center justify-center text-sm text-gray-300">暂无数据</div>
+                    )}
                   </div>
                 </div>
               </div>
 
-              {/* Conversations List */}
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <div className="px-5 py-4 border-b border-gray-100">
-                  <h3 className="text-base font-semibold text-gray-900">会话历史 ({userConversations.length})</h3>
-                </div>
-                {userConversations.length === 0 ? (
-                  <div className="px-5 py-12 text-center text-gray-400 text-sm">暂无会话记录</div>
-                ) : (
-                  <div className="divide-y divide-gray-100">
-                    {userConversations.map((conv) => (
-                      <div key={conv.id} className="px-5 py-4 hover:bg-gray-50">
-                        <div className="flex items-start justify-between">
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">{conv.title || '未命名会话'}</div>
-                            <div className="text-xs text-gray-500 mt-1">
-                              {conv.messageCount || 0} 条消息 · 创建于 {formatTime(conv.createdAt)}
-                            </div>
-                          </div>
-                          <div className="text-xs text-gray-400">
-                            {conv.lastMessageAt && `最后活动: ${formatTime(conv.lastMessageAt)}`}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+              {/* Click hint */}
+              <div className="flex items-center justify-center gap-2 py-2 text-sm text-gray-300">
+                <ChevronRight size={14} />
+                <span>点击左侧用户查看个人详情与历史会话</span>
+                <ChevronLeft size={14} />
+              </div>
+            </div>
+          ) : convLoading ? (
+            <div className="h-full flex items-center justify-center">
+              <Loader2 size={24} className="animate-spin text-gray-300" />
+            </div>
+          ) : (
+            /* User Detail Panel */
+            <div className="p-6 space-y-5">
+              {/* Back + User header */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => { setSelectedUserId(null); setExpandedConvId(null) }}
+                  className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors"
+                >
+                  <ChevronLeft size={16} />
+                  返回总览
+                </button>
+                <div className="h-4 w-px bg-gray-200" />
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ` +
+                    (selectedUser?.role === 'super_admin' ? 'bg-amber-100 text-amber-700' :
+                     selectedUser?.role === 'admin' ? 'bg-blue-100 text-blue-700' :
+                     'bg-gray-100 text-gray-600')}>
+                    {selectedUser?.username?.charAt(0).toUpperCase()}
                   </div>
-                )}
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">{selectedUser?.username}</div>
+                    <div className="text-xs text-gray-400">
+                      {selectedUser?.role === 'super_admin' ? '超级管理员' : selectedUser?.role === 'admin' ? '管理员' : '普通用户'}
+                      · {selectedUser?.totalConversations || 0} 会话 · {selectedUser?.totalMessages || 0} 消息
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Per-user charts */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div
+                  className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+                  style={{ opacity: 0, transform: 'translateY(24px)' }}
+                  ref={el => { if (el) setTimeout(() => { el.style.transition = 'all 0.7s ease-out'; el.style.opacity = '1'; el.style.transform = 'translateY(0)' }, 50) }}
+                >
+                  <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
+                      {chartParams.mode === 'day' ? '当日聊天频次' : '近7天每日聊天频次'}
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {chartParams.mode === 'day' ? '消息数 / 天' : '蓝色为所选日期'}
+                    </p>
+                  </div>
+                  <div className="px-4 pt-4 pb-5">
+                    {selectedDaily.length > 0 ? (
+                      <ResponsiveContainer width="100%" height={180}>
+                        <BarChart data={selectedDaily} barCategoryGap="30%" margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F3" vertical={false} />
+                          <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }} axisLine={false} tickLine={false} />
+                          <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }} axisLine={false} tickLine={false} />
+                          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,122,255,0.04)' }} />
+                          <Bar
+                            dataKey="count"
+                            name="消息数"
+                            radius={[6, 6, 0, 0]}
+                            maxBarSize={48}
+                            shape={(props) => {
+                              const { x, y, width, height, isSelected } = props
+                              if (!isSelected) {
+                                return <rect x={x} y={y} width={width} height={height} rx={6} fill="#E5E5EA" />
+                              }
+                              return <rect x={x} y={y} width={width} height={height} rx={6} fill="#007AFF" />
+                            }}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-[180px] flex items-center justify-center text-sm text-gray-300">暂无数据</div>
+                    )}
+                  </div>
+                </div>
+
+                <div
+                  className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+                  style={{ opacity: 0, transform: 'translateY(24px)' }}
+                  ref={el => { if (el) setTimeout(() => { el.style.transition = 'all 0.7s ease-out 0.1s'; el.style.opacity = '1'; el.style.transform = 'translateY(0)' }, 50) }}
+                >
+                  <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-900 tracking-tight">
+                      每日使用时间段分布
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {modeLabels[chartParams.mode] || ''}各时段消息量
+                    </p>
+                  </div>
+                  <div className="px-4 pt-4 pb-5">
+                    {selectedHourly.length > 0 ? (
+                      <ResponsiveContainer width="100%" height={180}>
+                        <AreaChart data={selectedHourly} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="userHourlyGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#007AFF" stopOpacity={0.15} />
+                              <stop offset="95%" stopColor="#007AFF" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F3" vertical={false} />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fontSize: 10, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }}
+                            axisLine={false} tickLine={false}
+                            interval={3}
+                          />
+                          <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#86868B', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }} axisLine={false} tickLine={false} />
+                          <Tooltip content={<CustomTooltip />} />
+                          <Area type="monotone" dataKey="count" name="消息数" stroke="#007AFF" strokeWidth={2} fill="url(#userHourlyGrad)" dot={false} activeDot={{ r: 4, fill: '#007AFF', strokeWidth: 0 }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-[180px] flex items-center justify-center text-sm text-gray-300">暂无数据</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Conversation History */}
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                  <h3 className="text-sm font-semibold text-gray-900 tracking-tight">会话历史</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">共 {userConversations.length} 个会话</p>
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {userConversations.length === 0 ? (
+                    <div className="py-10 text-center text-sm text-gray-300">暂无会话记录</div>
+                  ) : (
+                    userConversations.map((conv) => {
+                      const isExpanded = expandedConvId === conv.id
+                      return (
+                        <div key={conv.id} className="rounded-xl overflow-hidden transition-all duration-200">
+                          <button
+                            onClick={() => setExpandedConvId(isExpanded ? null : conv.id)}
+                            className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-colors ` +
+                              (isExpanded ? 'bg-gray-50' : 'hover:bg-gray-50/70')}
+                          >
+                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors ` +
+                              (isExpanded ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400')}>
+                              <MessageSquare size={13} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium text-gray-800 truncate">{conv.title || '未命名会话'}</div>
+                              <div className="text-xs text-gray-400 mt-0.5">
+                                {conv.messageCount || 0} 条消息
+                                {conv.createdAt ? ` · ` + new Date(conv.createdAt).toLocaleDateString() : ''}
+                                {conv.lastMessageAt ? ` · 最后 ` + new Date(conv.lastMessageAt).toLocaleDateString() : ''}
+                              </div>
+                            </div>
+                            <ChevronDown size={14} className={`text-gray-300 flex-shrink-0 transition-transform duration-200 ` +
+                              (isExpanded ? 'rotate-180 text-blue-400' : '')} />
+                          </button>
+
+                          {isExpanded && (
+                            <div className="border-t border-gray-100">
+                              <ConversationThread
+                                conversation={conv}
+                                onClose={() => setExpandedConvId(null)}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -4476,7 +5200,7 @@ function SourceViewer({ reference, onClose }) {
         {/* Content */}
         <div className="flex-1 overflow-hidden relative bg-slate-100/50">
           {activeTab === 'summary' && (
-            <div className="h-full overflow-y-auto p-6">
+            <div className="h-full scroll-container p-6">
               <div className="max-w-3xl mx-auto space-y-6">
                 {/* Meta Info */}
                 <div className="flex items-center gap-4 text-xs text-slate-500 uppercase tracking-wider font-semibold">
@@ -6814,7 +7538,7 @@ function ChatInterface() {
         <div
           ref={conversationListRef}
           onScroll={handleConversationListScroll}
-          className="flex-1 overflow-y-auto p-2 space-y-1"
+          className="flex-1 scroll-container p-2 space-y-1"
         >
           {conversationListLoadingMore && (
             <div className="px-2 py-1 text-[11px] text-slate-400 flex items-center gap-1">
@@ -6906,7 +7630,7 @@ function ChatInterface() {
               {toolCatalogError}
             </div>
           )}
-          <div className="max-h-52 overflow-y-auto space-y-1">
+          <div className="max-h-52 scroll-container space-y-1">
             {toolCatalogLoading && (
               <div className="px-2 py-2 text-[11px] text-slate-400 flex items-center gap-1">
                 <Loader2 size={12} className="animate-spin" />
@@ -6954,7 +7678,7 @@ function ChatInterface() {
         <div
           ref={messagesContainerRef}
           onScroll={handleMessagesScroll}
-          className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth"
+          className="flex-1 scroll-container p-4 space-y-6 scroll-smooth"
         >
           {messageLoadingMore && (
             <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1">
@@ -7592,7 +8316,7 @@ function ChatInterface() {
               disabled={conversationLoading}
             />
             {mentionOpen && mentionCandidates.length > 0 && (
-              <div className="absolute left-0 right-14 bottom-[88px] rounded-lg border border-slate-200 bg-white shadow-lg z-20 max-h-56 overflow-y-auto">
+              <div className="absolute left-0 right-14 bottom-[88px] rounded-lg border border-slate-200 bg-white shadow-lg z-20 max-h-56 scroll-container">
                 {mentionCandidates.map((tool, idx) => (
                   <button
                     key={tool.name || `${tool.displayName}-${idx}`}

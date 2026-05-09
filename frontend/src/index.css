@@ -35,3 +35,57 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ─── Apple-style scrollbar: thumb fades in on hover, track always reserves space, no arrows ─── */
+
+/* Global Firefox thin scrollbar — transparent by default, colored on hover */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
+}
+
+/* Chrome / Safari / Edge: scrollbar track always reserves 5px (no layout shift) */
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 3px;
+}
+/* Thumb hidden by default, fades in on hover */
+*::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+/* Show thumb on hover / drag */
+*:hover::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb:active {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.22);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 122, 255, 0.6);
+}
+/* Never show up/down arrows — force to 0 size */
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button {
+  display: none !important;
+  height: 0px !important;
+  width: 0px !important;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Utility: containers that should reserve scrollbar space always */
+.scroll-container {
+  overflow-y: scroll;
+}
+
+/* ─── Smooth scroll ─── */
+html {
+  scroll-behavior: smooth;
+}
