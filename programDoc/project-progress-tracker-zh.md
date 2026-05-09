@@ -383,6 +383,30 @@
   - 验证：
     - 前端刷新后，Markdown 表格正确渲染为带边框和样式的表格
 
+48. Xinference 重启与模型加载修复（2026-05-07）：
+  - 问题：直接使用 `docker run` 启动 Xinference 容器时，外部端口 8085 无法正常访问 API
+  - 根因：未使用 docker-compose 方式启动，导致端口映射与服务配置不正确
+  - 修复：
+    - 改用 `docker compose -f deploy/docker-compose-xinference.yml up -d` 启动 Xinference
+    - 确认 Xinference 正确监听 8085 端口
+  - 验证结果：
+    - Xinference 容器正常启动
+    - `bge-m3` 和 `bge-reranker-v2-m3` 模型加载成功
+    - RagFlow 文档解析功能正常（71 个 chunks）
+  - 文档更新：
+    - `howtoload.md`：增加 docker-compose 启动 Xinference 的命令
+    - `05_recordAiOperate.md`：添加本次迭代记录
+
+49. RAG 主链路修正（POST /api/v1/datasets/{id}/chunks 接口验证）：
+  - 问题：RagFlow 解析 API 接口不正确
+  - 修复：使用正确的 `POST /api/v1/datasets/{datasetId}/chunks` 接口触发文档解析
+  - 验证结果：
+    - 文档 `发明专利(1).pdf` 成功解析，生成 71 个 chunks
+    - 解析状态从 `RUNNING` 变为 `DONE`
+  - 接口说明：
+    - 旧接口：`POST /api/v1/admin/datasets/:id/documents/run`
+    - 正确接口：`POST /api/v1/datasets/{datasetId}/chunks`
+
 ## 4. 待完成内容（Todo）
 
 ### 4.1 高优先级

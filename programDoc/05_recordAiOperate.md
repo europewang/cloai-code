@@ -836,3 +836,20 @@
   - `ai4kb-brain-postgres` (5433): 正常
   - `ai4kb-brain-redis` (6380): 正常
 - 下步计划：测试登录和 brain query 功能
+
+## 迭代记录 2026-05-07（Xinference 重启与模型加载修复）
+
+- 目标：使用正确的 docker-compose 方式重启 Xinference 小模型服务。
+- 变更范围：
+  - 发现 Xinference 容器未正确启动，直接用 `docker run` 启动的容器 API 端口映射有问题
+  - 改用 `deploy/docker-compose-xinference.yml` 启动 Xinference
+  - 更新 `howtoload.md` 文档，增加 docker-compose 启动命令
+- 关键文件：
+  - `deploy/docker-compose-xinference.yml`
+  - `launch_xinference_models.py`
+  - `programDoc/howtoload.md`
+- 验证结果：
+  - Xinference 容器正常启动在端口 8085
+  - `bge-m3` 和 `bge-reranker-v2-m3` 模型加载成功
+  - RagFlow 文档解析功能正常（71 个 chunks）
+- 下步计划：继续完善其他文档，保持文档同步更新。

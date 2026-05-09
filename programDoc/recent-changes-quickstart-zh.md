@@ -1,6 +1,6 @@
-# cloai-code 近期改造要点（2026-04-15 ~ 2026-04-17）
+# cloai-code 近期改造要点（2026-05-07）
 
-> 更新时间：2026-04-18
+> 更新时间：2026-05-07
 > 作用：新会话快速启动，了解最近完成的关键改造，无需逐条阅读完整迭代记录。
 
 ---
@@ -9,6 +9,7 @@
 
 | 日期 | 改造项 | 关键文件 | 状态 |
 |------|--------|----------|------|
+| 2026-05-07 | Xinference 重启与 RagFlow 解析接口修复 | `docker-compose-xinference.yml`, `howtoload.md` | ✅ 完成 |
 | 2026-04-17 | SSE 流式输出 + RAG/AI 内容区分显示 | `brainService.ts`, `App.jsx` | ✅ 完成 |
 | 2026-04-17 | JWT Token 过期时间延长 + 自动刷新 | `config.ts`, `App.jsx` | ✅ 完成 |
 | 2026-04-15 | rag-query skill 修复 | `SKILL.md` | ✅ 完成 |
@@ -21,7 +22,31 @@
 
 ## 二、详细改造说明
 
-### 2.1 SSE 流式输出 + RAG/AI 内容区分显示（2026-04-17）
+### 2.1 Xinference 重启与 RagFlow 解析接口修复（2026-05-07）
+
+**目标**：使用正确的 docker-compose 方式重启 Xinference 小模型服务。
+
+**问题**：
+- 直接使用 `docker run` 启动 Xinference 容器时，外部端口 8085 无法正常访问 API
+- 之前用 `launch_xinference_models.py` 启动模型时出现 `Connection reset by peer` 错误
+
+**修复内容**：
+- 改用 `docker compose -f deploy/docker-compose-xinference.yml up -d` 启动 Xinference
+- 确认 Xinference 正确监听 8085 端口
+
+**文档更新**：
+- `howtoload.md` 增加 docker-compose 启动 Xinference 的命令
+- 快速启动章节（第2节）增加步骤说明
+- 各模块重启章节（第3.2节）调整方法优先级
+
+**验证结果**：
+- Xinference 容器正常启动在端口 8085
+- `bge-m3` 和 `bge-reranker-v2-m3` 模型加载成功
+- RagFlow 文档解析功能正常（71 个 chunks）
+
+---
+
+### 2.2 SSE 流式输出 + RAG/AI 内容区分显示（2026-04-17）
 
 **目标**：让前端能同时看到 RAG 检索内容和 LLM 总结，以流式方式输出，且区分显示。
 

@@ -132,6 +132,7 @@
   - 流式输出架构：新增 `handleBrainQueryStream` + `processQueryThroughBrainStream` + `runSingleTurnStream` 实现真正的 SSE 流式输出。
   - RAG Skill 优化：修复 SSE 事件重复、引用为空问题，改用非流式端点获取完整引用。
   - 前端 Markdown 表格支持：安装 `remark-gfm` 插件并添加表格样式配置。
+  - Xinference 重启与模型加载修复（2026-05-07）：改用 docker-compose 方式启动 Xinference，`bge-m3` 和 `bge-reranker-v2-m3` 模型加载成功，RagFlow 文档解析功能正常。
 
 ## 9. 功能与测试代码对照（回顾用）
 
