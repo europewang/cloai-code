@@ -189,6 +189,7 @@ model ToolCallAudit {
   userId       BigInt?     @map("user_id")
   operatorId   BigInt?     @map("operator_id")
   toolName     String      @map("tool_name") @db.VarChar(128)
+  trigger      String?    @map("trigger") @db.VarChar(64)
   result       AuditResult
   latencyMs    Int?        @map("latency_ms")
   errorMessage String?     @map("error_message") @db.VarChar(1024)

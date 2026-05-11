@@ -501,6 +501,19 @@ async function fetchSkillUsage({ userId, startDate, endDate } = {}) {
   return res.json()
 }
 
+async function fetchSkillUsageRecords({ userId, toolName, startDate, endDate, page = 1, pageSize = 20 } = {}) {
+  const params = new URLSearchParams()
+  if (userId) params.set('userId', String(userId))
+  if (toolName) params.set('toolName', toolName)
+  if (startDate) params.set('startDate', startDate)
+  if (endDate) params.set('endDate', endDate)
+  params.set('page', String(page))
+  params.set('pageSize', String(pageSize))
+  const res = await apiFetch(`/v1/admin/skill-usage/records?${params}`)
+  if (!res.ok) throw new Error('获取技能调用明细失败')
+  return res.json()
+}
+
 async function fetchAdminSkills(onlineOnly = false) {
   // 从 brain-server 的技能管理 API 获取技能列表
   const params = new URLSearchParams()
@@ -4534,6 +4547,8 @@ function SuperAdminOverview({ role }) {
   const [skillUsageTotalAudits, setSkillUsageTotalAudits] = useState(0)
   const [skillUsageUser, setSkillUsageUser] = useState([])
   const [skillUsageUserTotal, setSkillUsageUserTotal] = useState(0)
+  // Expanded skill rows: { [toolName]: { records, total, page, loading, hasMore } }
+  const [skillExpandedRows, setSkillExpandedRows] = useState({})
 
   useEffect(() => { injectRechartsStyles() }, [])
   useEffect(() => { loadOverview() }, [])
@@ -4541,6 +4556,7 @@ function SuperAdminOverview({ role }) {
     if (!selectedUserId) {
       setSkillUsageUser([])
       setSkillUsageUserTotal(0)
+      setSkillExpandedRows({})
     }
   }, [selectedUserId])
 
@@ -4561,6 +4577,7 @@ function SuperAdminOverview({ role }) {
       const suData = await fetchSkillUsage()
       setSkillUsageAll(Array.isArray(suData?.items) ? suData?.items : [])
       setSkillUsageTotalAudits(Number(suData?.totalAudits) || 0)
+      setSkillExpandedRows({})
     } catch (e) {
       setError(e?.message || '加载失败')
       setAdmins([])
@@ -4588,6 +4605,72 @@ function SuperAdminOverview({ role }) {
     } else {
       setSkillUsageUser([])
       setSkillUsageUserTotal(0)
+    }
+  }
+
+  const toggleSkillRow = async (toolName, isUserRow) => {
+    const allData = isUserRow ? skillUsageUser : skillUsageAll
+    const isExpanded = skillExpandedRows[`${isUserRow ? 'u_' : ''}${toolName}`]
+    if (isExpanded) {
+      setSkillExpandedRows(prev => {
+        const next = { ...prev }
+        delete next[`${isUserRow ? 'u_' : ''}${toolName}`]
+        return next
+      })
+      return
+    }
+    setSkillExpandedRows(prev => ({
+      ...prev,
+      [`${isUserRow ? 'u_' : ''}${toolName}`]: { records: [], total: 0, page: 1, loading: true, hasMore: false },
+    }))
+    try {
+      const data = await fetchSkillUsageRecords({ userId: isUserRow ? selectedUserId : undefined, toolName, page: 1, pageSize: 20 })
+      const records = Array.isArray(data?.items) ? data.items : []
+      setSkillExpandedRows(prev => ({
+        ...prev,
+        [`${isUserRow ? 'u_' : ''}${toolName}`]: {
+          records,
+          total: Number(data?.total) || 0,
+          page: 1,
+          loading: false,
+          hasMore: records.length < (data?.total || 0),
+        },
+      }))
+    } catch {
+      setSkillExpandedRows(prev => {
+        const next = { ...prev }
+        delete next[`${isUserRow ? 'u_' : ''}${toolName}`]
+        return next
+      })
+    }
+  }
+
+  const loadMoreSkillRecords = async (toolName, isUserRow) => {
+    const key = `${isUserRow ? 'u_' : ''}${toolName}`
+    const row = skillExpandedRows[key]
+    if (!row || row.loading || !row.hasMore) return
+    setSkillExpandedRows(prev => ({
+      ...prev,
+      [key]: { ...prev[key], loading: true },
+    }))
+    try {
+      const data = await fetchSkillUsageRecords({ userId: isUserRow ? selectedUserId : undefined, toolName, page: row.page + 1, pageSize: 20 })
+      const newRecords = Array.isArray(data?.items) ? data.items : []
+      setSkillExpandedRows(prev => ({
+        ...prev,
+        [key]: {
+          records: [...prev[key].records, ...newRecords],
+          total: Number(data?.total) || 0,
+          page: row.page + 1,
+          loading: false,
+          hasMore: prev[key].records.length + newRecords.length < (data?.total || 0),
+        },
+      }))
+    } catch {
+      setSkillExpandedRows(prev => ({
+        ...prev,
+        [key]: { ...prev[key], loading: false },
+      }))
     }
   }
 
@@ -4927,7 +5010,7 @@ function SuperAdminOverview({ role }) {
                     技能调用统计 · 全员
                   </h3>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    共 {skillUsageTotalAudits} 次调用记录 · 排除 RAG 检索
+                    共 {skillUsageTotalAudits} 次调用记录
                   </p>
                 </div>
                 {skillUsageAll.length === 0 ? (
@@ -4936,7 +5019,8 @@ function SuperAdminOverview({ role }) {
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 border-b border-gray-100">
                       <tr>
-                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">技能名称</th>
+                        <th className="px-4 py-3 w-8"></th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">技能名称</th>
                         <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">成功</th>
                         <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">失败</th>
                         <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">拒绝</th>
@@ -4944,15 +5028,81 @@ function SuperAdminOverview({ role }) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {skillUsageAll.map((row) => (
-                        <tr key={row.toolName} className="hover:bg-gray-50/50 transition-colors">
-                          <td className="px-6 py-3 font-medium text-gray-800">{row.toolName}</td>
-                          <td className="px-4 py-3 text-center text-emerald-600 font-medium">{row.success}</td>
-                          <td className="px-4 py-3 text-center text-red-500 font-medium">{row.fail}</td>
-                          <td className="px-4 py-3 text-center text-amber-500 font-medium">{row.deny}</td>
-                          <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
-                        </tr>
-                      ))}
+                      {skillUsageAll.map((row) => {
+                        const key = row.toolName
+                        const exp = skillExpandedRows[key]
+                        const isExp = !!exp
+                        return (
+                          <>
+                            <tr key={key} className="hover:bg-gray-50/50 transition-colors cursor-pointer" onClick={() => toggleSkillRow(key, false)}>
+                              <td className="px-4 py-3 text-center text-gray-300">
+                                <ChevronRight size={14} className={cn('transition-transform duration-200', isExp && 'rotate-90 text-blue-400')} />
+                              </td>
+                              <td className="px-4 py-3 font-medium text-gray-800">{row.toolName}</td>
+                              <td className="px-4 py-3 text-center text-emerald-600 font-medium">{row.success}</td>
+                              <td className="px-4 py-3 text-center text-red-500 font-medium">{row.fail}</td>
+                              <td className="px-4 py-3 text-center text-amber-500 font-medium">{row.deny}</td>
+                              <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
+                            </tr>
+                            {isExp && (
+                              <tr key={`${key}-exp`}>
+                                <td colSpan={6} className="px-0 py-0">
+                                  {exp.loading && exp.records.length === 0 ? (
+                                    <div className="py-6 text-center text-sm text-gray-300">
+                                      <Loader2 size={16} className="animate-spin mx-auto" />
+                                    </div>
+                                  ) : exp.records.length === 0 ? (
+                                    <div className="py-4 text-center text-sm text-gray-300">暂无明细记录</div>
+                                  ) : (
+                                    <div className="bg-gray-50/60 px-6 py-3">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="text-gray-400">
+                                            <th className="pb-2 text-left font-medium">调用时间</th>
+                                            <th className="pb-2 text-center font-medium">结果</th>
+                                            <th className="pb-2 text-center font-medium">操作人</th>
+                                            <th className="pb-2 text-right font-medium">耗时</th>
+                                            <th className="pb-2 text-left font-medium">错误信息</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-200/60">
+                                          {exp.records.map((rec) => (
+                                            <tr key={rec.id} className="text-gray-600">
+                                              <td className="py-2 text-left whitespace-nowrap">{new Date(rec.createdAt).toLocaleString('zh-CN')}</td>
+                                              <td className="py-2 text-center">
+                                                <span className={cn(
+                                                  'px-2 py-0.5 rounded text-xs font-medium',
+                                                  rec.result === 'success' ? 'bg-emerald-50 text-emerald-600' :
+                                                  rec.result === 'deny' ? 'bg-amber-50 text-amber-600' :
+                                                  'bg-red-50 text-red-500'
+                                                )}>
+                                                  {rec.result === 'success' ? '成功' : rec.result === 'deny' ? '拒绝' : '失败'}
+                                                </span>
+                                              </td>
+                                              <td className="py-2 text-center text-gray-500">{rec.operatorUsername || rec.operatorId || '-'}</td>
+                                              <td className="py-2 text-right text-gray-400">{rec.latencyMs != null ? `${rec.latencyMs}ms` : '-'}</td>
+                                              <td className="py-2 text-left text-red-400 max-w-xs truncate" title={rec.errorMessage}>{rec.errorMessage || '-'}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                      {exp.hasMore && (
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); loadMoreSkillRecords(key, false) }}
+                                          className="mt-2 text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1"
+                                        >
+                                          {exp.loading ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
+                                          加载更多
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        )
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -5087,7 +5237,7 @@ function SuperAdminOverview({ role }) {
                       技能调用统计 · {selectedUser?.username}
                     </h3>
                     <p className="text-xs text-gray-400 mt-0.5">
-                      {skillUsageLoading ? '加载中...' : `${skillUsageUserTotal} 次调用记录 · 排除 RAG 检索`}
+                      {skillUsageLoading ? '加载中...' : `${skillUsageUserTotal} 次调用记录`}
                     </p>
                   </div>
                   {skillUsageLoading ? (
@@ -5098,7 +5248,8 @@ function SuperAdminOverview({ role }) {
                     <table className="w-full text-sm">
                       <thead className="bg-gray-50 border-b border-gray-100">
                         <tr>
-                          <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">技能名称</th>
+                          <th className="px-4 py-3 w-8"></th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">技能名称</th>
                           <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">成功</th>
                           <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">失败</th>
                           <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">拒绝</th>
@@ -5106,15 +5257,79 @@ function SuperAdminOverview({ role }) {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {skillUsageUser.map((row) => (
-                          <tr key={row.toolName} className="hover:bg-gray-50/50 transition-colors">
-                            <td className="px-6 py-3 font-medium text-gray-800">{row.toolName}</td>
-                            <td className="px-4 py-3 text-center text-emerald-600 font-medium">{row.success}</td>
-                            <td className="px-4 py-3 text-center text-red-500 font-medium">{row.fail}</td>
-                            <td className="px-4 py-3 text-center text-amber-500 font-medium">{row.deny}</td>
-                            <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
-                          </tr>
-                        ))}
+                        {skillUsageUser.map((row) => {
+                          const key = `u_${row.toolName}`
+                          const exp = skillExpandedRows[key]
+                          const isExp = !!exp
+                          return (
+                            <>
+                              <tr key={key} className="hover:bg-gray-50/50 transition-colors cursor-pointer" onClick={() => toggleSkillRow(row.toolName, true)}>
+                                <td className="px-4 py-3 text-center text-gray-300">
+                                  <ChevronRight size={14} className={cn('transition-transform duration-200', isExp && 'rotate-90 text-blue-400')} />
+                                </td>
+                                <td className="px-4 py-3 font-medium text-gray-800">{row.toolName}</td>
+                                <td className="px-4 py-3 text-center text-emerald-600 font-medium">{row.success}</td>
+                                <td className="px-4 py-3 text-center text-red-500 font-medium">{row.fail}</td>
+                                <td className="px-4 py-3 text-center text-amber-500 font-medium">{row.deny}</td>
+                                <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
+                              </tr>
+                              {isExp && (
+                                <tr key={`${key}-exp`}>
+                                  <td colSpan={6} className="px-0 py-0">
+                                    {exp.loading && exp.records.length === 0 ? (
+                                      <div className="py-6 text-center text-sm text-gray-300">
+                                        <Loader2 size={16} className="animate-spin mx-auto" />
+                                      </div>
+                                    ) : exp.records.length === 0 ? (
+                                      <div className="py-4 text-center text-sm text-gray-300">暂无明细记录</div>
+                                    ) : (
+                                      <div className="bg-gray-50/60 px-6 py-3">
+                                        <table className="w-full text-xs">
+                                          <thead>
+                                            <tr className="text-gray-400">
+                                              <th className="pb-2 text-left font-medium">调用时间</th>
+                                              <th className="pb-2 text-center font-medium">结果</th>
+                                              <th className="pb-2 text-right font-medium">耗时</th>
+                                              <th className="pb-2 text-left font-medium">错误信息</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-gray-200/60">
+                                            {exp.records.map((rec) => (
+                                              <tr key={rec.id} className="text-gray-600">
+                                                <td className="py-2 text-left whitespace-nowrap">{new Date(rec.createdAt).toLocaleString('zh-CN')}</td>
+                                                <td className="py-2 text-center">
+                                                  <span className={cn(
+                                                    'px-2 py-0.5 rounded text-xs font-medium',
+                                                    rec.result === 'success' ? 'bg-emerald-50 text-emerald-600' :
+                                                    rec.result === 'deny' ? 'bg-amber-50 text-amber-600' :
+                                                    'bg-red-50 text-red-500'
+                                                  )}>
+                                                    {rec.result === 'success' ? '成功' : rec.result === 'deny' ? '拒绝' : '失败'}
+                                                  </span>
+                                                </td>
+                                                <td className="py-2 text-right text-gray-400">{rec.latencyMs != null ? `${rec.latencyMs}ms` : '-'}</td>
+                                                <td className="py-2 text-left text-red-400 max-w-xs truncate" title={rec.errorMessage}>{rec.errorMessage || '-'}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                        {exp.hasMore && (
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); loadMoreSkillRecords(row.toolName, true) }}
+                                            className="mt-2 text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1"
+                                          >
+                                            {exp.loading ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
+                                            加载更多
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </>
+                          )
+                        })}
                       </tbody>
                     </table>
                   )}

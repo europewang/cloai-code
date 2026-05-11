@@ -2635,9 +2635,8 @@ export function createServer(config: AppConfig) {
     }
     const { userId, startDate, endDate } = parsed.data
 
-    // 基础 WHERE：排除 rag_query，聚合统计
+    // 基础 WHERE：聚合统计（全工具，包含 RAG）
     const baseWhere: any = {
-      toolName: { not: 'rag_query' },
       ...(userId ? { operatorId: BigInt(userId) } : {}),
       ...(startDate || endDate ? {
         createdAt: {
@@ -2672,6 +2671,78 @@ export function createServer(config: AppConfig) {
     return {
       items: Object.values(toolMap),
       totalAudits: totalRows,
+    }
+  })
+
+  // 技能调用明细列表（支持分页、工具名筛选）
+  app.get('/api/v1/admin/skill-usage/records', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const schema = z.object({
+      userId: z.coerce.number().int().positive().optional(),
+      toolName: z.string().optional(),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      page: z.coerce.number().int().positive().default(1),
+      pageSize: z.coerce.number().int().positive().max(100).default(20),
+    })
+    const parsed = schema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+    const { userId, toolName, startDate, endDate, page, pageSize } = parsed.data
+
+    const where: any = {
+      ...(userId ? { operatorId: BigInt(userId) } : {}),
+      ...(toolName ? { toolName } : {}),
+      ...(startDate || endDate ? {
+        createdAt: {
+          ...(startDate ? { gte: new Date(startDate + 'T00:00:00.000Z') } : {}),
+          ...(endDate ? { lte: new Date(endDate + 'T23:59:59.999Z') } : {}),
+        }
+      } : {}),
+    }
+
+    const [items, total] = await Promise.all([
+      prisma.toolCallAudit.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.toolCallAudit.count({ where }),
+    ])
+
+    // 批量查询操作人用户名
+    const operatorIds = items.map(i => i.operatorId).filter(Boolean)
+    const uniqueIds = [...new Set(operatorIds.map(id => String(id)))]
+    const users = uniqueIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: uniqueIds.map(id => BigInt(id)) } },
+          select: { id: true, username: true },
+        })
+      : []
+    const userMap = new Map(users.map(u => [String(u.id), u.username]))
+
+    return {
+      items: items.map((item: any) => ({
+        id: String(item.id),
+        toolName: item.toolName,
+        result: item.result,
+        latencyMs: item.latencyMs,
+        errorMessage: item.errorMessage,
+        operatorId: item.operatorId ? String(item.operatorId) : null,
+        operatorUsername: item.operatorId ? (userMap.get(String(item.operatorId)) || null) : null,
+        createdAt: item.createdAt.toISOString(),
+      })),
+      total,
+      page,
+      pageSize,
     }
   })
 
