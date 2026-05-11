@@ -1331,7 +1331,6 @@ function Sidebar({ role, username, activeTab, setActiveTab, onLogout }) {
     { id: 'permissions', label: '权限分配', icon: Lock },
     { id: 'skills', label: '技能管理', icon: Settings },
     { id: 'memory', label: '记忆管理', icon: Brain },
-    { id: 'route_samples', label: '审计查询', icon: Brain },
     { id: 'chat', label: '调试对话', icon: MessageSquare },
   ] : (isAdminLikeRole(role) ? [
     { id: 'super_overview', label: '管理员总览', icon: Users },
@@ -5525,7 +5524,7 @@ function ChatInterface() {
   }, [])
 
   const normalizeStoredMessagePayload = useCallback((item) => {
-    const rawPayload = item?.messagePayload ?? item?.message_payload ?? ''
+    const rawPayload = item?.metadata?.payload ?? item?.messagePayload ?? item?.message_payload ?? ''
     if (!rawPayload) return {}
     if (typeof rawPayload === 'object') return rawPayload
     if (typeof rawPayload !== 'string') return {}
@@ -5612,6 +5611,9 @@ function ChatInterface() {
       toolDraft: msg.toolDraft && typeof msg.toolDraft === 'object' ? msg.toolDraft : null,
       clarify: msg.clarify && typeof msg.clarify === 'object' ? msg.clarify : null
     }
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments
+      : (Array.isArray(msg.files) ? msg.files.map(f => ({ name: f.name || f.fileName || '', size: f.size || 0, type: f.type || 'application/octet-stream' })) : [])
     const hasExtra = payload.references.length > 0
       || payload.sourceTag
       || payload.logicFlow
@@ -5623,7 +5625,11 @@ function ChatInterface() {
       || payload.analysisSummary
       || payload.toolDraft
       || payload.clarify
+      || attachments.length > 0
     if (!hasExtra) return ''
+    if (attachments.length > 0) {
+      payload.attachments = attachments
+    }
     return JSON.stringify(payload)
   }
 
