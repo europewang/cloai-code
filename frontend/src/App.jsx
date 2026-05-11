@@ -492,35 +492,66 @@ async function fetchSuperAdminOverview(chartParams = {}) {
 }
 
 async function fetchAdminSkills(onlineOnly = false) {
-  // 兼容 brain-server：基于 skills 审计与已知技能生成展示列表。
-  const res = await apiFetch('/v1/admin/audits/skills?page=1&pageSize=200')
-  const data = res.ok ? await res.json() : { items: [] }
-  const fromAudit = Array.from(new Set((data?.items || []).map((i) => i.toolName).filter(Boolean)))
-  const defaults = ['indicator-verification', 'rag-query']
-  const names = Array.from(new Set([...defaults, ...fromAudit]))
-  const rows = names.map((name) => ({
-    tool_code: name,
-    tool_name: name,
-    description: `来自 brain-server 的技能视图：${name}`,
-    status: 'ONLINE',
-    version: 'n/a',
-    updated_at: new Date().toISOString()
+  // 从 brain-server 的技能管理 API 获取技能列表
+  const params = new URLSearchParams()
+  if (onlineOnly) {
+    params.set('status', 'active')
+  }
+  const url = params.toString() ? `/v1/skills?${params.toString()}` : '/v1/skills'
+  const res = await apiFetch(url)
+  if (!res.ok) throw new Error('加载技能列表失败')
+  const data = await res.json()
+  const skills = Array.isArray(data) ? data : []
+  return skills.map(s => ({
+    tool_code: s.name,
+    tool_name: s.displayName || s.name,
+    description: '',
+    status: s.status === 'active' ? 'ONLINE' : 'OFFLINE',
+    version: s.version || '1',
+    updated_at: s.updatedAt || s.createdAt,
+    name: s.name,
+    displayName: s.displayName,
+    rawMarkdown: s.rawMarkdown || '',
+    scriptPath: s.scriptPath,
+    ownerUsername: s.ownerUsername,
+    createdAt: s.createdAt,
   }))
-  return onlineOnly ? rows.filter((r) => String(r.status).toUpperCase() === 'ONLINE') : rows
 }
 
-async function registerAdminSkill(payload) {
-  const res = await apiFetch('/admin/skills/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {})
-  })
-  if (!res.ok) throw new Error('新增技能失败')
-  return res.json()
+async function registerAdminSkill(form, isUpdate = false) {
+  const payload = buildSkillRegisterPayload(form)
+  if (isUpdate) {
+    // 更新技能：PUT /api/v1/skills/:name
+    const res = await apiFetch(`/v1/skills/${encodeURIComponent(payload.toolCode)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        displayName: payload.toolName,
+        rawMarkdown: form.rawMarkdown || '',
+        status: payload.status === 'ONLINE' ? 'active' : 'inactive',
+      })
+    })
+    if (!res.ok) throw new Error('更新技能失败')
+    return res.json()
+  } else {
+    // 创建技能：POST /api/v1/skills
+    const res = await apiFetch('/v1/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: payload.toolCode,
+        displayName: payload.toolName,
+        rawMarkdown: form.rawMarkdown || '',
+        status: payload.status === 'ONLINE' ? 'active' : 'inactive',
+      })
+    })
+    if (!res.ok) throw new Error('新增技能失败')
+    return res.json()
+  }
 }
 
 async function deleteAdminSkill(toolCode) {
-  const res = await apiFetch(`/admin/skills/${encodeURIComponent(toolCode)}`, {
+  const res = await apiFetch(`/v1/skills/${encodeURIComponent(toolCode)}`, {
     method: 'DELETE'
   })
   if (!res.ok) throw new Error('删除技能失败')
@@ -528,10 +559,24 @@ async function deleteAdminSkill(toolCode) {
 }
 
 async function onlineSkill(toolCode) {
-  const res = await apiFetch(`/admin/skills/${encodeURIComponent(toolCode)}/online`, {
-    method: 'POST'
+  // 将状态改为 active
+  const res = await apiFetch(`/v1/skills/${encodeURIComponent(toolCode)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'active' })
   })
   if (!res.ok) throw new Error('上线技能失败')
+  return res.json()
+}
+
+async function offlineSkill(toolCode) {
+  // 将状态改为 inactive
+  const res = await apiFetch(`/v1/skills/${encodeURIComponent(toolCode)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'inactive' })
+  })
+  if (!res.ok) throw new Error('下线技能失败')
   return res.json()
 }
 
@@ -592,14 +637,6 @@ async function fetchSkillAuditOptions() {
     usernames: Array.isArray(data?.usernames) ? data.usernames : [],
     toolCodes: Array.isArray(data?.tool_codes) ? data.tool_codes : []
   }
-}
-
-async function offlineSkill(toolCode) {
-  const res = await apiFetch(`/admin/skills/${encodeURIComponent(toolCode)}/offline`, {
-    method: 'POST'
-  })
-  if (!res.ok) throw new Error('下线技能失败')
-  return res.json()
 }
 
 async function fetchToolCatalog() {
@@ -3424,7 +3461,9 @@ const DEFAULT_SKILL_FORM = {
   maxFiles: '200',
   parametersSchema: '{\n  "type": "object",\n  "properties": {}\n}',
   draftArgsTemplate: '{\n  "example": ""\n}',
-  status: 'ONLINE'
+  status: 'ONLINE',
+  rawMarkdown: '',
+  scriptPath: '',
 }
 
 function createDefaultSkillForm() {
@@ -3434,8 +3473,8 @@ function createDefaultSkillForm() {
 function mapSkillItemToForm(item) {
   if (!item || typeof item !== 'object') return createDefaultSkillForm()
   return {
-    toolCode: String(item.tool_code || item.toolCode || ''),
-    toolName: String(item.tool_name || item.toolName || ''),
+    toolCode: String(item.name || item.tool_code || item.toolCode || ''),
+    toolName: String(item.displayName || item.tool_name || item.toolName || ''),
     description: String(item.description || ''),
     protocolType: String(item.protocol_type || item.protocolType || 'HTTP'),
     invokeUrl: String(item.invoke_url || item.invokeUrl || ''),
@@ -3449,7 +3488,10 @@ function mapSkillItemToForm(item) {
     maxFiles: String(item.max_files ?? item.maxFiles ?? 200),
     parametersSchema: String(item.parameters_schema || item.parametersSchema || DEFAULT_SKILL_FORM.parametersSchema),
     draftArgsTemplate: String(item.draft_args_template || item.draftArgsTemplate || DEFAULT_SKILL_FORM.draftArgsTemplate),
-    status: String(item.status || 'ONLINE')
+    status: String(item.status || 'ONLINE').toUpperCase() === 'ACTIVE' ? 'ONLINE' : String(item.status || 'ONLINE'),
+    // 新字段
+    rawMarkdown: String(item.rawMarkdown || item.raw_markdown || ''),
+    scriptPath: String(item.scriptPath || item.script_path || ''),
   }
 }
 
@@ -3482,7 +3524,7 @@ function SkillFormPanel({ title, description, form, setForm, onSubmit, submitTex
         <h3 className="text-lg font-semibold text-slate-800">{title}</h3>
         <p className="text-sm text-slate-500 mt-1">{description}</p>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1">tool_code（唯一编码）*</label>
           <p className="text-[11px] text-slate-500 mb-1">默认值：无，建议小写字母+下划线，例如 `cad_area_calc`</p>
@@ -3494,91 +3536,18 @@ function SkillFormPanel({ title, description, form, setForm, onSubmit, submitTex
           <input value={form.toolName} onChange={(e) => setField('toolName', e.target.value)} placeholder="面积计算" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">invoke_url（调用地址）*</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：无，例如 `http://host:port/invoke`</p>
-          <input value={form.invokeUrl} onChange={(e) => setField('invokeUrl', e.target.value)} placeholder="http://127.0.0.1:9001/invoke" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">description（用途说明）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：空，简要说明技能用于什么业务</p>
-          <input value={form.description} onChange={(e) => setField('description', e.target.value)} placeholder="用于 CAD 图纸面积自动计算" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">manifest_url（协议描述地址）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：空，外部协议说明文档地址</p>
-          <input value={form.manifestUrl} onChange={(e) => setField('manifestUrl', e.target.value)} placeholder="http://127.0.0.1:9001/.well-known/manifest.json" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">health_url（健康检查地址）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：空，便于平台定时探活</p>
-          <input value={form.healthUrl} onChange={(e) => setField('healthUrl', e.target.value)} placeholder="http://127.0.0.1:9001/health" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">trigger_keywords（触发词）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：空，逗号分隔，如 `面积,半面积,计算`</p>
-          <input value={form.triggerKeywords} onChange={(e) => setField('triggerKeywords', e.target.value)} placeholder="面积,半面积,计算" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">accepted_file_types（允许文件类型）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：`.dxf,.dwg`，英文逗号分隔</p>
-          <input value={form.acceptedFileTypes} onChange={(e) => setField('acceptedFileTypes', e.target.value)} placeholder=".dxf,.dwg" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">max_files（最大上传数）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：200</p>
-          <input type="number" min="1" value={form.maxFiles} onChange={(e) => setField('maxFiles', e.target.value)} placeholder="200" className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">protocol_type（协议类型）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：HTTP</p>
-          <select value={form.protocolType} onChange={(e) => setField('protocolType', e.target.value)} className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="HTTP">HTTP</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">input_mode（输入模式）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：FILE_AND_PARAMS</p>
-          <select value={form.inputMode} onChange={(e) => setField('inputMode', e.target.value)} className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="FILE_AND_PARAMS">FILE_AND_PARAMS</option>
-            <option value="PARAMS_ONLY">PARAMS_ONLY</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">output_mode（输出模式）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：MIXED</p>
-          <select value={form.outputMode} onChange={(e) => setField('outputMode', e.target.value)} className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="MIXED">MIXED</option>
-            <option value="TEXT">TEXT</option>
-            <option value="FILE">FILE</option>
-          </select>
-        </div>
-        <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1">status（上线状态）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：ONLINE</p>
+          <p className="text-[11px] text-slate-500 mb-1">控制技能是否可用</p>
           <select value={form.status} onChange={(e) => setField('status', e.target.value)} className="w-full px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
             <option value="ONLINE">ONLINE</option>
             <option value="OFFLINE">OFFLINE</option>
           </select>
         </div>
-        <div className="md:col-span-2 xl:col-span-3">
-          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-            <input type="checkbox" checked={form.uploadRequired} onChange={(e) => setField('uploadRequired', e.target.checked)} />
-            <span className="font-medium">upload_required（是否必须上传文件）</span>
-          </label>
-          <p className="text-[11px] text-slate-500 mt-1">默认值：勾选。若取消，表示可纯参数调用。</p>
-        </div>
       </div>
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">parameters_schema（参数 JSON Schema）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：`type=object` 空属性，可按 JSON Schema 扩展</p>
-          <textarea value={form.parametersSchema} onChange={(e) => setField('parametersSchema', e.target.value)} rows={8} className="w-full font-mono text-xs px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">draft_args_template（草稿参数模板）</label>
-          <p className="text-[11px] text-slate-500 mb-1">默认值：示例 JSON（example 字段），用于预填表单</p>
-          <textarea value={form.draftArgsTemplate} onChange={(e) => setField('draftArgsTemplate', e.target.value)} rows={8} className="w-full font-mono text-xs px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1">raw_markdown（技能定义文档）</label>
+        <p className="text-[11px] text-slate-500 mb-1">定义技能的描述、参数说明、使用方法等（支持 Markdown 格式，从 SKILL.md 加载）</p>
+        <textarea value={form.rawMarkdown || ''} onChange={(e) => setField('rawMarkdown', e.target.value)} rows={16} className="w-full font-mono text-xs px-3 py-2 border rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="# 技能名称&#10;&#10;## 描述&#10;技能的详细描述..." />
       </div>
       <div className="flex justify-end">
         <button type="submit" disabled={pending} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
@@ -3713,10 +3682,6 @@ function SkillManager({ role }) {
       alert('tool_name 不能为空')
       return false
     }
-    if (!String(form.invokeUrl || '').trim()) {
-      alert('invoke_url 不能为空')
-      return false
-    }
     return true
   }
 
@@ -3725,7 +3690,7 @@ function SkillManager({ role }) {
     if (!assertFormRequired(createForm)) return
     setCreatePending(true)
     try {
-      await registerAdminSkill(buildSkillRegisterPayload(createForm))
+      await registerAdminSkill(createForm, false)
       setCreateForm(createDefaultSkillForm())
       await loadSkills(onlineOnly)
       setSubPage('overview')
@@ -3741,7 +3706,7 @@ function SkillManager({ role }) {
     if (!assertFormRequired(updateForm)) return
     setUpdatePending(true)
     try {
-      await registerAdminSkill(buildSkillRegisterPayload(updateForm))
+      await registerAdminSkill(updateForm, true)
       await loadSkills(onlineOnly)
       setSubPage('overview')
     } catch (error) {
@@ -3751,9 +3716,22 @@ function SkillManager({ role }) {
     }
   }
 
-  const handleOpenUpdate = (item) => {
-    setUpdateForm(mapSkillItemToForm(item))
-    setSubPage('update')
+  const handleOpenUpdate = async (item) => {
+    const toolCode = item.name || item.tool_code || item.toolCode
+    if (!toolCode) {
+      alert('无法获取技能标识')
+      return
+    }
+    try {
+      // 从后端获取完整的技能详情（包括 rawMarkdown）
+      const res = await apiFetch(`/v1/skills/${encodeURIComponent(toolCode)}`)
+      if (!res.ok) throw new Error('获取技能详情失败')
+      const skillDetail = await res.json()
+      setUpdateForm(mapSkillItemToForm(skillDetail))
+      setSubPage('update')
+    } catch (e) {
+      alert(e?.message || '获取技能详情失败')
+    }
   }
 
   const handleOffline = async (toolCode) => {
