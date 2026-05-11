@@ -7335,7 +7335,8 @@ function ChatInterface() {
             if (aiContent.trim()) {
               aiContent += '\n\n'
             }
-            aiContent += `> **📚 RAG检索结果**\n\n`
+            const blockTitle = assistantPayloadState.sourceTag || skillName || 'RAG检索结果'
+            aiContent += `> **📚 ${blockTitle}**\n\n`
             aiContent += answer
             finalAssistantContent = aiContent
             assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
@@ -8098,12 +8099,12 @@ function ChatInterface() {
                           {msg.isStreaming && <span className="inline-block w-1 h-3 bg-emerald-400 animate-pulse ml-0.5"/>}
                         </div>
                       )}
-                      {/* RAG检索结果 - 固定显示在preRagContent之后、postRagContent之前 */}
+                      {/* 技能执行结果 / RAG检索结果 */}
                       {msg.ragContent && (
                         <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
                           <div className="flex items-center gap-2 mb-2">
                             <Database size={14} className="text-amber-600" />
-                            <span className="text-xs font-semibold text-amber-700">RAG检索结果</span>
+                            <span className="text-xs font-semibold text-amber-700">{msg.sourceTag || 'RAG检索结果'}</span>
                           </div>
                           <div className="text-sm text-amber-900 whitespace-pre-wrap">
                             {msg.ragContent}
