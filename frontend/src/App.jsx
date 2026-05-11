@@ -6332,6 +6332,7 @@ function ChatInterface() {
           if (answer) {
             assistantPayloadState.hasSkillEndResult = true
             assistantPayloadState.ragContent = answer
+            assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
             updateStreamingMessage(nextMsgId, old => ({
               content: old.content,
               ragContent: answer,
@@ -6340,13 +6341,12 @@ function ChatInterface() {
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
               hasRagContent: true,
-              // Preserve outputFiles from previous skill_end events
-              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
             }))
           } else {
             // No answer text but still preserve outputFiles
             updateStreamingMessage(nextMsgId, old => ({
-              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
             }))
           }
           return
@@ -6369,6 +6369,7 @@ function ChatInterface() {
           if (result) {
             assistantPayloadState.hasSkillEndResult = true
             assistantPayloadState.ragContent = result
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(nextMsgId, old => ({
               content: old.content,
               ragContent: result,
@@ -6382,6 +6383,7 @@ function ChatInterface() {
           } else if (outputFiles.length > 0) {
             // No result text but has output files
             assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(nextMsgId, old => ({
               ragContent: assistantPayloadState.ragContent,
               outputFiles: outputFiles,
@@ -6841,6 +6843,7 @@ function ChatInterface() {
           }
           if (answer) {
             assistantPayloadState.ragContent = answer
+            assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
             updateStreamingMessage(aiMsgId, old => ({
               content: old.content,
               ragContent: answer,
@@ -6849,13 +6852,12 @@ function ChatInterface() {
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
               hasRagContent: true,
-              // Preserve outputFiles from previous skill_end events
-              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
             }))
           } else {
             // No answer text but still preserve outputFiles
             updateStreamingMessage(aiMsgId, old => ({
-              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
             }))
           }
           return
@@ -6876,6 +6878,7 @@ function ChatInterface() {
           }
           if (result) {
             assistantPayloadState.ragContent = result
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(aiMsgId, old => ({
               content: old.content,
               ragContent: result,
@@ -6888,8 +6891,10 @@ function ChatInterface() {
             }))
           } else if (outputFiles.length > 0) {
             // No result text but has output files
+            assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(aiMsgId, old => ({
-              ragContent: `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`,
+              ragContent: assistantPayloadState.ragContent,
               outputFiles: outputFiles,
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               hasRagContent: true
@@ -6931,6 +6936,7 @@ function ChatInterface() {
           }
           if (result) {
             assistantPayloadState.ragContent = result
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(aiMsgId, old => ({
               content: old.content,
               ragContent: result,
@@ -7332,6 +7338,7 @@ function ChatInterface() {
             aiContent += `> **📚 RAG检索结果**\n\n`
             aiContent += answer
             finalAssistantContent = aiContent
+            assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
             updateStreamingMessage(aiMsgId, old => ({
               content: aiContent,
               references: refs.length > 0 ? refs : (old.references || []),
@@ -7339,13 +7346,12 @@ function ChatInterface() {
               logicFlow: old.logicFlow,
               skillHint: old.skillHint,
               hasRagContent: true,
-              // Preserve outputFiles from previous skill_end events
-              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
             }))
           } else {
             // No answer text but still preserve outputFiles (from skill_end)
             updateStreamingMessage(aiMsgId, old => ({
-              outputFiles: Array.isArray(old.outputFiles) ? old.outputFiles : []
+              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
             }))
           }
           return
@@ -7379,6 +7385,7 @@ function ChatInterface() {
               })
             }
             finalAssistantContent = aiContent
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(aiMsgId, old => ({
               content: aiContent,
               references: refs.length > 0 ? refs : (old.references || []),
@@ -7399,6 +7406,7 @@ function ChatInterface() {
               aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
             })
             finalAssistantContent = aiContent
+            assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(aiMsgId, old => ({
               content: aiContent,
               references: refs.length > 0 ? refs : (old.references || []),

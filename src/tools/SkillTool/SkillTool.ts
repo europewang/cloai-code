@@ -48,7 +48,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { getAgentContext } from '../../utils/agentContext.js'
-import { errorMessage } from '../../utils/errors.js'
+import { errorMessage, isMalformedCommandError } from '../../utils/errors.js'
 import {
   extractResultText,
   prepareForkedCommandContext,
@@ -123,6 +123,59 @@ const remoteSkillModules = feature('EXPERIMENTAL_SKILL_SEARCH')
     }
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+// ─── Skill Execution Audit Logging ────────────────────────────────────────────
+
+const AUDIT_SERVER_BASE_URL = process.env.BRAIN_SERVER_BASE_URL || 'http://127.0.0.1:8091'
+const AUDIT_SERVER_TOKEN = process.env.BRAIN_SERVER_ACCESS_TOKEN || ''
+
+type AuditTrigger = 'slash' | 'tool' | 'auto'
+type AuditResult = 'success' | 'fail' | 'deny'
+
+/**
+ * Log skill execution to brain-server's ToolCallAudit table.
+ * This ensures all skill executions (both forked and inline) are audited,
+ * not just those through brain-service.
+ */
+async function logSkillExecutionToServer(params: {
+  skillName: string
+  trigger: AuditTrigger
+  result: AuditResult
+  latencyMs?: number
+  errorMessage?: string
+  inputJson?: Record<string, unknown>
+  outputJson?: Record<string, unknown>
+}) {
+  const body = {
+    // Use session ID as traceId if available, otherwise generate one
+    traceId: getSessionId() || `local-${Date.now()}`,
+    toolCallId: `${getSessionId() || 'local'}-${params.skillName}-${Date.now()}`,
+    skillName: params.skillName,
+    trigger: params.trigger,
+    result: params.result,
+    latencyMs: params.latencyMs,
+    errorMessage: params.errorMessage,
+    inputJson: params.inputJson,
+    outputJson: params.outputJson,
+  }
+
+  try {
+    const response = await fetch(`${AUDIT_SERVER_BASE_URL}/api/v1/internal/skills/execution-log`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${AUDIT_SERVER_TOKEN}`,
+      },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      console.error(`[skill-audit] Failed to log skill execution: ${response.status}`)
+    }
+  } catch (err) {
+    // Don't fail skill execution if audit logging fails
+    console.error(`[skill-audit] Failed to send audit log:`, err)
+  }
+}
 
 /**
  * Executes a skill in a forked sub-agent context.
@@ -326,6 +379,16 @@ async function executeForkedSkill(
           : ', no structured result'),
     )
 
+    // Log skill execution to brain-server for audit
+    logSkillExecutionToServer({
+      skillName: commandName,
+      trigger: 'tool',  // SkillTool invocation is always 'tool' trigger
+      result: 'success',
+      latencyMs: durationMs,
+      inputJson: { args, skillContent: skillContent?.substring(0, 500) },
+      outputJson: { resultLength: resultText?.length || 0, hasStructuredResult: !!structuredResult },
+    })
+
     return {
       data: {
         success: true,
@@ -337,6 +400,18 @@ async function executeForkedSkill(
         structuredResult: structuredResult ?? undefined,
       },
     }
+  } catch (err) {
+    // Log failed skill execution to brain-server for audit
+    const durationMs = Date.now() - startTime
+    logSkillExecutionToServer({
+      skillName: commandName,
+      trigger: 'tool',
+      result: 'fail',
+      latencyMs: durationMs,
+      errorMessage: errorMessage(err),
+      inputJson: { args },
+    })
+    throw err
   } finally {
     // Restore previous env value and clean up temp file
     if (prevStructuredResultPath !== undefined) {
@@ -701,6 +776,9 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // - Skill doesn't have disableModelInvocation
     // - Skill is a prompt-based skill
 
+    // Track execution time for audit logging
+    const startTime = Date.now()
+
     // Skills are just names, with optional arguments
     const trimmed = skill.trim()
 
@@ -904,6 +982,17 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         return []
       })
       .join('\n\n')
+
+    // Log inline skill execution to brain-server for audit
+    const durationMs = Date.now() - startTime
+    logSkillExecutionToServer({
+      skillName: commandName,
+      trigger: 'tool',
+      result: 'success',
+      latencyMs: durationMs,
+      inputJson: { args },
+      outputJson: { resultLength: skillContent?.length || 0 },
+    })
 
     // Return success with newMessages and contextModifier
     return {
