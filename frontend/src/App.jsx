@@ -5013,6 +5013,7 @@ function SuperAdminOverview({ role }) {
                   </h3>
                   <p className="text-xs text-gray-400 mt-0.5">
                     共 {skillUsageTotalAudits} 次调用记录
+                    &nbsp;(raw skillUsageAll={JSON.stringify(skillUsageAll)})
                   </p>
                 </div>
                 {skillUsageAll.length === 0 ? (
@@ -5260,6 +5261,7 @@ function SuperAdminOverview({ role }) {
                     </h3>
                     <p className="text-xs text-gray-400 mt-0.5">
                       {skillUsageLoading ? '加载中...' : `${skillUsageUserTotal} 次调用记录`}
+                      &nbsp;(selectedUserId={selectedUserId}, raw skillUsageUser={JSON.stringify(skillUsageUser)})
                     </p>
                   </div>
                   {skillUsageLoading ? (
