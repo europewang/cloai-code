@@ -7488,8 +7488,9 @@ function ChatInterface() {
           }))
         }
       })
-      if (!aiContent) {
-        finalAssistantContent = latestToolResult?.summary || '工具执行完成。'
+      // Fallback: if aiContent is empty but we had renderable output (skill_end with empty result)
+      if (!aiContent.trim() && hasRenderableOutput) {
+        finalAssistantContent = latestToolResult?.summary || '技能执行完成。'
         updateStreamingMessage(aiMsgId, () => ({ content: finalAssistantContent }))
       }
     } catch (err) {
