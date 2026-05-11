@@ -4594,9 +4594,11 @@ function SuperAdminOverview({ role }) {
       setSkillUsageLoading(true)
       try {
         const data = await fetchSkillUsage({ userId: uid })
+        console.log('[skill-usage] uid=', uid, 'data=', JSON.stringify(data))
         setSkillUsageUser(Array.isArray(data?.items) ? data.items : [])
         setSkillUsageUserTotal(Number(data?.totalAudits) || 0)
-      } catch {
+      } catch (e) {
+        console.error('[skill-usage] error:', e)
         setSkillUsageUser([])
         setSkillUsageUserTotal(0)
       } finally {
