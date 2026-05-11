@@ -3855,6 +3855,45 @@ export function createServer(config: AppConfig) {
     }
   })
 
+  // 内部接口：供 brain 服务（3100）记录 skill 审计
+  app.post('/api/v1/internal/skills/execution-log', async (req, reply) => {
+    const body = req.body as any
+    const {
+      traceId,
+      toolCallId,
+      operatorId,
+      skillName,
+      trigger,
+      result,
+      latencyMs,
+      errorMessage,
+      inputJson,
+      outputJson,
+    } = body || {}
+
+    if (!skillName || !result) {
+      return reply.code(400).send({ message: 'skillName and result are required' })
+    }
+
+    try {
+      await writeToolCallAudit({
+        traceId: traceId || String(Date.now()),
+        toolCallId: toolCallId || null,
+        operatorId: operatorId ? BigInt(operatorId) : null,
+        toolName: skillName,
+        trigger: trigger || 'auto',
+        result: ['success', 'fail', 'deny'].includes(result) ? result : 'fail',
+        latencyMs: latencyMs != null ? Number(latencyMs) : null,
+        errorMessage: errorMessage || null,
+        input: inputJson || null,
+        output: outputJson || null,
+      })
+      return { success: true }
+    } catch (err) {
+      reply.code(500).send({ message: 'failed to write audit', error: String(err) })
+    }
+  })
+
   app.post('/api/v1/skills/indicator-verification/run', { preHandler: authGuard }, async (req, reply) => {
     const traceId = getTraceId(req)
     const toolCallStartedAt = Date.now()
