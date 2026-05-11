@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity } from 'lucide-react'
+import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
@@ -8103,7 +8103,7 @@ function ChatInterface() {
                       {msg.ragContent && (
                         <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
                           <div className="flex items-center gap-2 mb-2">
-                            <Database size={14} className="text-amber-600" />
+                            <Wrench size={14} className="text-amber-600" />
                             <span className="text-xs font-semibold text-amber-700">{msg.sourceTag || 'RAG检索结果'}</span>
                           </div>
                           <div className="text-sm text-amber-900 whitespace-pre-wrap">
