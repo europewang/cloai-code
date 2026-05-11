@@ -602,6 +602,7 @@ export function createServer(config: AppConfig) {
     userId?: bigint | null
     operatorId?: bigint | null
     toolName: string
+    trigger?: string
     result: 'success' | 'deny' | 'fail'
     latencyMs?: number | null
     errorMessage?: string | null
@@ -615,6 +616,7 @@ export function createServer(config: AppConfig) {
         userId: params.userId ?? null,
         operatorId: params.operatorId ?? null,
         toolName: params.toolName,
+        trigger: params.trigger ?? 'auto',
         result: params.result,
         latencyMs: params.latencyMs ?? null,
         errorMessage: params.errorMessage ?? null,
@@ -2576,6 +2578,21 @@ export function createServer(config: AppConfig) {
       prisma.toolCallAudit.count({ where }),
     ])
 
+    // 获取所有涉及的用户 ID
+    const userIds = items
+      .map((item: any) => item.operatorId)
+      .filter(Boolean)
+    const uniqueUserIds = [...new Set(userIds.map((id: any) => String(id)))]
+    
+    // 批量查询用户信息
+    const users = uniqueUserIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: uniqueUserIds.map((id: string) => BigInt(id)) } },
+          select: { id: true, username: true }
+        })
+      : []
+    const userMap = new Map(users.map((u: any) => [String(u.id), u.username]))
+
     return {
       items: items.map((item: any) => ({
         id: String(item.id),
@@ -2583,6 +2600,7 @@ export function createServer(config: AppConfig) {
         toolCallId: item.toolCallId,
         userId: item.userId ? String(item.userId) : null,
         operatorId: item.operatorId ? String(item.operatorId) : null,
+        operatorUsername: item.operatorId ? (userMap.get(String(item.operatorId)) || null) : null,
         toolName: item.toolName,
         result: item.result,
         latencyMs: item.latencyMs,
@@ -3082,6 +3100,18 @@ export function createServer(config: AppConfig) {
           errorMessage: 'skill_permission_denied',
           request: parsed.data,
         })
+        await writeToolCallAudit({
+          traceId,
+          toolCallId: `rag-stream-${traceId}`,
+          userId: operator.id,
+          operatorId: operator.id,
+          toolName: 'rag_query',
+          trigger: 'auto',
+          result: 'deny',
+          latencyMs: 0,
+          errorMessage: 'skill_permission_denied',
+          input: parsed.data,
+        })
         return
       }
     }
@@ -3230,6 +3260,18 @@ export function createServer(config: AppConfig) {
       request: { query, mode: 'stream' },
       response: { answerLength: answer.length, references: Array.isArray(references) ? references.length : 0 },
     })
+    await writeToolCallAudit({
+      traceId,
+      toolCallId: `rag-stream-${traceId}`,
+      userId: operator.id,
+      operatorId: operator.id,
+      toolName: 'rag_query',
+      trigger: 'auto',
+      result: upstreamResp.ok ? 'success' : 'fail',
+      latencyMs: 0,
+      input: { query, mode: 'stream' },
+      output: { answerLength: answer.length, references: Array.isArray(references) ? references.length : 0 },
+    })
     await writeAudit({
       traceId,
       userId: operator.id,
@@ -3269,6 +3311,18 @@ export function createServer(config: AppConfig) {
         errorMessage: 'invalid_request_body',
         request: req.body ?? null,
       })
+      await writeToolCallAudit({
+        traceId,
+        toolCallId: `rag-query-${traceId}`,
+        userId: operator.id,
+        operatorId: operator.id,
+        toolName: 'rag_query',
+        trigger: 'auto',
+        result: 'fail',
+        latencyMs: Date.now() - ragStartedAt,
+        errorMessage: 'invalid_request_body',
+        input: req.body ?? null,
+      })
       return reply.code(400).send({ message: 'invalid request body' })
     }
 
@@ -3303,6 +3357,18 @@ export function createServer(config: AppConfig) {
           latencyMs: Date.now() - ragStartedAt,
           errorMessage: 'skill_permission_denied',
           request: parsed.data,
+        })
+        await writeToolCallAudit({
+          traceId,
+          toolCallId: `rag-query-${traceId}`,
+          userId: operator.id,
+          operatorId: operator.id,
+          toolName: 'rag_query',
+          trigger: 'auto',
+          result: 'deny',
+          latencyMs: Date.now() - ragStartedAt,
+          errorMessage: 'skill_permission_denied',
+          input: parsed.data,
         })
         return reply.code(403).send({
           message: 'skill permission denied',
@@ -3350,6 +3416,18 @@ export function createServer(config: AppConfig) {
           latencyMs: Date.now() - ragStartedAt,
           errorMessage: 'dataset_permission_denied',
           request: parsed.data,
+        })
+        await writeToolCallAudit({
+          traceId,
+          toolCallId: `rag-query-${traceId}`,
+          userId: operator.id,
+          operatorId: operator.id,
+          toolName: 'rag_query',
+          trigger: 'auto',
+          result: 'deny',
+          latencyMs: Date.now() - ragStartedAt,
+          errorMessage: 'dataset_permission_denied',
+          input: parsed.data,
         })
         return reply.code(403).send({
           message: 'dataset permission denied',
@@ -3476,6 +3554,18 @@ export function createServer(config: AppConfig) {
         request: ragRequestPayload,
         response: parsedBody,
       })
+      await writeToolCallAudit({
+        traceId,
+        toolCallId: `rag-query-${traceId}`,
+        userId: operator.id,
+        operatorId: operator.id,
+        toolName: 'rag_query',
+        trigger: 'auto',
+        result: upstreamResp.ok ? 'success' : 'fail',
+        latencyMs: Date.now() - ragStartedAt,
+        input: ragRequestPayload,
+        output: parsedBody,
+      })
 
       if (!upstreamResp.ok) {
         return reply.code(502).send({
@@ -3513,6 +3603,18 @@ export function createServer(config: AppConfig) {
         latencyMs: Date.now() - ragStartedAt,
         errorMessage: error instanceof Error ? error.message : 'unknown',
         request: parsed.data,
+      })
+      await writeToolCallAudit({
+        traceId,
+        toolCallId: `rag-query-${traceId}`,
+        userId: operator.id,
+        operatorId: operator.id,
+        toolName: 'rag_query',
+        trigger: 'auto',
+        result: 'fail',
+        latencyMs: Date.now() - ragStartedAt,
+        errorMessage: error instanceof Error ? error.message : 'unknown',
+        input: parsed.data,
       })
       return reply.code(503).send({
         message: 'ragflow unreachable',

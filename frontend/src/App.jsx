@@ -611,7 +611,8 @@ async function fetchSkillAudit({
     created_at: row.createdAt,
     latency_ms: row.latencyMs,
     error_message: row.errorMessage,
-    username: row.operatorId || row.userId || ''
+    operatorUsername: row.operatorUsername || '',
+    username: row.operatorUsername || row.operatorId || row.userId || ''
   }))
   return {
     items: normalized,
@@ -4051,16 +4052,15 @@ function SkillManager({ role }) {
                     <tr className="text-slate-600">
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">时间</th>
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">tool_code</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">状态</th>
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">耗时(ms)</th>
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">用户</th>
-                      <th className="px-3 py-2 text-left font-semibold">错误</th>
+                      <th className="px-3 py-2 text-left font-semibold">调用结果</th>
                     </tr>
                   </thead>
                   <tbody>
                     {auditLoading && (
                       <tr>
-                        <td className="px-3 py-8 text-center text-slate-400" colSpan={6}>
+                        <td className="px-3 py-8 text-center text-slate-400" colSpan={5}>
                           <div className="inline-flex items-center gap-2">
                             <Loader2 className="animate-spin" size={16} />
                             加载中...
@@ -4070,25 +4070,31 @@ function SkillManager({ role }) {
                     )}
                     {!auditLoading && auditRows.length === 0 && (
                       <tr>
-                        <td className="px-3 py-8 text-center text-slate-400" colSpan={6}>
+                        <td className="px-3 py-8 text-center text-slate-400" colSpan={5}>
                           暂无审计记录
                         </td>
                       </tr>
                     )}
                     {!auditLoading && auditRows.map((row) => {
-                      const status = String(row.status || '').toUpperCase()
+                      const status = String(row.status || row.result || '').toUpperCase()
+                      const isSuccess = status === 'SUCCESS'
+                      const isFailed = status === 'FAILED' || status === 'FAIL'
+                      const isDenied = status === 'DENY' || status === 'DENIED'
+                      const errorMsg = row.error_message || row.errorMessage || ''
                       return (
                         <tr key={row.id || row.tool_call_id || row.toolCallId} className="border-b last:border-b-0 hover:bg-slate-50">
                           <td className="px-3 py-2 align-top whitespace-nowrap text-slate-600">{formatTime(row.created_at || row.createdAt)}</td>
-                          <td className="px-3 py-2 align-top font-mono text-xs text-slate-700">{row.tool_code || row.toolCode || '-'}</td>
-                          <td className="px-3 py-2 align-top">
-                            <span className={cn('px-2 py-0.5 rounded text-xs font-medium', status === 'SUCCESS' ? 'bg-emerald-100 text-emerald-700' : status === 'FAILED' ? 'bg-rose-100 text-rose-700' : 'bg-indigo-100 text-indigo-700')}>
-                              {row.status || '-'}
-                            </span>
-                          </td>
+                          <td className="px-3 py-2 align-top font-mono text-xs text-slate-700">{row.tool_code || row.toolName || '-'}</td>
                           <td className="px-3 py-2 align-top text-slate-700">{row.latency_ms ?? row.latencyMs ?? '-'}</td>
-                          <td className="px-3 py-2 align-top text-slate-700">{row.username || '-'}</td>
-                          <td className="px-3 py-2 align-top text-slate-600 min-w-[260px] break-all">{row.error_message || row.errorMessage || '-'}</td>
+                          <td className="px-3 py-2 align-top text-slate-700">{row.operatorUsername || row.username || '-'}</td>
+                          <td className="px-3 py-2 align-top min-w-[200px]">
+                            <span className={cn('px-2 py-0.5 rounded text-xs font-medium', isSuccess ? 'bg-emerald-100 text-emerald-700' : isDenied ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700')}>
+                              {isSuccess ? '成功' : isDenied ? '拒绝' : '失败'}
+                            </span>
+                            {errorMsg && (
+                              <div className="mt-1 text-xs text-rose-600 break-all">{errorMsg}</div>
+                            )}
+                          </td>
                         </tr>
                       )
                     })}
