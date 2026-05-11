@@ -5062,7 +5062,7 @@ function SuperAdminOverview({ role }) {
                                             <th className="pb-2 text-center font-medium">结果</th>
                                             <th className="pb-2 text-center font-medium">操作人</th>
                                             <th className="pb-2 text-right font-medium">耗时</th>
-                                            <th className="pb-2 text-left font-medium">错误信息</th>
+                                            <th className="pb-2 text-left font-medium">详情</th>
                                           </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-200/60">
@@ -5081,7 +5081,27 @@ function SuperAdminOverview({ role }) {
                                               </td>
                                               <td className="py-2 text-center text-gray-500">{rec.operatorUsername || rec.operatorId || '-'}</td>
                                               <td className="py-2 text-right text-gray-400">{rec.latencyMs != null ? `${rec.latencyMs}ms` : '-'}</td>
-                                              <td className="py-2 text-left text-red-400 max-w-xs truncate" title={rec.errorMessage}>{rec.errorMessage || '-'}</td>
+                                              <td className="py-2 text-left">
+                                                {rec.result === 'success' ? (
+                                                  rec.outputJson != null ? (
+                                                    <span
+                                                      className="text-emerald-600 max-w-xs block truncate"
+                                                      title={typeof rec.outputJson === 'string' ? rec.outputJson : JSON.stringify(rec.outputJson, null, 2)}
+                                                    >
+                                                      {typeof rec.outputJson === 'string'
+                                                        ? rec.outputJson
+                                                        : JSON.stringify(rec.outputJson)}
+                                                    </span>
+                                                  ) : <span className="text-gray-300">-</span>
+                                                ) : (
+                                                  <span
+                                                    className="text-red-400 max-w-xs block truncate"
+                                                    title={rec.errorMessage || ''}
+                                                  >
+                                                    {rec.errorMessage || '-'}
+                                                  </span>
+                                                )}
+                                              </td>
                                             </tr>
                                           ))}
                                         </tbody>
@@ -5290,7 +5310,7 @@ function SuperAdminOverview({ role }) {
                                               <th className="pb-2 text-left font-medium">调用时间</th>
                                               <th className="pb-2 text-center font-medium">结果</th>
                                               <th className="pb-2 text-right font-medium">耗时</th>
-                                              <th className="pb-2 text-left font-medium">错误信息</th>
+                                              <th className="pb-2 text-left font-medium">详情</th>
                                             </tr>
                                           </thead>
                                           <tbody className="divide-y divide-gray-200/60">
@@ -5308,7 +5328,27 @@ function SuperAdminOverview({ role }) {
                                                   </span>
                                                 </td>
                                                 <td className="py-2 text-right text-gray-400">{rec.latencyMs != null ? `${rec.latencyMs}ms` : '-'}</td>
-                                                <td className="py-2 text-left text-red-400 max-w-xs truncate" title={rec.errorMessage}>{rec.errorMessage || '-'}</td>
+                                                <td className="py-2 text-left">
+                                                  {rec.result === 'success' ? (
+                                                    rec.outputJson != null ? (
+                                                      <span
+                                                        className="text-emerald-600 max-w-xs block truncate"
+                                                        title={typeof rec.outputJson === 'string' ? rec.outputJson : JSON.stringify(rec.outputJson, null, 2)}
+                                                      >
+                                                        {typeof rec.outputJson === 'string'
+                                                          ? rec.outputJson
+                                                          : JSON.stringify(rec.outputJson)}
+                                                      </span>
+                                                    ) : <span className="text-gray-300">-</span>
+                                                  ) : (
+                                                    <span
+                                                      className="text-red-400 max-w-xs block truncate"
+                                                      title={rec.errorMessage || ''}
+                                                    >
+                                                      {rec.errorMessage || '-'}
+                                                    </span>
+                                                  )}
+                                                </td>
                                               </tr>
                                             ))}
                                           </tbody>

@@ -2736,6 +2736,8 @@ export function createServer(config: AppConfig) {
         result: item.result,
         latencyMs: item.latencyMs,
         errorMessage: item.errorMessage,
+        outputJson: item.outputJson,
+        inputJson: item.inputJson,
         operatorId: item.operatorId ? String(item.operatorId) : null,
         operatorUsername: item.operatorId ? (userMap.get(String(item.operatorId)) || null) : null,
         createdAt: item.createdAt.toISOString(),
