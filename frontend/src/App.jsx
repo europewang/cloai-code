@@ -491,6 +491,16 @@ async function fetchSuperAdminOverview(chartParams = {}) {
   }
 }
 
+async function fetchSkillUsage({ userId, startDate, endDate } = {}) {
+  const params = new URLSearchParams()
+  if (userId) params.set('userId', String(userId))
+  if (startDate) params.set('startDate', startDate)
+  if (endDate) params.set('endDate', endDate)
+  const res = await apiFetch(`/v1/admin/skill-usage?${params}`)
+  if (!res.ok) throw new Error('获取技能统计失败')
+  return res.json()
+}
+
 async function fetchAdminSkills(onlineOnly = false) {
   // 从 brain-server 的技能管理 API 获取技能列表
   const params = new URLSearchParams()
@@ -3868,97 +3878,111 @@ function SkillManager({ role }) {
             </div>
 
             {canManageSkills && (
-              <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+              <>
               {skillsError && (
-                <div className="px-4 py-3 text-sm text-red-600 border-b bg-red-50">
+                <div className="px-4 py-3 text-sm text-red-600 border border-red-200 rounded-lg bg-red-50 mb-4">
                   {skillsError}
                 </div>
               )}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 border-b">
-                    <tr className="text-slate-600">
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">tool_code</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">tool_name</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">状态</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">版本</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">更新时间</th>
-                      <th className="px-3 py-2 text-left font-semibold">描述</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {skillsLoading && (
-                      <tr>
-                        <td className="px-3 py-8 text-center text-slate-400" colSpan={7}>
-                          <div className="inline-flex items-center gap-2">
-                            <Loader2 className="animate-spin" size={16} />
-                            加载中...
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    {!skillsLoading && skills.length === 0 && (
-                      <tr>
-                        <td className="px-3 py-8 text-center text-slate-400" colSpan={7}>
-                          暂无技能
-                        </td>
-                      </tr>
-                    )}
-                    {!skillsLoading && skills.map((item) => {
-                      const toolCode = item.tool_code || item.toolCode
-                      const status = String(item.status || '').toUpperCase()
-                      return (
-                        <tr key={toolCode || item.id} className="border-b last:border-b-0 hover:bg-slate-50">
-                          <td className="px-3 py-2 align-top font-mono text-xs text-slate-700">{toolCode || '-'}</td>
-                          <td className="px-3 py-2 align-top text-slate-800">{item.tool_name || item.toolName || '-'}</td>
-                          <td className="px-3 py-2 align-top">
-                            <span className={cn('px-2 py-0.5 rounded text-xs font-medium', status === 'ONLINE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700')}>
-                              {item.status || '-'}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 align-top text-slate-700">{item.version ?? '-'}</td>
-                          <td className="px-3 py-2 align-top text-slate-600 whitespace-nowrap">{formatTime(item.updated_at || item.updatedAt)}</td>
-                          <td className="px-3 py-2 align-top text-slate-700 min-w-[320px]">{item.description || '-'}</td>
-                          <td className="px-3 py-2 align-top">
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleOpenUpdate(item)}
-                                className="px-3 py-1.5 rounded border border-blue-300 text-blue-600 hover:bg-blue-50 text-xs"
-                              >
-                                修改
-                              </button>
-                              <button
-                                onClick={() => handleOnline(toolCode)}
-                                disabled={status === 'ONLINE' || !!actionPending[`online:${toolCode}`]}
-                                className="px-3 py-1.5 rounded border border-emerald-300 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed text-xs"
-                              >
-                                {actionPending[`online:${toolCode}`] ? '处理中...' : '上线'}
-                              </button>
-                              <button
-                                onClick={() => handleOffline(toolCode)}
-                                disabled={status !== 'ONLINE' || !!actionPending[`offline:${toolCode}`]}
-                                className="px-3 py-1.5 rounded border border-amber-300 text-amber-600 hover:bg-amber-50 disabled:opacity-50 disabled:cursor-not-allowed text-xs"
-                              >
-                                {actionPending[`offline:${toolCode}`] ? '处理中...' : '下线'}
-                              </button>
-                              <button
-                                onClick={() => handleDelete(toolCode)}
-                                disabled={!!actionPending[`delete:${toolCode}`]}
-                                className="px-3 py-1.5 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 disabled:opacity-50 disabled:cursor-not-allowed text-xs"
-                              >
-                                {actionPending[`delete:${toolCode}`] ? '处理中...' : '删除'}
-                              </button>
+              {skillsLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="animate-spin text-slate-300 mr-2" size={20} />
+                  <span className="text-sm text-slate-400">加载中...</span>
+                </div>
+              ) : skills.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+                  <Wrench size={40} className="mb-3 opacity-20" />
+                  <p className="text-sm">暂无技能</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {skills.map((item) => {
+                    const toolCode = item.tool_code || item.toolCode
+                    const status = String(item.status || '').toUpperCase()
+                    const isOnline = status === 'ONLINE'
+                    return (
+                      <div
+                        key={toolCode || item.id}
+                        className={cn(
+                          'bg-white rounded-xl border shadow-sm p-5 flex flex-col gap-3 transition-all duration-200',
+                          'hover:shadow-md hover:-translate-y-0.5'
+                        )}
+                      >
+                        {/* Header */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className={cn(
+                              'w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0',
+                              isOnline ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-400'
+                            )}>
+                              <Wrench size={18} />
                             </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              </div>
-            )}
+                            <div className="min-w-0">
+                              <div className="font-semibold text-slate-800 text-sm truncate">
+                                {item.tool_name || item.toolName || '-'}
+                              </div>
+                              <div className="font-mono text-xs text-slate-400 truncate">{toolCode || '-'}</div>
+                            </div>
+                          </div>
+                          <span className={cn(
+                            'px-2 py-0.5 rounded text-xs font-medium flex-shrink-0',
+                            isOnline ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-slate-100 text-slate-500 border border-slate-200'
+                          )}>
+                            {isOnline ? '在线' : '离线'}
+                          </span>
+                        </div>
+
+                        {/* Description */}
+                        {item.description && (
+                          <p className="text-sm text-slate-600 leading-relaxed line-clamp-2">
+                            {item.description}
+                          </p>
+                        )}
+
+                        {/* Meta */}
+                        <div className="flex items-center gap-3 text-xs text-slate-400">
+                          <span>v{item.version ?? '-'}</span>
+                          <span className="text-slate-200">·</span>
+                          <span>{formatTime(item.updated_at || item.updatedAt)}</span>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                          <button
+                            onClick={() => handleOpenUpdate(item)}
+                            className="flex-1 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 text-xs font-medium transition-colors"
+                          >
+                            修改
+                          </button>
+                          <button
+                            onClick={() => handleOnline(toolCode)}
+                            disabled={isOnline || !!actionPending[`online:${toolCode}`]}
+                            className="flex-1 py-1.5 rounded-lg border border-emerald-200 text-emerald-600 hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium transition-colors"
+                          >
+                            {actionPending[`online:${toolCode}`] ? '...' : '上线'}
+                          </button>
+                          <button
+                            onClick={() => handleOffline(toolCode)}
+                            disabled={!isOnline || !!actionPending[`offline:${toolCode}`]}
+                            className="flex-1 py-1.5 rounded-lg border border-amber-200 text-amber-600 hover:bg-amber-50 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium transition-colors"
+                          >
+                            {actionPending[`offline:${toolCode}`] ? '...' : '下线'}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(toolCode)}
+                            disabled={!!actionPending[`delete:${toolCode}`]}
+                            className="py-1.5 px-2 rounded-lg border border-rose-200 text-rose-500 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed text-xs transition-colors"
+                            title="删除"
+                          >
+                            {actionPending[`delete:${toolCode}`] ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              </>)}
 
             <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-wrap items-end gap-3">
               <div>
@@ -4504,8 +4528,21 @@ function SuperAdminOverview({ role }) {
   const [topUsers, setTopUsers] = useState([])
   const [userDailyFrequency, setUserDailyFrequency] = useState({})
   const [userHourlyDistribution, setUserHourlyDistribution] = useState({})
+  // Skill usage
+  const [skillUsageLoading, setSkillUsageLoading] = useState(false)
+  const [skillUsageAll, setSkillUsageAll] = useState([])
+  const [skillUsageTotalAudits, setSkillUsageTotalAudits] = useState(0)
+  const [skillUsageUser, setSkillUsageUser] = useState([])
+  const [skillUsageUserTotal, setSkillUsageUserTotal] = useState(0)
 
   useEffect(() => { injectRechartsStyles() }, [])
+  useEffect(() => { loadOverview() }, [])
+  useEffect(() => {
+    if (!selectedUserId) {
+      setSkillUsageUser([])
+      setSkillUsageUserTotal(0)
+    }
+  }, [selectedUserId])
 
   const loadOverview = async (params = chartParams) => {
     setLoading(true)
@@ -4520,6 +4557,10 @@ function SuperAdminOverview({ role }) {
       setTopUsers(Array.isArray(data?.topUsers) ? data.topUsers : [])
       setUserDailyFrequency(data?.userDailyFrequency || {})
       setUserHourlyDistribution(data?.userHourlyDistribution || {})
+      // Load all-users skill usage
+      const suData = await fetchSkillUsage()
+      setSkillUsageAll(Array.isArray(suData?.items) ? suData?.items : [])
+      setSkillUsageTotalAudits(Number(suData?.totalAudits) || 0)
     } catch (e) {
       setError(e?.message || '加载失败')
       setAdmins([])
@@ -4530,6 +4571,25 @@ function SuperAdminOverview({ role }) {
   }
 
   useEffect(() => { loadOverview() }, [])
+
+  const loadSkillUsage = async (uid) => {
+    if (uid) {
+      setSkillUsageLoading(true)
+      try {
+        const data = await fetchSkillUsage({ userId: uid })
+        setSkillUsageUser(Array.isArray(data?.items) ? data.items : [])
+        setSkillUsageUserTotal(Number(data?.totalAudits) || 0)
+      } catch {
+        setSkillUsageUser([])
+        setSkillUsageUserTotal(0)
+      } finally {
+        setSkillUsageLoading(false)
+      }
+    } else {
+      setSkillUsageUser([])
+      setSkillUsageUserTotal(0)
+    }
+  }
 
   const handleChartParamsChange = (newParams) => {
     setChartParams(newParams)
@@ -4549,6 +4609,8 @@ function SuperAdminOverview({ role }) {
     } finally {
       setConvLoading(false)
     }
+    // Load per-user skill usage
+    await loadSkillUsage(userId)
   }
 
   const isSuper = isSuperAdminRole(role)
@@ -4856,6 +4918,45 @@ function SuperAdminOverview({ role }) {
                 <span>点击左侧用户查看个人详情与历史会话</span>
                 <ChevronLeft size={14} />
               </div>
+
+              {/* All Users Skill Usage */}
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                  <h3 className="text-sm font-semibold text-gray-900 tracking-tight flex items-center gap-2">
+                    <Wrench size={14} className="text-gray-400" />
+                    技能调用统计 · 全员
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    共 {skillUsageTotalAudits} 次调用记录 · 排除 RAG 检索
+                  </p>
+                </div>
+                {skillUsageAll.length === 0 ? (
+                  <div className="py-10 text-center text-sm text-gray-300">暂无技能调用记录</div>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b border-gray-100">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">技能名称</th>
+                        <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">成功</th>
+                        <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">失败</th>
+                        <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">拒绝</th>
+                        <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">合计</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {skillUsageAll.map((row) => (
+                        <tr key={row.toolName} className="hover:bg-gray-50/50 transition-colors">
+                          <td className="px-6 py-3 font-medium text-gray-800">{row.toolName}</td>
+                          <td className="px-4 py-3 text-center text-emerald-600 font-medium">{row.success}</td>
+                          <td className="px-4 py-3 text-center text-red-500 font-medium">{row.fail}</td>
+                          <td className="px-4 py-3 text-center text-amber-500 font-medium">{row.deny}</td>
+                          <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           ) : convLoading ? (
             <div className="h-full flex items-center justify-center">
@@ -4976,6 +5077,49 @@ function SuperAdminOverview({ role }) {
                   </div>
                 </div>
               </div>
+
+              {/* User Skill Usage */}
+              {(skillUsageUser.length > 0 || skillUsageLoading) && (
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-6 pt-5 pb-4 border-b border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-900 tracking-tight flex items-center gap-2">
+                      <Wrench size={14} className="text-gray-400" />
+                      技能调用统计 · {selectedUser?.username}
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {skillUsageLoading ? '加载中...' : `${skillUsageUserTotal} 次调用记录 · 排除 RAG 检索`}
+                    </p>
+                  </div>
+                  {skillUsageLoading ? (
+                    <div className="py-8 text-center text-sm text-gray-300">加载中...</div>
+                  ) : skillUsageUser.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-gray-300">暂无技能调用记录</div>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 border-b border-gray-100">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">技能名称</th>
+                          <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">成功</th>
+                          <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">失败</th>
+                          <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">拒绝</th>
+                          <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">合计</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {skillUsageUser.map((row) => (
+                          <tr key={row.toolName} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-3 font-medium text-gray-800">{row.toolName}</td>
+                            <td className="px-4 py-3 text-center text-emerald-600 font-medium">{row.success}</td>
+                            <td className="px-4 py-3 text-center text-red-500 font-medium">{row.fail}</td>
+                            <td className="px-4 py-3 text-center text-amber-500 font-medium">{row.deny}</td>
+                            <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
 
               {/* Conversation History */}
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">

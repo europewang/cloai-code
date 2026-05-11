@@ -2615,6 +2615,66 @@ export function createServer(config: AppConfig) {
     }
   })
 
+  // 技能调用统计聚合（全平台 or 指定用户）
+  app.get('/api/v1/admin/skill-usage', { preHandler: authGuard }, async (req, reply) => {
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user') {
+      return reply.code(403).send({ message: 'forbidden' })
+    }
+
+    const schema = z.object({
+      userId: z.coerce.number().int().positive().optional(),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    })
+    const parsed = schema.safeParse(req.query)
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'invalid query' })
+    }
+    const { userId, startDate, endDate } = parsed.data
+
+    // 基础 WHERE：排除 rag_query，聚合统计
+    const baseWhere: any = {
+      toolName: { not: 'rag_query' },
+      ...(userId ? { operatorId: BigInt(userId) } : {}),
+      ...(startDate || endDate ? {
+        createdAt: {
+          ...(startDate ? { gte: new Date(startDate + 'T00:00:00.000Z') } : {}),
+          ...(endDate ? { lte: new Date(endDate + 'T23:59:59.999Z') } : {}),
+        }
+      } : {}),
+    }
+
+    const [rows, totalRows] = await Promise.all([
+      prisma.toolCallAudit.groupBy({
+        by: ['toolName', 'result'],
+        where: baseWhere,
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+      }),
+      prisma.toolCallAudit.count({ where: baseWhere }),
+    ])
+
+    // 聚合成 per-tool 格式
+    const toolMap: Record<string, { toolName: string; success: number; fail: number; deny: number; total: number }> = {}
+    for (const row of rows) {
+      const name = row.toolName
+      if (!toolMap[name]) {
+        toolMap[name] = { toolName: name, success: 0, fail: 0, deny: 0, total: 0 }
+      }
+      const count = Number(row._count.id)
+      toolMap[name][row.result as 'success' | 'fail' | 'deny'] = count
+      toolMap[name].total += count
+    }
+
+    return {
+      items: Object.values(toolMap),
+      totalAudits: totalRows,
+    }
+  })
+
   app.get('/api/v1/admin/audits/rag', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
