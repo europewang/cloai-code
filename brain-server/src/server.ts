@@ -2578,12 +2578,13 @@ export function createServer(config: AppConfig) {
       prisma.toolCallAudit.count({ where }),
     ])
 
-    // 获取所有涉及的用户 ID
-    const userIds = items
-      .map((item: any) => item.operatorId)
-      .filter(Boolean)
-    const uniqueUserIds = [...new Set(userIds.map((id: any) => String(id)))]
-    
+    // 获取所有涉及的用户 ID（subject + operator）
+    const allUserIds = [
+      ...items.map((item: any) => item.userId).filter(Boolean),
+      ...items.map((item: any) => item.operatorId).filter(Boolean),
+    ]
+    const uniqueUserIds = [...new Set(allUserIds.map((id: any) => String(id)))]
+
     // 批量查询用户信息
     const users = uniqueUserIds.length > 0
       ? await prisma.user.findMany({
@@ -2599,6 +2600,7 @@ export function createServer(config: AppConfig) {
         traceId: item.traceId,
         toolCallId: item.toolCallId,
         userId: item.userId ? String(item.userId) : null,
+        subjectUsername: item.userId ? (userMap.get(String(item.userId)) || null) : null,
         operatorId: item.operatorId ? String(item.operatorId) : null,
         operatorUsername: item.operatorId ? (userMap.get(String(item.operatorId)) || null) : null,
         toolName: item.toolName,
@@ -2718,9 +2720,12 @@ export function createServer(config: AppConfig) {
       prisma.toolCallAudit.count({ where }),
     ])
 
-    // 批量查询操作人用户名
-    const operatorIds = items.map(i => i.operatorId).filter(Boolean)
-    const uniqueIds = [...new Set(operatorIds.map(id => String(id)))]
+    // 批量查询用户信息（subject + operator）
+    const allUserIds = [
+      ...items.map(i => i.userId).filter(Boolean),
+      ...items.map(i => i.operatorId).filter(Boolean),
+    ]
+    const uniqueIds = [...new Set(allUserIds.map(id => String(id)))]
     const users = uniqueIds.length > 0
       ? await prisma.user.findMany({
           where: { id: { in: uniqueIds.map(id => BigInt(id)) } },
@@ -2738,6 +2743,8 @@ export function createServer(config: AppConfig) {
         errorMessage: item.errorMessage,
         outputJson: item.outputJson,
         inputJson: item.inputJson,
+        userId: item.userId ? String(item.userId) : null,
+        subjectUsername: item.userId ? (userMap.get(String(item.userId)) || null) : null,
         operatorId: item.operatorId ? String(item.operatorId) : null,
         operatorUsername: item.operatorId ? (userMap.get(String(item.operatorId)) || null) : null,
         createdAt: item.createdAt.toISOString(),
@@ -3857,6 +3864,13 @@ export function createServer(config: AppConfig) {
 
   // 内部接口：供 brain 服务（3100）记录 skill 审计
   app.post('/api/v1/internal/skills/execution-log', async (req, reply) => {
+    // 简单的内部 token 验证
+    const auth = req.headers.authorization || ''
+    const expectedToken = `Bearer ${config.BRAIN_SERVER_ACCESS_TOKEN || ''}`
+    if (auth !== expectedToken) {
+      return reply.code(401).send({ message: 'unauthorized' })
+    }
+
     const body = req.body as any
     const {
       traceId,

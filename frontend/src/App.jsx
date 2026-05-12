@@ -635,6 +635,7 @@ async function fetchSkillAudit({
     latency_ms: row.latencyMs,
     error_message: row.errorMessage,
     operatorUsername: row.operatorUsername || '',
+    subjectUsername: row.subjectUsername || '',
     username: row.operatorUsername || row.operatorId || row.userId || ''
   }))
   return {
@@ -4090,7 +4091,7 @@ function SkillManager({ role }) {
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">时间</th>
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">tool_code</th>
                       <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">耗时(ms)</th>
-                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">用户</th>
+                      <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">调用者 / 操作者</th>
                       <th className="px-3 py-2 text-left font-semibold">调用结果</th>
                     </tr>
                   </thead>
@@ -4123,7 +4124,24 @@ function SkillManager({ role }) {
                           <td className="px-3 py-2 align-top whitespace-nowrap text-slate-600">{formatTime(row.created_at || row.createdAt)}</td>
                           <td className="px-3 py-2 align-top font-mono text-xs text-slate-700">{row.tool_code || row.toolName || '-'}</td>
                           <td className="px-3 py-2 align-top text-slate-700">{row.latency_ms ?? row.latencyMs ?? '-'}</td>
-                          <td className="px-3 py-2 align-top text-slate-700">{row.operatorUsername || row.username || '-'}</td>
+                          <td className="px-3 py-2 align-top text-slate-700">
+                            <div>
+                              {row.subjectUsername ? (
+                                <div className="text-xs">
+                                  <span className="text-slate-500">调用:</span>{' '}
+                                  <span className="font-medium">{row.subjectUsername}</span>
+                                </div>
+                              ) : row.userId ? (
+                                <div className="text-xs text-slate-400">{row.userId}</div>
+                              ) : null}
+                              {(row.operatorUsername && row.operatorUsername !== row.subjectUsername) && (
+                                <div className="text-xs">
+                                  <span className="text-slate-500">操作:</span>{' '}
+                                  <span className="font-medium">{row.operatorUsername}</span>
+                                </div>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-3 py-2 align-top min-w-[200px]">
                             <span className={cn('px-2 py-0.5 rounded text-xs font-medium', isSuccess ? 'bg-emerald-100 text-emerald-700' : isDenied ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700')}>
                               {isSuccess ? '成功' : isDenied ? '拒绝' : '失败'}
@@ -5060,7 +5078,7 @@ function SuperAdminOverview({ role }) {
                                           <tr className="text-gray-400">
                                             <th className="pb-2 text-left font-medium">调用时间</th>
                                             <th className="pb-2 text-center font-medium">结果</th>
-                                            <th className="pb-2 text-center font-medium">操作人</th>
+                                            <th className="pb-2 text-center font-medium">调用者 / 操作者</th>
                                             <th className="pb-2 text-right font-medium">耗时</th>
                                             <th className="pb-2 text-left font-medium">详情</th>
                                           </tr>
@@ -5079,7 +5097,18 @@ function SuperAdminOverview({ role }) {
                                                   {rec.result === 'success' ? '成功' : rec.result === 'deny' ? '拒绝' : '失败'}
                                                 </span>
                                               </td>
-                                              <td className="py-2 text-center text-gray-500">{rec.operatorUsername || rec.operatorId || '-'}</td>
+                                              <td className="py-2 text-center text-gray-500">
+                                                {rec.subjectUsername ? (
+                                                  <div>
+                                                    <div className="text-xs">{rec.subjectUsername}</div>
+                                                    {(rec.operatorUsername && rec.operatorUsername !== rec.subjectUsername) && (
+                                                      <div className="text-[10px] text-gray-400">{rec.operatorUsername}</div>
+                                                    )}
+                                                  </div>
+                                                ) : (
+                                                  <span>{rec.operatorUsername || rec.operatorId || '-'}</span>
+                                                )}
+                                              </td>
                                               <td className="py-2 text-right text-gray-400">{rec.latencyMs != null ? `${rec.latencyMs}ms` : '-'}</td>
                                               <td className="py-2 text-left">
                                                 {rec.result === 'success' ? (
@@ -6019,7 +6048,7 @@ function ChatInterface() {
   const buildMessagesAndDraftsFromHistory = useCallback((history, conversationId) => {
     const mappedMessages = (Array.isArray(history) ? history : [])
       .map(item => normalizeMessageFromHistory(item))
-      .filter(item => item.content)
+      .filter(item => item.content || item.toolDraft)
     const recoveredPlanDrafts = {}
     mappedMessages.forEach((msg, index) => {
       if (!msg.analysisPlan || typeof msg.analysisPlan !== 'object') return
@@ -7334,17 +7363,40 @@ function ChatInterface() {
             assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
           }
           if (result) {
+            aiContent = `> **📚 ${skillName || 'Skill'} 执行结果**\n\n${result}`
+            if (outputFiles.length > 0) {
+              aiContent += '\n\n---\n\n**📥 下载文件:**\n\n'
+              outputFiles.forEach(f => {
+                aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
+              })
+            }
+            finalAssistantContent = aiContent
             assistantPayloadState.ragContent = result
             assistantPayloadState.outputFiles = outputFiles
             updateStreamingMessage(aiMsgId, old => ({
-              content: old.content,
+              content: aiContent,
               ragContent: result,
               references: refs.length > 0 ? refs : (old.references || []),
               sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
               logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
+              skillHint: assistantPayloadState.skillHint || old.skillHint,
               hasRagContent: true,
               outputFiles: outputFiles
+            }))
+          } else if (outputFiles.length > 0) {
+            aiContent = `> **📚 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。\n\n---\n\n**📥 下载文件:**\n\n`
+            outputFiles.forEach(f => {
+              aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
+            })
+            finalAssistantContent = aiContent
+            assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
+            assistantPayloadState.outputFiles = outputFiles
+            updateStreamingMessage(aiMsgId, old => ({
+              content: aiContent,
+              ragContent: assistantPayloadState.ragContent,
+              outputFiles: outputFiles,
+              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
+              hasRagContent: true
             }))
           }
           return
@@ -7692,7 +7744,8 @@ function ChatInterface() {
       sourceTag: '',
       logicFlow: '',
       hasSkillEndResult: false,
-      skillHint: ''
+      skillHint: '',
+      outputFiles: []
     }
     try {
       for (const file of files) {

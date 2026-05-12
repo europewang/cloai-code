@@ -52,6 +52,8 @@ const envSchema = z.object({
   // MongoDB configuration for skill docs
   MONGO_URL: z.string().default('mongodb://127.0.0.1:27017'),
   MONGO_DB_NAME: z.string().default('ai4kb_brain'),
+  // Token used by brain-service (3100) to call internal endpoints on brain-server
+  BRAIN_SERVER_ACCESS_TOKEN: z.string().default(''),
 })
 
 export type AppConfig = z.infer<typeof envSchema>
