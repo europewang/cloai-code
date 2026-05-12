@@ -1,0 +1,60 @@
+---
+description: 每次改动后强制同步文档，保证 project context 不丢失
+alwaysApply: true
+---
+
+# programDoc 文档同步规则
+
+每次完成改动后，**立即**更新对应文档，不得跳过。
+
+## 触发条件
+
+| 改动类型 | 必须更新的文档 |
+|---|---|
+| 修 bug / 功能改造 | `programDoc/specs/bugfix-<功能>-<日期>.md`（新建）+ `programDoc/changelog.md` |
+| 新增接口 / 接口契约变更 | `programDoc/specs/api.yaml` + `programDoc/changelog.md` |
+| 新增/变更数据模型（表/字段） | `programDoc/specs/prisma.sql` + `programDoc/changelog.md` |
+| Docker / 部署 / 环境变更 | `programDoc/ops-guide.md` + `programDoc/changelog.md` |
+| 前端接口改造 | `programDoc/changelog.md` |
+| 新增/变更 skills | `programDoc/specs/skills.md` + `programDoc/changelog.md` |
+
+## 具体操作
+
+1. **`programDoc/changelog.md`**：在顶部追加本次改动（日期 + 类型 + 摘要）
+2. **`programDoc/progress.md`**：在对应小节追加/更新条目（已完成 / 进行中 / 待完成）
+3. **专项文档**：Bug 修复新建 `programDoc/specs/bugfix-*.md`，接口/模型变更更新 `specs/` 下对应文件
+4. **`programDoc/README.md`**：仅在有对外影响时更新
+
+## 禁止行为
+
+- ❌ 改完代码后"忘记更新文档"
+- ❌ 只更新一处遗漏其他
+- ❌ 文档和代码状态不一致
+- ❌ 在 changelog 中记录而不更新 progress.md
+
+## 文档体系
+
+```
+programDoc/
+├── README.md               ← 项目对外介绍
+├── progress.md             ← 唯一进度总览（**必读**）
+├── changelog.md            ← 变更日志，按时间倒序
+├── ops-guide.md            ← 运维手册：启动/重启/验证/故障排查
+├── specs/                  ← 规范文档（API、Schema、Skills）
+│   ├── api.yaml           ← OpenAPI 规范
+│   ├── prisma.sql         ← 数据库 schema
+│   ├── skills.md          ← 技能架构
+│   └── bugfix-*.md        ← Bug 修复专项记录
+└── archive/               ← 历史参考（不参与日常工作）
+    ├── governance-plan-v1.md
+    ├── ai-legacy-log.md
+    └── deprecated/         ← 已废弃文档
+```
+
+## 优先级
+
+1. `changelog.md`（每次改动必须更新）
+2. `progress.md`（每次改动必须更新）
+3. `specs/` 专项文档（按需）
+4. `ops-guide.md`（仅涉及部署/启动时更新）
+5. `README.md`（仅对外影响时更新）

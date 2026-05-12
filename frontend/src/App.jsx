@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench } from 'lucide-react'
+import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench, Cpu, Server, Zap } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
@@ -199,13 +199,23 @@ async function fetchDatasets() {
   return Array.from(datasetSet).map((id) => ({ id, name: id }))
 }
 
-async function createDataset(name) {
+async function createDataset(name, isShared = false) {
   const res = await apiFetch('/v1/admin/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name })
+    body: JSON.stringify({ name, isShared })
   })
   if (!res.ok) throw new Error('Failed to create dataset')
+  return res.json()
+}
+
+async function updateDatasetShare(id, isShared, allowedUserIds) {
+  const res = await apiFetch(`/v1/admin/datasets/${id}/share`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ isShared, allowedUserIds }),
+  })
+  if (!res.ok) throw new Error('更新共享设置失败')
   return res.json()
 }
 
@@ -669,6 +679,84 @@ async function fetchToolCatalog() {
   if (!res.ok) throw new Error('加载技能目录失败')
   const data = await res.json()
   return Array.isArray(data) ? data : []
+}
+
+// LLM 模型管理
+async function fetchLlmModels() {
+  const res = await apiFetch('/v1/models')
+  if (!res.ok) throw new Error('加载模型列表失败')
+  const data = await res.json()
+  return Array.isArray(data?.items) ? data.items : []
+}
+
+async function createLlmModel(body) {
+  const res = await apiFetch('/v1/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error('创建模型失败')
+  return res.json()
+}
+
+async function updateLlmModel(id, body) {
+  const res = await apiFetch(`/v1/models/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error('更新模型失败')
+  return res.json()
+}
+
+async function deleteLlmModel(id) {
+  const res = await apiFetch(`/v1/models/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('删除模型失败')
+  return res.json()
+}
+
+async function testLlmModel(id) {
+  const res = await apiFetch(`/v1/models/${id}/test`, { method: 'POST' })
+  if (!res.ok) throw new Error('测试连接失败')
+  return res.json()
+}
+
+async function setDefaultLlmModel(id) {
+  const res = await apiFetch(`/v1/models/${id}/set-default`, { method: 'PUT' })
+  if (!res.ok) throw new Error('设置默认模型失败')
+  return res.json()
+}
+
+// 数据库连接
+async function fetchDbConnections() {
+  const res = await apiFetch('/v1/db-connections')
+  if (!res.ok) throw new Error('加载数据库连接失败')
+  const data = await res.json()
+  return Array.isArray(data?.items) ? data.items : []
+}
+
+async function createDbConnection(body) {
+  const res = await apiFetch('/v1/db-connections', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error('创建连接失败')
+  return res.json()
+}
+
+async function deleteDbConnection(id) {
+  const res = await apiFetch(`/v1/db-connections/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('删除连接失败')
+  return res.json()
+}
+
+// 技能库（用户可用的技能列表）
+async function fetchSkillCatalogItems() {
+  const res = await apiFetch('/v1/skill-catalog')
+  if (!res.ok) throw new Error('加载技能库失败')
+  const data = await res.json()
+  return Array.isArray(data?.items) ? data.items : []
 }
 
 async function createToolDraft(conversationId, toolCode, query = '') {
@@ -1386,26 +1474,26 @@ function LoginScreen({ onLogin }) {
 }
 
 function Sidebar({ role, username, activeTab, setActiveTab, onLogout }) {
-  const menuItems = isSuperAdminRole(role) ? [
-    { id: 'super_overview', label: '管理员总览', icon: Users },
-    { id: 'datasets', label: '知识库管理', icon: Database },
-    { id: 'user_management', label: '用户管理', icon: User },
-    { id: 'permissions', label: '权限分配', icon: Lock },
-    { id: 'skills', label: '技能管理', icon: Settings },
-    { id: 'memory', label: '记忆管理', icon: Brain },
-    { id: 'chat', label: '调试对话', icon: MessageSquare },
-  ] : (isAdminLikeRole(role) ? [
-    { id: 'super_overview', label: '管理员总览', icon: Users },
-    { id: 'datasets', label: '知识库管理', icon: Database },
-    { id: 'user_management', label: '用户管理', icon: User },
-    { id: 'permissions', label: '权限分配', icon: Lock },
-    { id: 'skills', label: '技能管理', icon: Settings },
-    { id: 'memory', label: '记忆管理', icon: Brain },
-    { id: 'chat', label: '调试对话', icon: MessageSquare },
-  ] : [
-    { id: 'memory', label: '我的记忆', icon: Brain },
+  // 所有用户都有的侧边栏项目
+  const commonItems = [
     { id: 'chat', label: '智能问答', icon: MessageSquare },
-  ])
+    { id: 'knowledge', label: '知识库', icon: Database },
+    { id: 'databases', label: '数据库', icon: Server },
+    { id: 'skill_lib', label: '技能库', icon: Zap },
+    { id: 'models', label: '模型库', icon: Cpu },
+  ]
+  const adminItems = [
+    { id: 'super_overview', label: '管理员总览', icon: Users },
+    { id: 'user_management', label: '用户管理', icon: User },
+    { id: 'permissions', label: '权限分配', icon: Lock },
+    { id: 'skills', label: '技能管理', icon: Settings },
+    { id: 'memory', label: '记忆管理', icon: Brain },
+  ]
+  const menuItems = isSuperAdminRole(role)
+    ? [...adminItems, ...commonItems]
+    : isAdminLikeRole(role)
+    ? [...adminItems, ...commonItems]
+    : commonItems
 
   return (
     <div className="w-56 bg-white border-r border-gray-200 flex flex-col h-screen shrink-0" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
@@ -1527,6 +1615,58 @@ function RenameModal({ isOpen, onClose, onConfirm, initialValue, initialDescript
           >
             {isSubmitting && <Loader2 className="animate-spin" size={16} />}
             确定
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ShareModal({ isOpen, dataset, isShared, isSubmitting, onClose, onConfirm }) {
+  const [shared, setShared] = useState(false)
+  useEffect(() => { setShared(isShared) }, [isShared])
+  if (!isOpen) return null
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="p-4 border-b flex items-center justify-between bg-slate-50">
+          <h3 className="font-bold text-slate-800 flex items-center gap-2">
+            <Lock size={18} className="text-blue-500" />
+            共享设置
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded-full transition-colors">
+            <X size={20} className="text-slate-500" />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          {dataset && (
+            <div className="text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+              知识库：<span className="font-medium text-slate-800">{dataset.name}</span>
+            </div>
+          )}
+          <div>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" checked={shared} onChange={e => setShared(e.target.checked)}
+                className="mt-0.5 rounded border-gray-300 text-blue-600" />
+              <div>
+                <p className="text-sm font-medium text-slate-700">共享知识库</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {shared
+                    ? '管理员可见，其他管理员可分配给用户使用'
+                    : '仅自己可见，其他用户需单独授权'}
+                </p>
+              </div>
+            </label>
+          </div>
+        </div>
+        <div className="p-4 border-t bg-slate-50 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors font-medium text-sm">
+            取消
+          </button>
+          <button onClick={() => onConfirm(shared)} disabled={isSubmitting}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 font-medium text-sm transition-colors">
+            {isSubmitting && <Loader2 className="animate-spin" size={16} />}
+            保存
           </button>
         </div>
       </div>
@@ -2123,8 +2263,11 @@ function DatasetDetail({ dataset, onBack, onUpdate }) {
   )
 }
 
-function DatasetCard({ dataset, onClick, onDelete, onRename, selected, onSelect, selectionMode }) {
+function DatasetCard({ dataset, onClick, onDelete, onRename, onShare, selected, onSelect, selectionMode, currentRole }) {
+  // manageable: card is clickable/enterable — only owner or super_admin can manage
   const manageable = dataset?.manageable !== false
+  // canShare: super_admin can toggle isShared of any KB; owner can toggle their own
+  const canShare = dataset?.isOwner === true || currentRole === 'super_admin'
   const canSelect = manageable
   const cardClickable = selectionMode ? canSelect : manageable
   return (
@@ -2135,6 +2278,15 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, selected, onSelect,
       <div className="absolute top-4 right-4 z-10 flex gap-2">
         {!selectionMode && manageable && (
           <>
+            {canShare && onShare && (
+              <button 
+                onClick={(e) => onShare(dataset, e)}
+                className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-all"
+                title="共享设置"
+              >
+                <Lock size={12} />
+              </button>
+            )}
             <button 
               onClick={(e) => onRename(dataset, e)}
               className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-all"
@@ -2173,8 +2325,19 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, selected, onSelect,
           <> · {new Date(dataset.created_at).toLocaleDateString()}</>
         )}
       </div>
-      {!manageable && (
-        <div className="text-[11px] text-amber-600 mb-3">仅可查看该知识库存在，不可进入内部内容</div>
+
+      {dataset.isOwner ? (
+        <div className="text-[11px] text-blue-600 mb-3 flex items-center gap-1">
+          <User size={10} /> 我创建的 · {dataset.isShared ? '已共享' : '私有'}
+        </div>
+      ) : dataset.isShared ? (
+        <div className="text-[11px] text-green-600 mb-3 flex items-center gap-1">
+          <Lock size={10} /> 他人共享
+        </div>
+      ) : (
+        <div className="text-[11px] text-orange-600 mb-3 flex items-center gap-1">
+          <Lock size={10} /> 他人私有
+        </div>
       )}
       
       <div className="flex items-center justify-between text-xs text-slate-500 border-t pt-4">
@@ -2191,11 +2354,12 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, selected, onSelect,
   )
 }
 
-function DatasetManager() {
+function DatasetManager({ currentRole }) {
   const [datasets, setDatasets] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [newDatasetName, setNewDatasetName] = useState('')
+  const [newDatasetShared, setNewDatasetShared] = useState(false)
   const [viewingDataset, setViewingDataset] = useState(null)
   const [selectedDatasets, setSelectedDatasets] = useState([])
   const [batchDeleting, setBatchDeleting] = useState(false)
@@ -2206,27 +2370,32 @@ function DatasetManager() {
     initialDescription: '',
     isSubmitting: false
   })
+  const [shareModal, setShareModal] = useState({
+    isOpen: false,
+    dataset: null,
+    isShared: false,
+    isSubmitting: false
+  })
   const manageableDatasets = useMemo(() => datasets.filter(ds => ds?.manageable !== false), [datasets])
 
   const loadData = () => {
     setLoading(true)
-    setSelectedDatasets([]) // Reset selection
+    setSelectedDatasets([])
     fetchDatasets()
       .then(setDatasets)
       .catch(console.error)
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => {
-    loadData()
-  }, [])
+  useEffect(() => { loadData() }, [])
 
   const handleCreate = async () => {
     if (!newDatasetName.trim()) return
     setCreating(true)
     try {
-      await createDataset(newDatasetName)
+      await createDataset(newDatasetName, newDatasetShared)
       setNewDatasetName('')
+      setNewDatasetShared(false)
       loadData()
     } catch (e) {
       alert('创建失败: ' + e.message)
@@ -2274,6 +2443,23 @@ function DatasetManager() {
     } catch (e) {
       alert('修改失败: ' + e.message)
       setRenameModal(prev => ({ ...prev, isSubmitting: false }))
+    }
+  }
+
+  const handleOpenShare = (dataset, e) => {
+    e.stopPropagation()
+    setShareModal({ isOpen: true, dataset, isShared: !!dataset.isShared, isSubmitting: false })
+  }
+
+  const handleConfirmShare = async (isShared) => {
+    setShareModal(prev => ({ ...prev, isSubmitting: true }))
+    try {
+      await updateDatasetShare(shareModal.dataset.id, isShared)
+      loadData()
+      setShareModal(prev => ({ ...prev, isOpen: false }))
+    } catch (e) {
+      alert('更新失败: ' + e.message)
+      setShareModal(prev => ({ ...prev, isSubmitting: false }))
     }
   }
 
@@ -2394,7 +2580,12 @@ function DatasetManager() {
               className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
               value={newDatasetName}
               onChange={(e) => setNewDatasetName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
             />
+            <label className="flex items-center gap-1.5 text-sm text-gray-600 select-none cursor-pointer">
+              <input type="checkbox" checked={newDatasetShared} onChange={e => setNewDatasetShared(e.target.checked)} className="rounded" />
+              共享
+            </label>
             <button
               onClick={handleCreate}
               disabled={creating || !newDatasetName.trim()}
@@ -2447,9 +2638,11 @@ function DatasetManager() {
                 }}
                 onDelete={handleDelete}
                 onRename={handleRenameDataset}
+                onShare={handleOpenShare}
                 selected={selectedDatasets.includes(ds.id)}
                 onSelect={handleSelectDataset}
                 selectionMode={selectedDatasets.length > 0}
+                currentRole={currentRole}
               />
               </div>
             ))}
@@ -2457,6 +2650,14 @@ function DatasetManager() {
         )}
       </div>
 
+      <ShareModal
+        isOpen={shareModal.isOpen}
+        dataset={shareModal.dataset}
+        isShared={shareModal.isShared}
+        isSubmitting={shareModal.isSubmitting}
+        onClose={() => setShareModal(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={handleConfirmShare}
+      />
       <RenameModal 
         isOpen={renameModal.isOpen}
         title="编辑知识库"
@@ -8827,6 +9028,577 @@ function ChatInterface() {
   )
 }
 
+// =============================================================================
+// 数据库连接管理组件
+// =============================================================================
+function DatabaseLibrary() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ name: '', dbType: 'mysql', host: '', port: 3306, databaseName: '', username: '', password: '' })
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  // 假数据占位
+  const PLACEHOLDER_DBS = [
+    { id: 'ph1', name: 'MySQL 生产库', dbType: 'mysql', status: 'connected' },
+    { id: 'ph2', name: 'PostgreSQL 数据仓库', dbType: 'postgresql', status: 'connected' },
+    { id: 'ph3', name: 'MongoDB 日志库', dbType: 'mongodb', status: 'disconnected' },
+  ]
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const realItems = await fetchDbConnections()
+      setItems([...PLACEHOLDER_DBS, ...realItems.map(i => ({ ...i, isPlaceholder: false }))])
+    } catch {
+      setItems(PLACEHOLDER_DBS)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const handleDelete = async (id) => {
+    if (!confirm('确定删除？')) return
+    try {
+      await deleteDbConnection(id)
+      await load()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleSubmit = async () => {
+    if (!form.name.trim() || !form.host.trim()) return
+    setSubmitting(true)
+    try {
+      await createDbConnection(form)
+      setShowForm(false)
+      setForm({ name: '', dbType: 'mysql', host: '', port: 3306, databaseName: '', username: '', password: '' })
+      await load()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const dbTypeColor = { mysql: 'text-blue-500', postgresql: 'text-indigo-500', mongodb: 'text-green-500' }
+  const dbTypeBg = { mysql: 'bg-blue-50', postgresql: 'bg-indigo-50', mongodb: 'bg-green-50' }
+
+  return (
+    <div className="h-full flex flex-col bg-slate-50">
+      <div className="px-6 py-4 border-b bg-white flex items-center justify-between shrink-0">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">数据库</h2>
+          <p className="text-xs text-slate-400 mt-0.5">连接管理内网数据库</p>
+        </div>
+        <button onClick={() => setShowForm(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+          <Plus size={14} /> 添加连接
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="px-6 py-4 border-b bg-blue-50">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">连接名称</label>
+              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="MySQL 生产库" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">数据库类型</label>
+              <select value={form.dbType} onChange={e => setForm(f => ({ ...f, dbType: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm">
+                <option value="mysql">MySQL</option>
+                <option value="postgresql">PostgreSQL</option>
+                <option value="mongodb">MongoDB</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">Host</label>
+              <input value={form.host} onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="192.168.1.100" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">Port</label>
+              <input type="number" value={form.port} onChange={e => setForm(f => ({ ...f, port: Number(e.target.value) }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">数据库名</label>
+              <input value={form.databaseName} onChange={e => setForm(f => ({ ...f, databaseName: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">用户名</label>
+              <input value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs text-slate-500 mb-1 block">密码</label>
+              <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+          </div>
+          {error && <p className="text-red-500 text-xs mt-2">{error}</p>}
+          <div className="flex gap-2 mt-3">
+            <button onClick={handleSubmit} disabled={submitting}
+              className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+              {submitting ? '保存中...' : '保存'}
+            </button>
+            <button onClick={() => setShowForm(false)}
+              className="px-4 py-1.5 bg-slate-100 rounded-lg text-sm hover:bg-slate-200">取消</button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-auto p-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {items.map(item => (
+            <div key={item.id} className="bg-white rounded-xl border border-slate-200 p-4 hover:shadow-sm transition-all">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-9 h-9 rounded-lg bg-slate-50 flex items-center justify-center">
+                  <Database size={16} className={dbTypeColor[item.dbType] || 'text-slate-400'} />
+                </div>
+                {item.status && (
+                  <div className={cn('w-2 h-2 rounded-full mt-1', item.status === 'connected' ? 'bg-green-400' : 'bg-red-400')} />
+                )}
+              </div>
+              <p className="text-sm font-medium text-slate-900 mb-0.5">{item.name}</p>
+              <p className="text-[10px] text-slate-400 font-mono truncate mb-2">{item.host || '示例地址'}:{item.port || '3306'}</p>
+              <div className="flex items-center justify-between">
+                <span className={cn('text-[10px] px-1.5 py-0.5 rounded uppercase font-medium', dbTypeBg[item.dbType] || 'bg-slate-50', dbTypeColor[item.dbType] || 'text-slate-500')}>
+                  {item.dbType || 'mysql'}
+                </span>
+                {!item.isPlaceholder && (
+                  <button onClick={() => handleDelete(item.id)} className="p-1 hover:bg-red-50 rounded">
+                    <Trash2 size={12} className="text-red-400" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// 技能库组件（@技能聊天）
+// =============================================================================
+function SkillLibrary({ role }) {
+  const [skills, setSkills] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [invokingSkill, setInvokingSkill] = useState(null)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatSkill, setChatSkill] = useState(null)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await fetchSkillCatalogItems()
+      setSkills(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const handleSkillClick = (skill) => {
+    setChatSkill(skill)
+    setChatOpen(true)
+  }
+
+  const SKILL_ICONS = {
+    'indicator-verification': <Wrench size={16} />,
+    'cad-text-extractor': <FileText size={16} />,
+    default: <Zap size={16} />,
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-slate-50">
+      <div className="px-6 py-4 border-b bg-white shrink-0">
+        <h2 className="text-lg font-semibold text-slate-900">技能库</h2>
+        <p className="text-xs text-slate-400 mt-0.5">点击技能直接发起对话</p>
+      </div>
+
+      <div className="flex-1 overflow-auto p-6">
+        {loading ? (
+          <div className="text-center text-slate-400 py-12">加载中...</div>
+        ) : skills.length === 0 ? (
+          <div className="text-center text-slate-400 py-12">
+            <Zap size={32} className="mx-auto mb-2 opacity-30" />
+            <p className="text-sm">暂无可用技能</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {skills.map(skill => (
+              <button
+                key={skill.name}
+                onClick={() => handleSkillClick(skill)}
+                className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all group"
+              >
+                <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center mb-3 text-amber-500">
+                  {SKILL_ICONS[skill.name] || SKILL_ICONS.default}
+                </div>
+                <p className="text-sm font-medium text-slate-900 group-hover:text-blue-600 transition-colors">{skill.displayName || skill.name}</p>
+                <p className="text-[10px] text-slate-400 mt-0.5 truncate">{skill.name}</p>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {chatOpen && chatSkill && (
+        <SkillChatModal skill={chatSkill} onClose={() => setChatOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+// 技能聊天弹窗
+function SkillChatModal({ skill, onClose }) {
+  const [input, setInput] = useState('')
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [conversationId, setConversationId] = useState(null)
+  const [conversationCreated, setConversationCreated] = useState(false)
+  const bottomRef = useRef(null)
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+
+  const ensureConversation = async () => {
+    if (conversationId) return
+    const res = await apiFetch('/v1/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: `技能:${skill.displayName || skill.name}` }),
+    })
+    const data = await res.json()
+    setConversationId(data.id)
+  }
+
+  const handleSend = async () => {
+    if (!input.trim() || loading) return
+    const text = input.trim()
+    setInput('')
+    setMessages(prev => [...prev, { role: 'user', content: text }])
+    setLoading(true)
+    setError('')
+    try {
+      await ensureConversation()
+      const msgRes = await apiFetch(`/v1/conversations/${conversationId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'user', content: text }),
+      })
+      await msgRes.json()
+      const body = JSON.stringify({
+        query: `@${skill.name} ${text}`,
+        conversationId,
+      })
+      const res = await apiFetch('/v1/brain/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${loadAuthSession()?.token}` },
+        body,
+      })
+      if (!res.ok) throw new Error(`请求失败: ${res.status}`)
+      const data = await res.json()
+      setMessages(prev => [...prev, { role: 'assistant', content: data.answer || data.message || '处理完成' }])
+    } catch (e) {
+      setError(e.message)
+      setMessages(prev => [...prev, { role: 'assistant', content: `错误: ${e.message}` }])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl h-[80vh] flex flex-col overflow-hidden">
+        <div className="px-5 py-3 border-b flex items-center justify-between bg-slate-50 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-amber-50 flex items-center justify-center text-amber-500">
+              <Zap size={14} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">{skill.displayName || skill.name}</h3>
+              <p className="text-[10px] text-slate-400">技能对话 · @技能名开头自动调用</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-200 rounded-lg"><X size={16} className="text-slate-400" /></button>
+        </div>
+        <div className="flex-1 overflow-auto p-4 space-y-3">
+          <div className="text-center text-xs text-slate-400 py-2">
+            发送消息将以 <span className="font-mono bg-slate-100 px-1 rounded">@{skill.name}</span> 开头调用该技能
+          </div>
+          {messages.map((msg, i) => (
+            <div key={i} className={cn('flex gap-2', msg.role === 'user' ? 'flex-row-reverse' : '')}>
+              <div className={cn('w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs font-medium',
+                msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-emerald-500 text-white')}>
+                {msg.role === 'user' ? <User size={12} /> : <Bot size={12} />}
+              </div>
+              <div className={cn('max-w-[80%] px-3 py-2 rounded-xl text-sm',
+                msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-sm' : 'bg-slate-100 text-slate-700 rounded-tl-sm')}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div className="flex gap-2">
+              <div className="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0"><Bot size={12} /></div>
+              <div className="bg-slate-100 rounded-xl rounded-tl-sm px-3 py-2">
+                <Loader2 size={14} className="animate-spin text-slate-400" />
+              </div>
+            </div>
+          )}
+          {error && <p className="text-red-500 text-xs text-center">{error}</p>}
+          <div ref={bottomRef} />
+        </div>
+        <div className="p-3 border-t flex gap-2 shrink-0">
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
+            placeholder={`发送 @${skill.name} 技能请求...`}
+            className="flex-1 px-3 py-2 border rounded-lg text-sm"
+          />
+          <button onClick={handleSend} disabled={loading || !input.trim()}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
+            <Send size={14} /> 发送
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// 模型库管理组件
+// =============================================================================
+function ModelLibrary({ role }) {
+  const [models, setModels] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ name: '', displayName: '', modelType: 'ollama', baseUrl: '', apiKey: '', maxTokens: '' })
+  const [submitting, setSubmitting] = useState(false)
+  const [testingId, setTestingId] = useState(null)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await fetchLlmModels()
+      setModels(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  // 每分钟自动测试
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      for (const m of models) {
+        if (!m.lastCheckOk) {
+          try {
+            await testLlmModel(m.id)
+          } catch {}
+        }
+      }
+      await load()
+    }, 60000)
+    return () => clearInterval(interval)
+  }, [models, load])
+
+  const handleSubmit = async () => {
+    if (!form.name.trim() || !form.displayName.trim() || !form.baseUrl.trim()) return
+    setSubmitting(true)
+    try {
+      const body = { ...form }
+      if (body.maxTokens) body.maxTokens = Number(body.maxTokens)
+      await createLlmModel(body)
+      setShowForm(false)
+      setForm({ name: '', displayName: '', modelType: 'ollama', baseUrl: '', apiKey: '', maxTokens: '' })
+      await load()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleTest = async (id) => {
+    setTestingId(id)
+    try {
+      await testLlmModel(id)
+      await load()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setTestingId(null)
+    }
+  }
+
+  const handleSetDefault = async (id) => {
+    try {
+      await setDefaultLlmModel(id)
+      await load()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleDelete = async (id) => {
+    if (!confirm('确定删除该模型？')) return
+    try {
+      await deleteLlmModel(id)
+      await load()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-slate-50">
+      <div className="px-6 py-4 border-b bg-white flex items-center justify-between shrink-0">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">模型库</h2>
+          <p className="text-xs text-slate-400 mt-0.5">配置 Ollama / OpenAI 等模型</p>
+        </div>
+        <button onClick={() => setShowForm(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+          <Plus size={14} /> 添加模型
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="px-6 py-4 border-b bg-blue-50">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">显示名称</label>
+              <input value={form.displayName} onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="Qwen2.5-7B" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">模型类型</label>
+              <select value={form.modelType} onChange={e => setForm(f => ({ ...f, modelType: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm">
+                <option value="ollama">Ollama</option>
+                <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">模型名称</label>
+              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="qwen2.5:7b" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">最大 Token</label>
+              <input type="number" value={form.maxTokens} onChange={e => setForm(f => ({ ...f, maxTokens: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="4096" />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs text-slate-500 mb-1 block">基础 URL</label>
+              <input value={form.baseUrl} onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="http://localhost:11434" />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs text-slate-500 mb-1 block">API Key（可选）</label>
+              <input type="password" value={form.apiKey} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="sk-..." />
+            </div>
+          </div>
+          {error && <p className="text-red-500 text-xs mt-2">{error}</p>}
+          <div className="flex gap-2 mt-3">
+            <button onClick={handleSubmit} disabled={submitting}
+              className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+              {submitting ? '保存中...' : '保存并设为默认'}
+            </button>
+            <button onClick={() => setShowForm(false)}
+              className="px-4 py-1.5 bg-slate-100 rounded-lg text-sm hover:bg-slate-200">取消</button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-auto p-6">
+        {loading ? (
+          <div className="text-center text-slate-400 py-12">加载中...</div>
+        ) : models.length === 0 ? (
+          <div className="text-center text-slate-400 py-12">
+            <Cpu size={32} className="mx-auto mb-2 opacity-30" />
+            <p className="text-sm">暂无配置的模型</p>
+            <p className="text-xs mt-1">点击右上角添加 Ollama 等模型</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {models.map(model => (
+              <div key={model.id} className={cn(
+                'bg-white rounded-xl border p-4 transition-all',
+                model.isDefault ? 'border-blue-300 shadow-sm' : 'border-slate-200'
+              )}>
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-9 h-9 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-500">
+                      <Cpu size={16} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-slate-900">{model.displayName}</p>
+                        {model.isDefault && <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">默认</span>}
+                      </div>
+                      <p className="text-[10px] text-slate-400 font-mono">{model.name} · {model.modelType}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={cn('w-2 h-2 rounded-full', model.lastCheckOk === true ? 'bg-green-400' : model.lastCheckOk === false ? 'bg-red-400' : 'bg-slate-300')} />
+                    <span className="text-[10px] text-slate-400">{model.lastCheckOk === true ? '可用' : model.lastCheckOk === false ? '不可用' : '未测试'}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 text-[10px] text-slate-400 mb-3">
+                  <span className="font-mono">{model.baseUrl}</span>
+                  {model.maxTokens && <span>· 最大 {model.maxTokens} tokens</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => handleTest(model.id)} disabled={testingId === model.id}
+                    className="flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-xs">
+                    {testingId === model.id ? <Loader2 size={10} className="animate-spin" /> : <Activity size={10} />}
+                    {testingId === model.id ? '测试中...' : '测试连接'}
+                  </button>
+                  {!model.isDefault && (
+                    <button onClick={() => handleSetDefault(model.id)}
+                      className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded text-xs">
+                      设为默认
+                    </button>
+                  )}
+                  <button onClick={() => handleDelete(model.id)}
+                    className="px-2 py-1 hover:bg-red-50 text-red-400 rounded text-xs ml-auto">
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function MemoryManager() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -8971,8 +9743,11 @@ function App() {
       />
       <main className="flex-1 h-full overflow-hidden relative">
         {activeTab === 'chat' && <ChatInterface role={role} />}
+        {activeTab === 'knowledge' && <DatasetManager currentRole={role} />}
+        {activeTab === 'databases' && <DatabaseLibrary />}
+        {activeTab === 'skill_lib' && <SkillLibrary role={role} />}
+        {activeTab === 'models' && <ModelLibrary role={role} />}
         {activeTab === 'super_overview' && isAdminLikeRole(role) && <SuperAdminOverview role={role} />}
-        {activeTab === 'datasets' && isAdminLikeRole(role) && <DatasetManager />}
         {activeTab === 'user_management' && isAdminLikeRole(role) && <UserManagement currentRole={role} currentUserId={userId} />}
         {activeTab === 'permissions' && isAdminLikeRole(role) && <PermissionManager />}
         {activeTab === 'skills' && isAdminLikeRole(role) && <SkillManager role={role} />}

@@ -18,6 +18,7 @@ import { registerPreServerRoutes } from './routes/preServer.js'
 import { registerPostServerRoutes } from './routes/postServer.js'
 import { registerSkillRoutes } from './routes/skills.js'
 import { registerConversationRoutes } from './routes/conversations.js'
+import { registerResourceRoutes } from './routes/resources.js'
 
 type Role = 'super_admin' | 'admin' | 'user'
 type ResourceType = 'DATASET' | 'DATASET_OWNER' | 'SKILL' | 'MEMORY_PROFILE'
@@ -491,6 +492,58 @@ export function createServer(config: AppConfig) {
     if (operator.role === 'super_admin') return true
     const owned = await getOwnedDatasetIds(operator.id)
     return owned.has(datasetId)
+  }
+
+  /** Returns knowledge_bases record for a dataset, or null.
+   * Falls back to datasetOwnership when knowledge_bases has no record yet.
+   */
+  async function getKbInfo(datasetId: string): Promise<{ isShared: boolean; ownerId: bigint } | null> {
+    try {
+      const kb = await prisma.knowledgeBase.findUnique({ where: { ragDatasetId: String(datasetId) } })
+      if (kb) return { isShared: kb.isShared, ownerId: kb.ownerId }
+      // 回退：从 datasetOwnership 获取 ownerId（知识库刚创建但 knowledge_bases 还没写入的情况）
+      const ownership = await prisma.datasetOwnership.findUnique({ where: { datasetId } })
+      if (ownership) return { isShared: false, ownerId: ownership.ownerUserId }
+      return null
+    } catch { return null }
+  }
+
+  /** Checks if operator has explicit permission to a dataset. */
+  async function hasDatasetPermission(operator: { id: bigint; role: Role }, datasetId: string): Promise<boolean> {
+    if (operator.role === 'super_admin') return true
+    const perm = await prisma.permission.findUnique({
+      where: { userId_resourceType_resourceId: { userId: operator.id, resourceType: 'DATASET', resourceId: datasetId } },
+    })
+    return !!perm
+  }
+
+  /** Checks if user can read a dataset.
+   * Private (isShared=false): only owner can read.
+   * Shared (isShared=true): admin/super_admin can read, owner can read.
+   * Explicit permission: any granted user can read.
+   */
+  async function canReadDataset(operator: { id: bigint; role: Role }, datasetId: string | unknown): Promise<boolean> {
+    if (operator.role === 'super_admin') return true
+    const kb = await getKbInfo(String(datasetId))
+    if (!kb) return false
+    const isOwner = String(kb.ownerId) === String(operator.id)
+    const hasPerm = await hasDatasetPermission(operator, String(datasetId))
+    if (operator.role === 'admin') return kb.isShared || isOwner || hasPerm
+    return isOwner || kb.isShared || hasPerm
+  }
+
+  /** Checks if user can write a dataset.
+   * Private: only owner can write.
+   * Shared: owner can write; admin can assign permissions.
+   * Explicit permission grants read-only access (no write).
+   */
+  async function canWriteDataset(operator: { id: bigint; role: Role }, datasetId: string | unknown): Promise<boolean> {
+    if (operator.role === 'super_admin') return true
+    const kb = await getKbInfo(String(datasetId))
+    if (!kb) return false
+    const isOwner = String(kb.ownerId) === String(operator.id)
+    if (operator.role === 'admin') return kb.isShared  // admin可写共享库
+    return isOwner  // 普通用户：仅自己的可写
   }
 
   /** Removes ownership record when a dataset is deleted. */
@@ -1139,14 +1192,11 @@ export function createServer(config: AppConfig) {
     return users.map((user: any) => formatUser(user))
   })
 
-  // GET /api/v1/admin/datasets - List datasets (tenant-isolated for non-super_admin)
+  // GET /api/v1/admin/datasets - List datasets (visible to all users)
   app.get('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
-      return reply.code(403).send({ message: 'forbidden' })
-    }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     const headers: Record<string, string> = {
@@ -1167,37 +1217,78 @@ export function createServer(config: AppConfig) {
         return reply.code(resp.status).send({ message: `RagFlow error: ${errText.slice(0, 200)}` })
       }
       const data = await resp.json() as any
-      // Handle both array and object responses
       let datasets = Array.isArray(data) ? data : (data?.data || data?.datasets || [])
 
-      // Tenant isolation:
-      // - super_admin sees & manages all datasets
-      // - non-super_admin admin sees all datasets, but can only modify those they own
-      const allDatasets = datasets
-      const ownershipMap = new Map<string, DatasetOwnershipInfo>()
+      // Fetch ownership for all datasets
+      const ownershipMap = new Map<string, DatasetOwnershipInfo & { isShared?: boolean }>()
       if (operator.role === 'super_admin') {
         const allOwnership = await getAllDatasetOwnerships()
         allOwnership.forEach(o => ownershipMap.set(o.datasetId, o))
       } else {
         const ownedOwnership = await getOwnedDatasetOwnerships(operator.id)
-        ownedOwnership.forEach(o => ownershipMap.set(o.datasetId, o))
-        datasets = allDatasets.map((ds: any) => ({
-          ...ds,
-          manageable: ownershipMap.has(ds.id),
-        }))
+        ownedOwnership.forEach(o => ownershipMap.set(o.datasetId, { ...o }))
       }
 
+      // Batch load isShared from knowledge_bases table.
+      // For non-super_admin, only inject knowledge_bases metadata for datasets the operator
+      // already owns or has explicit permission to — never expose unpermitted datasets.
+      const datasetIds = datasets.map((ds: any) => String(ds.id))
+      const kbRecords = await prisma.knowledgeBase.findMany({
+        where: { ragDatasetId: { in: datasetIds } },
+        select: { ragDatasetId: true, isShared: true, ownerId: true },
+      })
+      kbRecords.forEach(kb => {
+        const existing = ownershipMap.get(kb.ragDatasetId)
+        if (existing) {
+          existing.isShared = kb.isShared
+        } else if (operator.role === 'super_admin') {
+          // Only super_admin can see datasets that exist in RagFlow but have no ownership record.
+          ownershipMap.set(kb.ragDatasetId, { datasetId: kb.ragDatasetId, ownerUserId: kb.ownerId, creatorUsername: null, createdAt: new Date(), isShared: kb.isShared })
+        }
+      })
+
+      // 用户被授予权限的知识库（resourceType=DATASET）
+      const permittedSet = new Set<string>()
+      if (operator.role !== 'super_admin') {
+        const perms = await prisma.permission.findMany({
+          where: { userId: operator.id, resourceType: 'DATASET' },
+          select: { resourceId: true },
+        })
+        perms.forEach(p => permittedSet.add(p.resourceId))
+      }
+
+      // Filter: super_admin sees all; admin sees owned/shared/explicit-permission;
+      //         user sees owned or explicitly granted (isShared flag alone doesn't grant access)
+      datasets = datasets.filter((ds: any) => {
+        const info = ownershipMap.get(String(ds.id))
+        const isOwner = String(info?.ownerUserId) === String(operator.id)
+        const isShared = info?.isShared === true
+        const hasPermission = permittedSet.has(String(ds.id))
+        if (operator.role === 'super_admin') return true
+        if (operator.role === 'admin') return isShared || isOwner || hasPermission
+        return isOwner || hasPermission
+      })
+
       return datasets.map((ds: any) => {
-        const ownership = ownershipMap.get(String(ds.id))
+        const info = ownershipMap.get(String(ds.id))
+        const isOwner = String(info?.ownerUserId) === String(operator.id)
+        const isShared = info?.isShared === true
+        const hasPermission = permittedSet.has(String(ds.id))
+        // manageable: admin/super_admin can only manage their own KBs;
+        // super_admin can also manage any KB (already handled by role check)
+        const manageable = isOwner || (operator.role === 'super_admin')
         return {
           id: String(ds.id),
           name: ds.name || ds.id,
           description: ds.description || '',
           document_count: ds.document_count || 0,
-          created_at: ownership ? ownership.createdAt.toISOString() : (ds.created_at || null),
+          created_at: info?.createdAt?.toISOString() || (ds.created_at || null),
           updated_at: ds.updated_at,
-          manageable: ds.manageable,
-          creatorUsername: ownership?.creatorUsername || null,
+          manageable,
+          isOwner,
+          isShared,
+          hasPermission,
+          creatorUsername: info?.creatorUsername || null,
         }
       })
     } catch (err) {
@@ -1207,14 +1298,13 @@ export function createServer(config: AppConfig) {
 
   // GET /api/v1/admin/datasets/:id/documents - List documents in a dataset
   app.get('/api/v1/admin/datasets/:id/documents', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canReadDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
-
-    const { id } = req.params as { id: string }
     const { page = '1', page_size = '100' } = req.query as { page?: string, page_size?: string }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
@@ -1242,14 +1332,13 @@ export function createServer(config: AppConfig) {
 
   // POST /api/v1/admin/datasets/:id/documents - Upload document to dataset
   app.post('/api/v1/admin/datasets/:id/documents', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canWriteDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
-
-    const { id } = req.params as { id: string }
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
 
     // Get the file from multipart
@@ -1296,14 +1385,14 @@ export function createServer(config: AppConfig) {
 
   // DELETE /api/v1/admin/datasets/:id/documents - Delete documents
   app.delete('/api/v1/admin/datasets/:id/documents', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canWriteDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
 
-    const { id } = req.params as { id: string }
     const { ids } = req.body as { ids?: string[] }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
@@ -1334,10 +1423,11 @@ export function createServer(config: AppConfig) {
   // POST /api/v1/admin/datasets/:id/documents/run - Parse documents
   // RagFlow API: POST /api/v1/datasets/{id}/chunks with body { document_ids }
   app.post('/api/v1/admin/datasets/:id/documents/run', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canWriteDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
 
@@ -1348,7 +1438,6 @@ export function createServer(config: AppConfig) {
       Array.isArray(body.doc_ids) ? body.doc_ids :
       undefined
     ) as string[] | undefined
-    const { id } = req.params as { id: string }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     const headers: Record<string, string> = {
@@ -1387,14 +1476,15 @@ export function createServer(config: AppConfig) {
 
   // GET /api/v1/admin/datasets/:id/documents/:docId/file - Get document file
   app.get('/api/v1/admin/datasets/:id/documents/:docId/file', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canReadDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
 
-    const { docId } = req.params as { id: string, docId: string }
+    const { docId } = req.params as { id?: string; docId: string }
     if (!docId) {
       return reply.code(400).send({ message: 'documentId is required' })
     }
@@ -1421,14 +1511,15 @@ export function createServer(config: AppConfig) {
 
   // GET /api/v1/admin/datasets/:id/documents/:docId/chunks - Get document chunks
   app.get('/api/v1/admin/datasets/:id/documents/:docId/chunks', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canReadDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
 
-    const { id, docId } = req.params as { id: string, docId: string }
+    const { docId } = req.params as { id?: string; docId: string }
     const { page = '1', page_size = '100' } = req.query as { page?: string, page_size?: string }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
@@ -1449,14 +1540,12 @@ export function createServer(config: AppConfig) {
 
   // POST /api/v1/admin/datasets - Create a new dataset
   app.post('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
-      return reply.code(403).send({ message: 'forbidden' })
-    }
 
-    const { name, description } = req.body as { name?: string, description?: string }
+    const { name, description, isShared } = req.body as { name?: string; description?: string; isShared?: boolean }
     if (!name) {
       return reply.code(400).send({ message: 'name is required' })
     }
@@ -1472,7 +1561,6 @@ export function createServer(config: AppConfig) {
       if (!ragResp.ok) {
         return reply.code(ragResp.status).send(result)
       }
-      // Record ownership locally with creator info
       const datasetId = result?.data?.id
       if (datasetId) {
         await prisma.datasetOwnership.upsert({
@@ -1480,31 +1568,29 @@ export function createServer(config: AppConfig) {
           update: { ownerUserId: operator.id, creatorUsername: operator.username },
           create: { datasetId, ownerUserId: operator.id, creatorUsername: operator.username },
         }).catch(err => app.log.warn({ err, datasetId }, 'failed to record dataset ownership'))
+        // 写 knowledge_bases 表（含共享标记）
+        await prisma.knowledgeBase.upsert({
+          where: { ragDatasetId: datasetId },
+          update: { ownerId: operator.id, isShared: !!isShared },
+          create: { ragDatasetId: datasetId, name, description: description || '', ownerId: operator.id, isShared: !!isShared },
+        }).catch(err => app.log.warn({ err, datasetId }, 'failed to record kb info'))
       }
-      return result
+      return { ...result, isShared: !!isShared }
     } catch (err) {
       return reply.code(502).send({ message: 'Failed to create dataset in RagFlow' })
     }
   })
 
-  // PUT /api/v1/admin/datasets/:id - Update a dataset (tenant-isolated)
+  // PUT /api/v1/admin/datasets/:id - Update a dataset
   app.put('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
+    if (operator.role === 'user' && !(await canWriteDataset(operator, id))) {
       return reply.code(403).send({ message: 'forbidden' })
     }
-
-    const { id } = req.params as { id: string }
-
-    // Tenant isolation: non-super_admin must own this dataset
-    if (operator.role !== 'super_admin' && !(await isDatasetOwner(operator, id))) {
-      return reply.code(403).send({ message: 'forbidden: you do not own this dataset' })
-    }
-
-    const { name, description } = req.body as { name?: string, description?: string }
-
+    const { name, description } = req.body as { name?: string; description?: string }
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     try {
       const ragResp = await fetch(`${base}/api/v1/datasets/${encodeURIComponent(id)}`, {
@@ -1519,26 +1605,57 @@ export function createServer(config: AppConfig) {
     }
   })
 
-  // DELETE /api/v1/admin/datasets/:id - Delete a dataset (tenant-isolated)
-  app.delete('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
+  // PUT /api/v1/admin/datasets/:id/share - 切换共享/私有 + 分配权限
+  app.put('/api/v1/admin/datasets/:id/share', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
-    if (operator.role === 'user') {
-      return reply.code(403).send({ message: 'forbidden' })
+
+    const kb = await getKbInfo(id)
+    const isOwner = !!kb && String(kb.ownerId) === String(operator.id)
+    const { isShared, allowedUserIds } = req.body as { isShared?: boolean; allowedUserIds?: string[] }
+
+    // 共享开关：owner 或 super_admin 可以切换
+    if (isShared !== undefined && operator.role !== 'super_admin' && !isOwner) {
+      return reply.code(403).send({ message: 'forbidden: only owner or super_admin can toggle shared' })
     }
 
-    const { id } = req.params as { id: string }
+    if (isShared !== undefined) {
+      await prisma.knowledgeBase.upsert({
+        where: { ragDatasetId: id },
+        update: { isShared },
+        create: { ragDatasetId: id, name: id, ownerId: operator.id, isShared },
+      }).catch(err => app.log.warn({ err, id }, 'failed to update kb isShared'))
+    }
 
-    // Tenant isolation: non-super_admin must own this dataset
-    if (operator.role !== 'super_admin' && !(await isDatasetOwner(operator, id))) {
-      return reply.code(403).send({ message: 'forbidden: you do not own this dataset' })
+    // super_admin 和 admin 都可以为共享知识库分配用户权限（但 admin 不能操作私有库）
+    if (Array.isArray(allowedUserIds)) {
+      if (operator.role !== 'super_admin' && !kb?.isShared) {
+        return reply.code(403).send({ message: 'forbidden: admin can only grant permissions on shared datasets' })
+      }
+      await prisma.permission.deleteMany({ where: { resourceType: 'DATASET', resourceId: id } })
+      for (const uid of allowedUserIds) {
+        await prisma.permission.create({
+          data: { userId: BigInt(uid), resourceType: 'DATASET', resourceId: id, grantedBy: operator.id },
+        }).catch(err => app.log.warn({ err, uid, id }, 'failed to grant dataset permission'))
+      }
+    }
+
+    const updatedKb = await prisma.knowledgeBase.findUnique({ where: { ragDatasetId: id } })
+    return { id, isShared: updatedKb?.isShared ?? false, success: true }
+  })
+  app.delete('/api/v1/admin/datasets/:id', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const authedReq = req as AuthedRequest
+    const operator = await getActiveOperator(authedReq, reply)
+    if (!operator) return
+    if (operator.role === 'user' && !(await canWriteDataset(operator, id))) {
+      return reply.code(403).send({ message: 'forbidden' })
     }
 
     const base = config.RAGFLOW_BASE_URL.replace(/\/+$/, '')
     try {
-      // RagFlow only supports batch DELETE via /api/v1/datasets with {ids: [...]} body.
-      // Single-item delete uses the same endpoint.
       const ragResp = await fetch(`${base}/api/v1/datasets`, {
         method: 'DELETE',
         headers: { ...buildRagflowHeaders('application/json'), 'Content-Type': 'application/json' },
@@ -1548,7 +1665,6 @@ export function createServer(config: AppConfig) {
         const text = await ragResp.text()
         return reply.code(ragResp.status).send({ message: text || `HTTP ${ragResp.status}` })
       }
-      // Clean up local ownership record
       await removeDatasetOwnership(id)
       return { success: true }
     } catch (err) {
@@ -1556,8 +1672,9 @@ export function createServer(config: AppConfig) {
     }
   })
 
-  // DELETE /api/v1/admin/datasets - Batch delete datasets (tenant-isolated)
+  // DELETE /api/v1/admin/datasets - Batch delete datasets
   app.delete('/api/v1/admin/datasets', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -1626,6 +1743,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.patch('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const parsedParam = idParamSchema.safeParse(req.params)
@@ -1759,6 +1877,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.delete('/api/v1/admin/users/:id', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const parsedParam = idParamSchema.safeParse(req.params)
@@ -1844,6 +1963,13 @@ export function createServer(config: AppConfig) {
       getActiveOperator(req as AuthedRequest, reply),
   })
 
+  // Register resource management routes (KB, LLM models, DB connections)
+  registerResourceRoutes(app, {
+    authGuard,
+    getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
+      getActiveOperator(req as AuthedRequest, reply),
+  })
+
   // Brain query schema - simplified brain decision endpoint
   const brainQueryBodySchema = z.object({
     query: z.string().min(1),
@@ -1862,6 +1988,7 @@ export function createServer(config: AppConfig) {
    * Returns SSE stream or JSON based on the brain's decision.
    */
   app.post('/api/v1/brain/query', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2038,6 +2165,7 @@ export function createServer(config: AppConfig) {
 
   // 返回当前用户可见的 profile 列表，供前端做”记忆切换”。
   app.get('/api/v1/memory/profiles', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2055,6 +2183,7 @@ export function createServer(config: AppConfig) {
 
   // 读取当前 profile 的记忆内容。
   app.get('/api/v1/memory/current', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2097,6 +2226,7 @@ export function createServer(config: AppConfig) {
 
   // 更新当前 profile 的记忆内容（用户可编辑自己的记忆）。
   app.put('/api/v1/memory/current', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2133,6 +2263,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/document/get/:documentId', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2156,6 +2287,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/document/image/:imageId', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2179,6 +2311,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/admin/permissions/dataset-owners', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -2245,6 +2378,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/admin/permissions/datasets', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -2311,6 +2445,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/admin/permissions/skills', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -2377,6 +2512,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/admin/permissions/memory-profiles', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -2461,6 +2597,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/admin/users/:id/permissions', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2500,6 +2637,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/admin/audits', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2548,6 +2686,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/admin/audits/skills', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2619,6 +2758,7 @@ export function createServer(config: AppConfig) {
 
   // 技能调用统计聚合（全平台 or 指定用户）
   app.get('/api/v1/admin/skill-usage', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2678,6 +2818,7 @@ export function createServer(config: AppConfig) {
 
   // 技能调用明细列表（支持分页、工具名筛选）
   app.get('/api/v1/admin/skill-usage/records', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2756,6 +2897,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/admin/audits/rag', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2810,6 +2952,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/admin/files', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -2862,6 +3005,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/admin/files/:fileId/status', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -2933,6 +3077,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/admin/files/status/batch', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -3027,6 +3172,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/admin/files/export', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -3108,6 +3254,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/integrations/ragflow/health', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -3191,6 +3338,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/rag/query/stream', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -3427,6 +3575,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/rag/query', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const ragStartedAt = Date.now()
     const authedReq = req as AuthedRequest
@@ -3764,6 +3913,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/files/upload', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
@@ -3808,6 +3958,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.get('/api/v1/files/:fileId/download', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -3838,6 +3989,7 @@ export function createServer(config: AppConfig) {
   // Proxy file download from brain-service (CAD skill output files)
   // GET /api/v1/brain/files/download?filename=/path/to/file
   app.get('/api/v1/brain/files/download', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const authedReq = req as AuthedRequest
     const operator = await getActiveOperator(authedReq, reply)
     if (!operator) return
@@ -3864,6 +4016,7 @@ export function createServer(config: AppConfig) {
 
   // 内部接口：供 brain 服务（3100）记录 skill 审计
   app.post('/api/v1/internal/skills/execution-log', async (req, reply) => {
+    const { id } = req.params as { id: string }
     // 简单的内部 token 验证
     const auth = req.headers.authorization || ''
     const expectedToken = `Bearer ${config.BRAIN_SERVER_ACCESS_TOKEN || ''}`
@@ -3909,6 +4062,7 @@ export function createServer(config: AppConfig) {
   })
 
   app.post('/api/v1/skills/indicator-verification/run', { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string }
     const traceId = getTraceId(req)
     const toolCallStartedAt = Date.now()
     const toolCallId = randomUUID()

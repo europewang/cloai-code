@@ -1,0 +1,1365 @@
+openapi: 3.0.3
+info:
+  title: brain-server API
+  version: 1.0.0
+  description: >
+    cloai-code 统一治理后端 API。
+servers:
+  - url: http://127.0.0.1:8091
+    description: local
+  - url: http://ai4kb-brain-server:8091
+    description: docker network
+
+# ─── Tags ─────────────────────────────────────────────────────────────────────
+tags:
+  - name: Health
+  - name: Auth
+  - name: AdminUsers
+  - name: Permissions
+  - name: BrainContext
+  - name: BrainQuery
+  - name: Memory
+  - name: Files
+  - name: RAG
+  - name: Skills
+  - name: Agent
+  - name: Integrations
+  - name: Audits
+
+# ─── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+
+  # Health
+  /api/health:
+    get:
+      tags: [Health]
+      summary: 进程健康检查
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  ts:
+                    type: string
+                    format: date-time
+                  service:
+                    type: string
+                    example: brain-server
+
+  /api/ready:
+    get:
+      tags: [Health]
+      summary: 依赖就绪检查（PostgreSQL + Redis）
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  checks:
+                    type: object
+                    properties:
+                      postgres:
+                        type: string
+                        example: ok
+                      redis:
+                        type: string
+                        example: ok
+        '503':
+          description: Not Ready
+
+  # Auth
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录并签发令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+                  expiresIn:
+                    type: integer
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: 凭证无效
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新访问令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: 刷新成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  expiresIn:
+                    type: integer
+        '401':
+          description: refreshToken 无效
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: 获取当前登录用户信息
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: 未认证
+
+  # Admin Users
+  /api/v1/admin/users:
+    get:
+      tags: [AdminUsers]
+      summary: 查询用户列表
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+    post:
+      tags: [AdminUsers]
+      summary: 创建用户
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '403':
+          description: 越权
+
+  /api/v1/admin/users/{id}:
+    patch:
+      tags: [AdminUsers]
+      summary: 更新用户
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '403':
+          description: 越权
+        '404':
+          description: 用户不存在
+    delete:
+      tags: [AdminUsers]
+      summary: 删除用户
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '204':
+          description: 删除成功
+        '403':
+          description: 越权
+        '404':
+          description: 用户不存在
+
+  # Brain Context
+  /api/v1/brain/context:
+    get:
+      tags: [BrainContext]
+      summary: 获取执行前策略快照（含 allowedDatasets/Skills/MemoryProfiles）
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 策略快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrainContextResponse'
+
+  /api/v1/pre/context:
+    get:
+      tags: [BrainContext]
+      summary: 前置上下文（brain service → brain-server 获取用户上下文）
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 前置上下文
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # Brain Query
+  /api/v1/brain/query:
+    post:
+      tags: [BrainQuery]
+      summary: 大脑查询（直连 brain service，SSE 流式）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                stream:
+                  type: boolean
+                  default: true
+                memoryProfileId:
+                  type: string
+      responses:
+        '200':
+          description: SSE 流式响应
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: chunk
+                data: {"content":"..."}
+        '503':
+          description: brain service 不可用
+
+  # Permissions
+  /api/v1/admin/permissions/datasets:
+    post:
+      tags: [Permissions]
+      summary: 授予/撤销数据集权限
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, datasetIds, action]
+              properties:
+                userId:
+                  type: integer
+                  format: int64
+                datasetIds:
+                  type: array
+                  items:
+                    type: string
+                action:
+                  type: string
+                  enum: [grant, revoke]
+      responses:
+        '200':
+          description: 操作结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationResult'
+
+  /api/v1/admin/permissions/dataset-owners:
+    post:
+      tags: [Permissions]
+      summary: 授予/撤销数据集所有者权限
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, datasetIds, action]
+              properties:
+                userId:
+                  type: integer
+                  format: int64
+                datasetIds:
+                  type: array
+                  items:
+                    type: string
+                action:
+                  type: string
+                  enum: [grant, revoke]
+
+  /api/v1/admin/permissions/skills:
+    post:
+      tags: [Permissions]
+      summary: 授予/撤销技能权限
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, skillIds, action]
+              properties:
+                userId:
+                  type: integer
+                  format: int64
+                skillIds:
+                  type: array
+                  items:
+                    type: string
+                action:
+                  type: string
+                  enum: [grant, revoke]
+
+  /api/v1/admin/permissions/memory-profiles:
+    post:
+      tags: [Permissions]
+      summary: 授予/撤销记忆配置权限
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, profileIds, action]
+              properties:
+                userId:
+                  type: integer
+                  format: int64
+                profileIds:
+                  type: array
+                  items:
+                    type: string
+                action:
+                  type: string
+                  enum: [grant, revoke]
+
+  /api/v1/admin/users/{id}/permissions:
+    get:
+      tags: [Permissions]
+      summary: 查询用户所有权限快照
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 用户权限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPermissionsResponse'
+
+  # Memory
+  /api/v1/memory/profiles:
+    get:
+      tags: [Memory]
+      summary: 查询用户所有记忆 profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: profile 列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    profileId:
+                      type: string
+                    storageRoot:
+                      type: string
+
+  /api/v1/memory/current:
+    get:
+      tags: [Memory]
+      summary: 获取当前 profile 的记忆内容
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 记忆内容
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemorySelfResponse'
+    put:
+      tags: [Memory]
+      summary: 更新当前 profile 的记忆
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemorySelfRequest'
+      responses:
+        '200':
+          description: 更新成功
+
+  # Files
+  /api/v1/files/upload:
+    post:
+      tags: [Files]
+      summary: 上传文件（返回 fileId + sha256Hex）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                category:
+                  type: string
+                  default: general
+      responses:
+        '200':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fileId:
+                    type: string
+                  fileName:
+                    type: string
+                  sha256Hex:
+                    type: string
+
+  /api/v1/files/{id}/download:
+    get:
+      tags: [Files]
+      summary: 下载文件
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 文件流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: 文件不存在
+        '410':
+          description: 文件已标记 missing
+
+  # RAG
+  /api/v1/rag/query:
+    post:
+      tags: [RAG]
+      summary: RAG 查询（非流式）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                datasetId:
+                  type: string
+                skillId:
+                  type: string
+                topK:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: RAG 结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                  references:
+                    type: array
+                    items:
+                      type: object
+                  traceId:
+                    type: string
+
+  /api/v1/rag/query/stream:
+    post:
+      tags: [RAG]
+      summary: RAG 查询（流式 SSE）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                datasetId:
+                  type: string
+                skillId:
+                  type: string
+      responses:
+        '200':
+          description: SSE 流式
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  # Skills
+  /api/v1/skills/indicator-verification/run:
+    post:
+      tags: [Skills]
+      summary: CAD 指标校核技能执行
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fileId:
+                  type: string
+                checker:
+                  type: string
+                reviewer:
+                  type: string
+      responses:
+        '200':
+          description: 执行结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outputFiles:
+                    type: array
+                    items:
+                      type: object
+
+  # Agent Tool Chain
+  /api/v1/agent/tool/catalog:
+    get:
+      tags: [Agent]
+      summary: 工具目录
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 工具列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ToolInfo'
+
+  /api/v1/agent/tool/draft:
+    post:
+      tags: [Agent]
+      summary: 创建工具草稿
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                toolCode:
+                  type: string
+                params:
+                  type: object
+      responses:
+        '200':
+          description: 草稿已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  draftId:
+                    type: string
+
+  /api/v1/agent/tool/upload:
+    post:
+      tags: [Agent]
+      summary: 工具文件上传
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                draftId:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fileId:
+                    type: string
+
+  /api/v1/agent/tool/approve:
+    post:
+      tags: [Agent]
+      summary: 工具执行审批（SSE 返回 tool_result）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                draftId:
+                  type: string
+      responses:
+        '200':
+          description: SSE 流式结果
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/agent/chat/stream:
+    post:
+      tags: [Agent]
+      summary: Agent 聊天流（前端适配层代理到 brain/query/stream）
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                conversationId:
+                  type: string
+                memoryProfileId:
+                  type: string
+      responses:
+        '200':
+          description: SSE 流式
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  # Integrations
+  /api/v1/integrations/ragflow/health:
+    get:
+      tags: [Integrations]
+      summary: RagFlow 联通探测
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: RagFlow 可用
+        '503':
+          description: RagFlow 不可达
+
+  /api/v1/document/get/{id}:
+    get:
+      tags: [Integrations]
+      summary: 文档原文透传
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 文档内容
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /api/v1/document/image/{id}:
+    get:
+      tags: [Integrations]
+      summary: 文档图片透传
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 图片
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+
+  /api/v1/brain/files/download:
+    get:
+      tags: [Files]
+      summary: brain 服务文件透传下载
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 文件流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # Admin Files
+  /api/v1/admin/files:
+    get:
+      tags: [Files]
+      summary: 文件列表（支持 status/category/ownerUserId 过滤）
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, missing]
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: ownerUserId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: 文件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileAsset'
+                  total:
+                    type: integer
+
+  /api/v1/admin/files/{fileId}/status:
+    post:
+      tags: [Files]
+      summary: 单条状态更新（含可读性校验）
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [active, missing]
+      responses:
+        '200':
+          description: 更新成功
+        '409':
+          description: 状态校验失败（不可读时不能设为 active）
+
+  /api/v1/admin/files/status/batch:
+    post:
+      tags: [Files]
+      summary: 批量状态更新
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileIds, status]
+              properties:
+                fileIds:
+                  type: array
+                  items:
+                    type: string
+                status:
+                  type: string
+                  enum: [active, missing]
+      responses:
+        '200':
+          description: 更新结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  affected:
+                    type: integer
+
+  /api/v1/admin/files/export:
+    get:
+      tags: [Files]
+      summary: CSV 导出
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CSV 文件
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  # Audits
+  /api/v1/admin/audits:
+    get:
+      tags: [Audits]
+      summary: 通用审计查询
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: traceId
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: 审计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAuditLogsResponse'
+
+  /api/v1/admin/audits/skills:
+    get:
+      tags: [Audits]
+      summary: 技能调用审计查询
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolCode
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: 技能审计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListToolCallAuditsResponse'
+
+  /api/v1/admin/audits/rag:
+    get:
+      tags: [Audits]
+      summary: RAG 查询审计
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: datasetId
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: RAG 审计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRagQueryAuditsResponse'
+
+# ─── Components ────────────────────────────────────────────────────────────────
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+
+    Role:
+      type: string
+      enum: [super_admin, admin, user]
+
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+
+    ResourceType:
+      type: string
+      enum: [DATASET, DATASET_OWNER, SKILL, MEMORY_PROFILE]
+
+    PermissionAction:
+      type: string
+      enum: [grant, revoke]
+
+    FileStatus:
+      type: string
+      enum: [active, missing]
+
+    User:
+      type: object
+      required: [id, username, role, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        managerUserId:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        profileId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    MeResponse:
+      type: object
+      required: [id, username, role, status, profileId]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        profileId:
+          type: string
+
+    CreateUserRequest:
+      type: object
+      required: [username, password, role]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        managerUserId:
+          type: integer
+          format: int64
+          nullable: true
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+        managerUserId:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          $ref: '#/components/schemas/UserStatus'
+
+    BrainContextResponse:
+      type: object
+      required: [role, profileId, allowedDatasets, allowedSkills, policyVersion]
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+        profileId:
+          type: string
+        allowedDatasets:
+          type: array
+          items:
+            type: string
+        allowedDatasetOwners:
+          type: array
+          items:
+            type: string
+        allowedSkills:
+          type: array
+          items:
+            type: string
+        allowedMemoryProfiles:
+          type: array
+          items:
+            type: string
+        policyVersion:
+          type: string
+
+    MutationResult:
+      type: object
+      required: [success, affected]
+      properties:
+        success:
+          type: boolean
+        affected:
+          type: integer
+
+    UserPermissionsResponse:
+      type: object
+      required: [userId, permissions]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        permissions:
+          type: array
+          items:
+            type: object
+            required: [resourceType, resourceId]
+            properties:
+              resourceType:
+                $ref: '#/components/schemas/ResourceType'
+              resourceId:
+                type: string
+
+    MemorySelfResponse:
+      type: object
+      required: [profileId, storageRoot]
+      properties:
+        profileId:
+          type: string
+        storageRoot:
+          type: string
+        content:
+          type: string
+          nullable: true
+
+    UpdateMemorySelfRequest:
+      type: object
+      properties:
+        content:
+          type: string
+        settings:
+          type: object
+          additionalProperties: true
+
+    FileAsset:
+      type: object
+      required: [id, fileName, category, status, sha256Hex]
+      properties:
+        id:
+          type: string
+        ownerUserId:
+          type: integer
+          format: int64
+        fileName:
+          type: string
+        mimeType:
+          type: string
+        sizeBytes:
+          type: integer
+        sha256Hex:
+          type: string
+        category:
+          type: string
+        status:
+          $ref: '#/components/schemas/FileStatus'
+        storagePath:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    ToolInfo:
+      type: object
+      required: [toolCode, toolName, uploadRequired]
+      properties:
+        toolCode:
+          type: string
+        toolName:
+          type: string
+        uploadRequired:
+          type: boolean
+        description:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+
+    AuditLogItem:
+      type: object
+      required: [id, traceId, action, result, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        traceId:
+          type: string
+        userId:
+          type: integer
+          format: int64
+          nullable: true
+        operatorId:
+          type: integer
+          format: int64
+          nullable: true
+        action:
+          type: string
+        resourceType:
+          type: string
+          nullable: true
+        resourceId:
+          type: string
+          nullable: true
+        result:
+          type: string
+          enum: [success, deny, fail]
+        payload:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+
+    ListAuditLogsResponse:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogItem'
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    ListToolCallAuditsResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+
+    ListRagQueryAuditsResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer

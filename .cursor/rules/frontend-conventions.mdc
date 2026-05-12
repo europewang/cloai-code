@@ -1,0 +1,48 @@
+---
+description: 前端项目约定（接口路径、代理层、状态管理）
+alwaysApply: false
+globs: frontend/**/*.{jsx,tsx,js,ts}
+---
+
+# frontend 项目约定
+
+## 1. 技术栈
+
+- 生产：Vue 3 + Vite（容器 `deploy-frontend`，端口 8086）
+- 开发：`deploy-frontend-dev`，端口 8087（热更新）
+
+## 2. 后端代理
+
+- **代理后端**：`frontend/server.js`（Node.js 适配层）
+- **代理目标**：`http://brain-server:8091`（Docker 网络内）
+- 前端所有 `/api/*` 请求通过 `server.js` 转发到 `brain-server`
+
+## 3. 接口协议
+
+当前前后端接口协议存在差异，前端依赖的旧协议和 brain-server 的新协议需要适配层转换。涉及以下接口：
+
+| 前端调用路径 | 后端实际路径 | 说明 |
+|---|---|---|
+| `/api/user/auth/login` | `/api/v1/auth/login` | 登录 |
+| `/api/admin/users` | `/api/v1/admin/users` | 用户列表 |
+| `/api/admin/datasets` | `/api/v1/admin/datasets` | 知识库列表 |
+| `/api/v1/admin/permissions/datasets` | `/api/v1/admin/permissions/datasets` | 权限同步 |
+| `/api/v1/agent/chat/stream` | `/api/v1/rag/query/stream` | 聊天流 |
+
+## 4. 关键文件
+
+- `frontend/src/App.jsx`：主 UI 组件，所有页面逻辑
+- `frontend/server.js`：接口适配层（代理、协议转换）
+- `frontend/package.json`：依赖管理
+
+## 5. Docker 部署
+
+```bash
+# 生产
+docker compose -f deploy/docker-compose-brain-ts.yml up -d ai4kb-frontend
+
+# 开发热更新
+docker compose -f deploy/docker-compose-brain-ts.yml up -d ai4kb-frontend-dev
+```
+
+前端服务依赖 `ai4kb-brain-server`（必须先启动 brain-server）。

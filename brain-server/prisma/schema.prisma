@@ -60,6 +60,9 @@ model User {
   fileAssets    FileAsset[]
   conversations Conversation[]
   skillOwnerships Skill[] @relation("SkillOwner")
+  llmModels     LlmModel[] @relation("LlmModelOwner")
+  dbConnections DatabaseConnection[] @relation("DbConnOwner")
+  knowledgeBases KnowledgeBase[] @relation("KbOwner")
 
   @@index([role], map: "idx_users_role")
   @@index([managerUserId], map: "idx_users_manager")
@@ -268,3 +271,66 @@ model SkillShortcut {
   @@index([name], map: "idx_skill_shortcuts_name")
   @@map("skill_shortcuts")
 }
+
+// LLM 模型配置（如 Ollama）
+model LlmModel {
+  id           BigInt    @id @default(autoincrement())
+  name         String    @map("name") @db.VarChar(128)
+  displayName  String    @map("display_name") @db.VarChar(256)
+  modelType    String    @map("model_type") @db.VarChar(64)   // e.g. "ollama", "openai"
+  baseUrl      String    @map("base_url") @db.VarChar(512)
+  apiKey       String?   @map("api_key") @db.VarChar(256)
+  maxTokens    Int?      @map("max_tokens")
+  isActive     Boolean   @default(true) @map("is_active")
+  isDefault    Boolean   @default(false) @map("is_default")   // 默认选中的模型
+  lastCheckAt  DateTime? @map("last_check_at")
+  lastCheckOk  Boolean?  @default(false) @map("last_check_ok")
+  ownerId      BigInt?   @map("owner_id")
+
+  owner        User?    @relation("LlmModelOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([ownerId], map: "idx_llm_model_owner")
+  @@index([isActive], map: "idx_llm_model_active")
+  @@map("llm_models")
+}
+
+// 内网数据库连接配置
+model DatabaseConnection {
+  id           BigInt    @id @default(autoincrement())
+  name         String    @map("name") @db.VarChar(128)
+  dbType       String    @map("db_type") @db.VarChar(64)
+  host         String    @map("host") @db.VarChar(256)
+  port         Int       @map("port")
+  databaseName String    @map("database_name") @db.VarChar(128)
+  username     String    @map("username") @db.VarChar(128)
+  password     String    @map("password") @db.VarChar(256)
+  ownerId      BigInt?   @map("owner_id")
+
+  owner        User?    @relation("DbConnOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([ownerId], map: "idx_db_conn_owner")
+  @@map("database_connections")
+}
+
+// 用户知识库（关联 RagFlow）
+model KnowledgeBase {
+  id           BigInt    @id @default(autoincrement())
+  ragDatasetId String   @map("rag_dataset_id") @db.VarChar(128)
+  name         String    @map("name") @db.VarChar(256)
+  description  String?   @db.Text
+  isShared     Boolean   @default(false) @map("is_shared")
+  ownerId      BigInt    @map("owner_id")
+
+  owner        User     @relation("KbOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@unique([ragDatasetId], map: "uk_kb_dataset")
+  @@index([ownerId], map: "idx_kb_owner")
+  @@map("knowledge_bases")
+}
+

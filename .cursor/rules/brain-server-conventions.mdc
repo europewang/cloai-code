@@ -1,0 +1,91 @@
+---
+description: brain-server 项目关键约定（Docker 部署、容器内外路径、编译流程）
+alwaysApply: false
+globs: brain-server/**/*.ts
+---
+
+# brain-server 关键工程约定
+
+## 1. Docker 部署架构
+
+`brain-server` 运行在 Docker 容器中，**不是**主机进程。
+
+```
+主机端口 8091  ──→  Docker 容器 ai4kb-brain-server:8091  ──→  Node 进程
+```
+
+### 关键约束
+
+- 容器名：`ai4kb-brain-server`
+- 容器内代码路径：`/app/dist/server.js`
+- 镜像名：`deploy-brain-server`
+
+**修改主机代码后，必须通过以下步骤部署（任选一种）：**
+
+### 方案 A：`docker cp` + `docker restart`（快速调试）
+
+```bash
+cd /home/ubutnu/code/cloai-code/brain-server
+npx tsc -p tsconfig.json
+docker cp dist/server.js ai4kb-brain-server:/app/dist/server.js
+docker restart ai4kb-brain-server
+```
+
+### 方案 B：`docker build` + `docker compose`（标准发布）
+
+```bash
+cd /home/ubutnu/code/cloai-code/brain-server
+npx tsc -p tsconfig.json
+docker build -t deploy-brain-server:<日期> .
+docker compose -f deploy/docker-compose-brain-ts.yml up -d --build
+```
+
+> ⚠️ 仅在主机上重启 Node 进程**无效**。
+
+## 2. 编译规则
+
+- **TypeScript 源码**：`brain-server/src/`
+- **编译输出**：`brain-server/dist/`
+- **入口文件**：`brain-server/dist/index.js`
+- 编译命令：`npx tsc -p tsconfig.json`
+- ESM（`"type": "module"`），**禁止**在 `dist/` 中使用 `require()`
+
+## 3. 关键 API 端点
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/v1/admin/datasets` | 知识库列表（含权限过滤） |
+| `GET /api/v1/brain/context` | 用户上下文（含 allowedDatasets） |
+| `POST /api/v1/admin/permissions/datasets` | 授权/撤销知识库权限 |
+| `GET /api/v1/admin/users/{id}/permissions` | 查询用户所有权限 |
+| `POST /api/v1/rag/query` | RAG 检索代理（非流式） |
+| `POST /api/v1/rag/query/stream` | RAG 检索代理（流式 SSE） |
+
+## 4. 权限模型关键约束
+
+- `super_admin`：能看到所有库
+- `admin`：能看自己创建的 + 共享库
+- `user`：**只能看自己创建的 + 明确授权的**（`isShared` 标志不自动授权）
+- `ownershipMap` 补充时：**禁止**对非 `super_admin` 执行无条件 else 分支
+
+## 5. 数据库连接
+
+- **PostgreSQL**：容器 `ai4kb-brain-postgres`，端口 5433
+- **Redis**：容器 `valkey`，端口 6380
+- 连接串在 `brain-server/.env` 中配置
+
+## 6. Prisma 迁移
+
+```bash
+# 开发环境
+npx prisma migrate dev --name <migration_name>
+
+# 生产环境（容器内启动时自动执行）
+npx prisma migrate deploy
+```
+
+## 7. 规范文档
+
+- API 规范：`programDoc/specs/api.yaml`
+- 数据库 Schema：`programDoc/specs/prisma.sql`
+- 变更日志：`programDoc/changelog.md`

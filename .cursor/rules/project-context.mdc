@@ -1,0 +1,66 @@
+---
+description: 项目概述：每次会话开始时加载 programDoc 上下文
+alwaysApply: true
+---
+
+# 项目会话启动规则
+
+## 会话启动时必须读取
+
+每次新会话开始（或用户提出第一个问题时），**立即**读取以下文件了解项目状态：
+
+### 必须读取
+
+1. **`programDoc/progress.md`** — 项目当前进度（已完成/进行中/待完成），聚焦 §2-§3
+2. **`programDoc/changelog.md`** — 最近 3-5 条变更，按时间倒序
+
+### 按需读取
+
+- 涉及 `brain-server/` → 同时读 `.cursor/rules/brain-server-conventions.mdc`
+- 涉及 `frontend/` → 同时读 `.cursor/rules/frontend-conventions.mdc`
+- 涉及 Bug 修复 → 同时读 `programDoc/specs/bugfix-*.md`
+- 涉及运维/部署 → 同时读 `programDoc/ops-guide.md`
+
+## 会话上下文管理
+
+1. **不依赖历史会话记忆**：每次从 `programDoc/` 读取状态
+2. **改动必须同步**：`program-doc-sync.mdc` 规则强制每次改动后更新文档
+3. **先读后做**：接手新任务前，先读 `progress.md` 了解当前进度
+
+## 项目目录结构
+
+```
+cloai-code/
+├── programDoc/          ← 项目文档（见下方）
+│   ├── progress.md      ← 唯一进度总览（**必读**）
+│   ├── changelog.md     ← 变更日志
+│   ├── ops-guide.md     ← 运维手册
+│   ├── specs/           ← 规范文档
+│   │   ├── api.yaml
+│   │   ├── prisma.sql
+│   │   ├── skills.md
+│   │   └── bugfix-*.md
+│   └── archive/         ← 历史参考
+├── brain-server/        ← 治理后端（Fastify + Prisma）
+│   └── src/            ← TypeScript 源码
+├── frontend/            ← Vue 3 前端
+├── src/                 ← Claude Code 主决策大脑
+├── skills/             ← 运行时技能包
+│   ├── rag_query/
+│   └── cad_text_extractor/
+└── deploy/             ← Docker 编排
+```
+
+## 当前服务运行状态
+
+- `ai4kb-brain-server`（8091）：治理后端
+- `ai4kb-frontend`（8086）：Vue 3 前端
+- `ai4kb-brain`（3100）：主决策大脑
+- `ragflow`（8084）：知识库检索
+- `ai4kb-brain-postgres`（5433）：PostgreSQL
+- `valkey`（6380）：Redis
+- `ai4kb-brain-mongo`（27018）：MongoDB
+- `ollama-local`（11434）：Ollama LLM
+- `xinference`（8085）：Embedding/Reranker（可选）
+
+**注意**：主机 `node dist/index.js` 进程与 Docker 容器内的服务无关。
