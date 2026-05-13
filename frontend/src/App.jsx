@@ -2717,13 +2717,13 @@ function DatasetManager({ currentRole }) {
     isShared: false,
     isSubmitting: false
   })
-  // --- 分组状态 ---
-  const [groupMode, setGroupMode] = useState(false)
+  // --- 分组状态（新版） ---
+  const [activeGroupId, setActiveGroupId] = useState('__all__') // '__all__' | groupId
   const [datasetGroups, setDatasetGroups] = useState(() => {
     try { const s = localStorage.getItem('ai4kb_dataset_groups'); return s ? JSON.parse(s) : [] } catch { return [] }
   })
   const [newGroupName, setNewGroupName] = useState('')
-  const [showAssignPanel, setShowAssignPanel] = useState(false) // 当前要分配到的组
+  const [showAssignPanel, setShowAssignPanel] = useState(false)
   const manageableDatasets = useMemo(() => datasets.filter(ds => ds?.manageable !== false), [datasets])
 
   const loadData = () => {
@@ -2945,229 +2945,199 @@ function DatasetManager({ currentRole }) {
     )
   }
 
+  // 构建导航栏分组数据
+  const navGroups = useMemo(() => {
+    return datasetGroups.map(g => ({
+      id: g.id,
+      name: g.name,
+      count: datasets.filter(ds => g.items.includes(ds.id)).length,
+    }))
+  }, [datasetGroups, datasets])
+
+  // 构建分组区块数据
+  const sectionGroups = useMemo(() => {
+    const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
+    const ungrouped = datasets.filter(ds => !groupedIds.has(ds.id))
+    return [
+      ...datasetGroups.map(g => ({
+        id: g.id,
+        name: g.name,
+        count: datasets.filter(ds => g.items.includes(ds.id)).length,
+      })),
+      ...(ungrouped.length > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungrouped.length }] : []),
+    ]
+  }, [datasetGroups, datasets])
+
+  // 当前要渲染的卡片
+  const currentDatasets = useMemo(() => {
+    if (activeGroupId === '__all__') return datasets
+    if (activeGroupId === '__ungrouped__') {
+      const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
+      return datasets.filter(ds => !groupedIds.has(ds.id))
+    }
+    const group = datasetGroups.find(g => g.id === activeGroupId)
+    if (!group) return datasets
+    return datasets.filter(ds => group.items.includes(ds.id))
+  }, [activeGroupId, datasets, datasetGroups])
+
+  const handleDatasetClick = (ds) => {
+    if (ds?.manageable === false) {
+      alert('该知识库不是你创建的，仅可查看存在')
+      return
+    }
+    setViewingDataset(ds)
+  }
+
+  const renderDatasetCard = (ds) => (
+    <div
+      key={ds.id}
+      style={{ opacity: 0, transform: 'translateY(16px)' }}
+      className="animate-fade-in"
+    >
+      <DatasetCard
+        dataset={ds}
+        onClick={() => handleDatasetClick(ds)}
+        onDelete={handleDelete}
+        onRename={handleRenameDataset}
+        onShare={handleOpenShare}
+        selected={selectedDatasets.includes(ds.id)}
+        onSelect={handleSelectDataset}
+        selectionMode={selectedDatasets.length > 0}
+        currentRole={currentRole}
+      />
+    </div>
+  )
+
   return (
-    <div className="h-full scroll-container" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+    <div className="h-full flex flex-col" style={{ background: '#f5f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4">
+      <div className="bg-white border-b border-gray-200 px-6 py-4 shrink-0">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">
-              知识库管理
-            </h2>
+            <h2 className="text-xl font-semibold text-gray-900">知识库管理</h2>
             <p className="text-sm text-gray-500 mt-1">创建和管理知识库</p>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setGroupMode(v => !v)}
-              className={cn(
-                "px-3 py-1.5 text-sm border rounded-lg transition-colors",
-                groupMode
-                  ? "border-blue-400 bg-blue-50 text-blue-700"
-                  : "border-gray-300 text-gray-600 hover:bg-gray-50"
-              )}
-            >
-              <Folder size={14} className="inline mr-1" />
-              {groupMode ? '退出分组' : '分组视图'}
-            </button>
             {manageableDatasets.length > 0 && (
-              <button
-                onClick={handleSelectAll}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
+              <button onClick={handleSelectAll}
+                className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50">
                 {selectedDatasets.length === manageableDatasets.length ? '取消全选' : '全选'}
               </button>
             )}
             {selectedDatasets.length > 0 && (
               <>
-                <button
-                  onClick={() => setShowAssignPanel(true)}
-                  className="px-3 py-1.5 text-sm text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50"
-                >
+                <button onClick={() => setShowAssignPanel(true)}
+                  className="px-3 py-1.5 text-sm text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50">
                   加入分组 ({selectedDatasets.length})
                 </button>
-                <button
-                  onClick={handleBatchDelete}
-                  disabled={batchDeleting}
-                  className="px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
-                >
+                <button onClick={handleBatchDelete} disabled={batchDeleting}
+                  className="px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50">
                   {batchDeleting ? <Loader2 size={14} className="animate-spin inline" /> : null}
                   删除 ({selectedDatasets.length})
                 </button>
               </>
             )}
-            {!groupMode && (
-              <>
-                <input
-                  type="text"
-                  placeholder="新知识库名称"
-                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
-                  value={newDatasetName}
-                  onChange={(e) => setNewDatasetName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-                />
-                <label className="flex items-center gap-1.5 text-sm text-gray-600 select-none cursor-pointer">
-                  <input type="checkbox" checked={newDatasetShared} onChange={e => setNewDatasetShared(e.target.checked)} className="rounded" />
-                  共享
-                </label>
-                <button
-                  onClick={handleCreate}
-                  disabled={creating || !newDatasetName.trim()}
-                  className="px-4 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
-                >
-                  新建
-                </button>
-              </>
-            )}
+            <input
+              type="text"
+              placeholder="新知识库名称"
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
+              value={newDatasetName}
+              onChange={e => setNewDatasetName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleCreate()}
+            />
+            <label className="flex items-center gap-1.5 text-sm text-gray-600 select-none cursor-pointer">
+              <input type="checkbox" checked={newDatasetShared} onChange={e => setNewDatasetShared(e.target.checked)} className="rounded" />
+              共享
+            </label>
+            <button onClick={handleCreate} disabled={creating || !newDatasetName.trim()}
+              className="px-4 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50">
+              新建
+            </button>
           </div>
         </div>
       </div>
 
+      {/* 吸顶分组导航栏 */}
+      {navGroups.length > 0 && (
+        <GroupNavBar
+          groups={navGroups}
+          activeGroupId={activeGroupId}
+          onGroupClick={setActiveGroupId}
+          onCreateGroup={() => {
+            const name = window.prompt('输入分组名称：')
+            if (name && name.trim()) {
+              const next = [...datasetGroups, { id: `group_${Date.now()}`, name: name.trim(), items: [] }]
+              saveGroups(next)
+            }
+          }}
+          onRenameGroup={handleRenameGroup}
+          onDeleteGroup={handleDeleteGroup}
+        />
+      )}
+
       {/* Content */}
-      <div className="p-6">
-        {(() => {
-          if (loading) {
-            return (
-              <div className="flex justify-center items-center h-64">
-                <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
-              </div>
-            )
-          }
-          if (datasets.length === 0) {
-            return (
-              <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
-                <Database size={48} className="mb-4 text-gray-300" />
-                <p className="text-sm">暂无知识库</p>
-              </div>
-            )
-          }
-          if (groupMode) {
-            return (
-              <div className="space-y-6">
-                <div className="bg-white rounded-xl border border-gray-200 p-4">
-                  <div className="flex items-center gap-3">
-                    <FolderPlus size={16} className="text-blue-500 shrink-0" />
-                    <input type="text" placeholder="输入分组名称后按回车新建" value={newGroupName}
-                      onChange={e => setNewGroupName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleCreateGroup() }}
-                      className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                    <button onClick={handleCreateGroup} disabled={!newGroupName.trim()}
-                      className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">新建分组</button>
-                  </div>
-                  {datasetGroups.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {datasetGroups.map(g => (
-                        <div key={g.id} className="flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200 rounded-lg text-sm">
-                          <Folder size={12} className="text-blue-500" />
-                          <span className="text-blue-700">{g.name}</span>
-                          <span className="text-[10px] text-blue-400">({g.items.length})</span>
-                          <button onClick={() => { const n = window.prompt('重命名分组：', g.name); if (n && n.trim()) handleRenameGroup(g.id, n.trim()) }} className="ml-1 text-blue-400 hover:text-blue-600"><Edit size={11} /></button>
-                          <button onClick={() => handleDeleteGroup(g.id)} className="text-blue-300 hover:text-red-500"><Trash2 size={11} /></button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {datasetGroups.length === 0 && <div className="text-center py-6 text-sm text-gray-400">暂无分组，创建分组后将知识库拖入即可</div>}
-                {datasetGroups.map(group => {
-                  const groupDs = datasets.filter(ds => group.items.includes(ds.id))
-                  return (
-                    <div key={group.id} className="bg-white rounded-xl border border-gray-200 p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-                          <Folder size={16} className="text-blue-500" />{group.name}
-                          <span className="text-xs font-normal text-gray-400">({groupDs.length})</span>
-                        </div>
-                        <button onClick={() => { setSelectedDatasets(groupDs.map(d => d.id)); setShowAssignPanel(true) }}
-                          className="text-xs text-blue-600 hover:text-blue-800">+ 添加更多</button>
-                      </div>
-                      {groupDs.length === 0 ? (
-                        <div className="py-4 text-center text-xs text-gray-400 border border-dashed border-gray-200 rounded-lg">该分组暂无知识库</div>
-                      ) : (
-                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                          {groupDs.map(ds => (
-                            <div key={ds.id} className="relative group/rm">
-                              <DatasetCard dataset={ds}
-                                onClick={() => { if (ds?.manageable === false) { alert('该知识库不是你创建的，仅可查看存在'); return }; setViewingDataset(ds) }}
-                                onDelete={handleDelete} onRename={handleRenameDataset} onShare={handleOpenShare}
-                                selected={false} onSelect={() => {}} selectionMode={false} currentRole={currentRole} />
-                              <button onClick={() => handleRemoveFromGroup(group.id, ds.id)}
-                                className="absolute top-2 left-2 opacity-0 group-hover/rm:opacity-100 transition-opacity px-1.5 py-0.5 bg-red-100 text-red-600 text-[10px] rounded border border-red-200 hover:bg-red-200">
-                                从组移除
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-                {(() => {
+      <div className="flex-1 overflow-auto p-6 scroll-container">
+        {loading ? (
+          <div className="flex justify-center items-center h-64">
+            <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+          </div>
+        ) : datasets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
+            <Database size={48} className="mb-4 text-gray-300" />
+            <p className="text-sm">暂无知识库</p>
+          </div>
+        ) : sectionGroups.length === 0 ? (
+          /* 无分组时，直接显示全部网格 */
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {datasets.map(ds => renderDatasetCard(ds))}
+          </div>
+        ) : (
+          /* 有分组时，显示分组区块 */
+          <div className="space-y-6">
+            {/* 全部视图：每个分组一个区块 + 未分组区块 */}
+            {sectionGroups.map(group => {
+              const groupDs = currentDatasets.filter(ds => {
+                if (group.id === '__ungrouped__') {
                   const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
-                  const ungrouped = datasets.filter(ds => !groupedIds.has(ds.id))
-                  if (ungrouped.length === 0) return null
-                  return (
-                    <div className="bg-white rounded-xl border border-gray-200 p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2 text-sm font-semibold text-gray-500">
-                          <FolderOpen size={16} className="text-gray-400" />未分组<span className="text-xs font-normal text-gray-400">({ungrouped.length})</span>
-                        </div>
-                        <button onClick={() => setShowAssignPanel(true)} className="text-xs text-blue-600 hover:text-blue-800">+ 加入分组</button>
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                        {ungrouped.map(ds => (
-                          <div key={ds.id} className="relative">
-                            <DatasetCard dataset={ds}
-                              onClick={() => { if (ds?.manageable === false) { alert('该知识库不是你创建的，仅可查看存在'); return }; setViewingDataset(ds) }}
-                              onDelete={handleDelete} onRename={handleRenameDataset} onShare={handleOpenShare}
-                              selected={false} onSelect={() => {}} selectionMode={false} currentRole={currentRole} />
-                          </div>
-                        ))}
-                      </div>
+                  return !groupedIds.has(ds.id)
+                }
+                const g = datasetGroups.find(g => g.id === group.id)
+                return g ? g.items.includes(ds.id) : false
+              })
+              if (groupDs.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
+              if (groupDs.length === 0) {
+                return (
+                  <GroupSection key={group.id} groupId={group.id} groupName={group.name} count={0}>
+                    <div className="py-8 text-center text-xs text-gray-400 border border-dashed border-gray-200 rounded-lg bg-white">
+                      暂无知识库
                     </div>
-                  )
-                })()}
-              </div>
-            )
-          }
-          return (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {datasets.map((ds, idx) => (
-                <div
-                  key={ds.id}
-                  style={{ opacity: 0, transform: 'translateY(16px)' }}
-                  ref={el => {
-                    if (!el) return
-                    el.style.transition = 'none'
-                    requestAnimationFrame(() => {
-                      el.style.transition = `opacity 0.4s ease ${idx * 40}ms, transform 0.4s ease ${idx * 40}ms`
-                      el.style.opacity = '1'
-                      el.style.transform = 'translateY(0)'
-                    })
-                  }}
-                >
-                  <DatasetCard
-                    dataset={ds}
-                    onClick={() => {
-                      if (ds?.manageable === false) {
-                        alert('该知识库不是你创建的，仅可查看存在，不可进入内部内容。')
-                        return
-                      }
-                      setViewingDataset(ds)
-                    }}
-                    onDelete={handleDelete}
-                    onRename={handleRenameDataset}
-                    onShare={handleOpenShare}
-                    selected={selectedDatasets.includes(ds.id)}
-                    onSelect={handleSelectDataset}
-                    selectionMode={selectedDatasets.length > 0}
-                    currentRole={currentRole}
-                  />
-                </div>
-              ))}
-            </div>
-          )
-        })()}
+                  </GroupSection>
+                )
+              }
+              return (
+                <GroupSection key={group.id} groupId={group.id} groupName={group.name} count={groupDs.length}>
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {groupDs.map(ds => (
+                      <div key={ds.id} className="relative">
+                        {renderDatasetCard(ds)}
+                        {group.id !== '__ungrouped__' && (
+                          <button
+                            onClick={() => handleRemoveFromGroup(group.id, ds.id)}
+                            className="absolute top-2 left-2 opacity-0 group-hover/rm:opacity-100 transition-opacity px-1.5 py-0.5 bg-red-100 text-red-600 text-[10px] rounded border border-red-200 hover:bg-red-200 z-10"
+                          >
+                            从组移除
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </GroupSection>
+              )
+            })}
+          </div>
+        )}
       </div>
+
       {/* 分组分配弹窗 */}
         {showAssignPanel && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center">
@@ -6583,6 +6553,162 @@ function normalizeConversationId(item) {
   return item?.conversationId || item?.conversation_id || item?.id || ''
 }
 
+// =============================================================================
+// 通用分组导航组件
+// - 吸顶横向分组卡片导航栏（sticky）
+// - 支持分组数量统计（括号内显示总数）
+// - 点击分组 → 滚动到对应区块 + 高亮分组卡片
+// - 页面滚动 → 当前可视分组卡片自动高亮（IntersectionObserver）
+// =============================================================================
+function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
+  const containerRef = useRef(null)
+  const cardRefs = useRef({})
+
+  // 滚动联动：IntersectionObserver 监听各分组区块
+  useEffect(() => {
+    const observers = []
+    groups.forEach(group => {
+      const el = document.getElementById(`group-section-${group.id}`)
+      if (!el) return
+      const obs = new IntersectionObserver(
+        ([entry]) => {
+          if (entry.isIntersecting) {
+            // 找到第一个可见的分组，通知父组件更新 activeGroupId
+            // 通过 DOM 事件让 NavBar 知道
+            const nav = containerRef.current?.closest('[data-group-nav]')
+            if (nav) nav.dataset.active = group.id
+          }
+        },
+        { rootMargin: '-10% 0px -80% 0px', threshold: 0 }
+      )
+      obs.observe(el)
+      observers.push(obs)
+    })
+    return () => observers.forEach(o => o.disconnect())
+  }, [groups])
+
+  const handleCardClick = (groupId) => {
+    onGroupClick(groupId)
+    // 滚动到对应区块
+    const el = document.getElementById(`group-section-${groupId}`)
+    if (el) {
+      const top = el.getBoundingClientRect().top + window.scrollY - 120
+      window.scrollTo({ top, behavior: 'smooth' })
+    }
+  }
+
+  return (
+    <div
+      data-group-nav
+      className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b border-gray-100 shadow-sm"
+    >
+      {/* 分组卡片导航栏 */}
+      <div
+        ref={containerRef}
+        className="flex items-center gap-2 px-4 py-2 overflow-x-auto scroll-container"
+        style={{ scrollbarWidth: 'thin', scrollbarColor: '#e5e7eb transparent' }}
+      >
+        {/* 全部 */}
+        <button
+          data-group-id="__all__"
+          onClick={() => {
+            onGroupClick('__all__')
+            window.scrollTo({ top: 0, behavior: 'smooth' })
+          }}
+          className={cn(
+            "shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all whitespace-nowrap",
+            activeGroupId === '__all__'
+              ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+              : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
+          )}
+        >
+          全部
+        </button>
+
+        {groups.map(group => (
+          <button
+            key={group.id}
+            ref={el => { cardRefs.current[group.id] = el }}
+            data-group-id={group.id}
+            onClick={() => handleCardClick(group.id)}
+            className={cn(
+              "shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all whitespace-nowrap",
+              activeGroupId === group.id
+                ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
+            )}
+          >
+            {group.name}
+            <span className="ml-1 text-[10px] opacity-75">
+              ({group.count})
+            </span>
+          </button>
+        ))}
+
+        {/* 新建分组按钮 */}
+        {onCreateGroup && (
+          <button
+            onClick={onCreateGroup}
+            className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 border border-dashed border-gray-300 hover:border-blue-300 transition-all whitespace-nowrap"
+          >
+            <Plus size={11} />
+            新建分组
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// 通用分组区块组件
+// - 每个分组对应一个区块，含标题栏 + 分割线
+// - 区块内容由 children 决定（传入卡片列表）
+// =============================================================================
+function GroupSection({ groupId, groupName, count, showCount = true, children }) {
+  return (
+    <div id={`group-section-${groupId}`} className="group-section">
+      {/* 分组区块标题栏 */}
+      <div className="sticky top-[52px] z-10 bg-slate-50/95 backdrop-blur-sm">
+        <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+          <Folder size={14} className="text-blue-500 shrink-0" />
+          <span className="text-sm font-semibold text-gray-700">{groupName}</span>
+          {showCount && (
+            <span className="text-xs text-gray-400">({count})</span>
+          )}
+        </div>
+        {/* 1px 半透明灰色分割线 */}
+        <div className="h-px bg-gray-200/70 mx-4" />
+      </div>
+      {/* 卡片列表 */}
+      <div className="px-4 pb-4">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// 通用卡片网格包装器
+// - 显示卡片列表（单组或多组统一网格）
+// - 用于普通视图或全部分组视图
+// =============================================================================
+function CardGrid({ items, renderCard, emptyText = '暂无内容', emptyIcon: EmptyIcon = FolderOpen }) {
+  if (items.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
+        <EmptyIcon size={48} className="mb-4 text-gray-300" />
+        <p className="text-sm">{emptyText}</p>
+      </div>
+    )
+  }
+  return (
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {items.map(item => renderCard(item))}
+    </div>
+  )
+}
+
 // 可排序对话项组件
 function SortableConvItem({
   item, isActive, renamingId, renamingTitle, setRenamingTitle,
@@ -9512,6 +9638,7 @@ function DatabaseLibrary() {
   const [selectedIds, setSelectedIds] = useState([])
   const [showAssignPanel, setShowAssignPanel] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
+  const [activeGroupId, setActiveGroupId] = useState('__all__')
 
   const loadGroups = useCallback(async () => {
     try {
@@ -9534,7 +9661,7 @@ function DatabaseLibrary() {
     } catch {}
   }, [])
 
-  useEffect(() => { if (groupMode) loadGroups() }, [groupMode, loadGroups])
+  useEffect(() => { if (groups.length > 0) {} }, [groups, loadGroups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -9680,81 +9807,40 @@ function DatabaseLibrary() {
         </div>
       )}
 
-      <div className="flex-1 overflow-auto p-6">
-        {(() => {
-          if (groupMode) {
-            return (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <input type="text" placeholder="输入分组名称后回车创建" value={newGroupName}
-                    onChange={e => setNewGroupName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleCreateGroup() }}
-                    className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <button onClick={handleCreateGroup} disabled={!newGroupName.trim()}
-                    className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">新建分组</button>
-                </div>
-                {groups.map(g => (
-                  <div key={g.id} className="bg-white rounded-xl border border-gray-200 p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-                        <Folder size={16} className="text-blue-500" />{g.label}
-                        <span className="text-xs font-normal text-gray-400">({g.order.length})</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <button onClick={() => { setSelectedIds(items.filter(i => !g.order.includes(i.id) && !i.isPlaceholder).map(i => i.id)); setShowAssignPanel(true); }}
-                          className="text-xs text-blue-600 hover:text-blue-800">+ 添加</button>
-                        <button onClick={() => handleDeleteGroup(g.id)} className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {g.order.map(itemId => {
-                        const item = items.find(i => i.id === itemId)
-                        if (!item) return null
-                        return (
-                          <div key={item.id} className="flex items-center gap-2 p-2 bg-slate-50 rounded-lg">
-                            <Database size={14} className={dbTypeColor[item.dbType] || 'text-slate-400'} />
-                            <span className="text-xs text-slate-700 truncate flex-1">{item.name}</span>
-                            <button onClick={() => handleRemoveFromGroup(g.id, item.id)} className="text-red-400 hover:text-red-600 shrink-0"><X size={12} /></button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {g.order.length === 0 && <p className="text-xs text-gray-400">暂无连接</p>}
+      <div className="flex-1 overflow-auto p-6 scroll-container">
+        {loading ? (
+          <div className="text-center text-slate-400 py-12">加载中...</div>
+        ) : items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
+            <Database size={48} className="mb-4 text-gray-300" />
+            <p className="text-sm">暂无数据库连接</p>
+          </div>
+        ) : sectionGroups.length === 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {currentItems.map(item => renderDbCard(item))}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {sectionGroups.map(group => {
+              const groupItems = currentItems.filter(i => {
+                if (group.id === '__ungrouped__') {
+                  const groupedIds = new Set(groups.flatMap(g => g.order))
+                  return !groupedIds.has(i.id)
+                }
+                const g = groups.find(g => g.id === group.id)
+                return g ? g.order.includes(i.id) : false
+              })
+              if (groupItems.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
+              return (
+                <GroupSection key={group.id} groupId={group.id} groupName={group.name} count={groupItems.length}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {groupItems.map(item => renderDbCard(item))}
                   </div>
-                ))}
-                {groups.length === 0 && <p className="text-center text-sm text-gray-400 py-8">暂无分组</p>}
-              </div>
-            )
-          }
-          return (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {items.map(item => (
-                <div key={item.id} className="bg-white rounded-xl border border-slate-200 p-4 hover:shadow-sm transition-all">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="w-9 h-9 rounded-lg bg-slate-50 flex items-center justify-center">
-                      <Database size={16} className={dbTypeColor[item.dbType] || 'text-slate-400'} />
-                    </div>
-                    {item.status && (
-                      <div className={cn('w-2 h-2 rounded-full mt-1', item.status === 'connected' ? 'bg-green-400' : 'bg-red-400')} />
-                    )}
-                  </div>
-                  <p className="text-sm font-medium text-slate-900 mb-0.5">{item.name}</p>
-                  <p className="text-[10px] text-slate-400 font-mono truncate mb-2">{item.host || '示例地址'}:{item.port || '3306'}</p>
-                  <div className="flex items-center justify-between">
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded uppercase font-medium', dbTypeBg[item.dbType] || 'bg-slate-50', dbTypeColor[item.dbType] || 'text-slate-500')}>
-                      {item.dbType || 'mysql'}
-                    </span>
-                    {!item.isPlaceholder && (
-                      <button onClick={() => handleDelete(item.id)} className="p-1 hover:bg-red-50 rounded">
-                        <Trash2 size={12} className="text-red-400" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        })()}
+                </GroupSection>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Group Assign Modal */}
@@ -9798,6 +9884,7 @@ function SkillLibrary({ role }) {
   const [selectedIds, setSelectedIds] = useState([])
   const [showAssignPanel, setShowAssignPanel] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
+  const [activeGroupId, setActiveGroupId] = useState('__all__')
 
   const loadGroups = useCallback(async () => {
     try {
@@ -9820,7 +9907,7 @@ function SkillLibrary({ role }) {
     } catch {}
   }, [])
 
-  useEffect(() => { if (groupMode) loadGroups() }, [groupMode, loadGroups])
+  useEffect(() => { loadGroups() }, [loadGroups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -9874,6 +9961,49 @@ function SkillLibrary({ role }) {
     default: <Zap size={16} />,
   }
 
+  // 构建导航栏分组数据
+  const navGroups = useMemo(() => groups.map(g => ({
+    id: g.id,
+    name: g.label,
+    count: g.order.length,
+  })), [groups])
+
+  // 构建分组区块数据
+  const sectionGroups = useMemo(() => {
+    const groupedIds = new Set(groups.flatMap(g => g.order))
+    const ungrouped = skills.filter(s => !groupedIds.has(s.name))
+    return [
+      ...groups.map(g => ({ id: g.id, name: g.label, count: g.order.length })),
+      ...(ungrouped.length > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungrouped.length }] : []),
+    ]
+  }, [groups, skills])
+
+  // 当前要渲染的技能
+  const currentSkills = useMemo(() => {
+    if (activeGroupId === '__all__') return skills
+    if (activeGroupId === '__ungrouped__') {
+      const groupedIds = new Set(groups.flatMap(g => g.order))
+      return skills.filter(s => !groupedIds.has(s.name))
+    }
+    const group = groups.find(g => g.id === activeGroupId)
+    if (!group) return skills
+    return skills.filter(s => group.order.includes(s.name))
+  }, [activeGroupId, skills, groups])
+
+  const renderSkillCard = (skill) => (
+    <button
+      key={skill.name}
+      onClick={() => handleSkillClick(skill)}
+      className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all group"
+    >
+      <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center mb-3 text-amber-500">
+        {SKILL_ICONS[skill.name] || SKILL_ICONS.default}
+      </div>
+      <p className="text-sm font-medium text-slate-900 group-hover:text-blue-600 transition-colors">{skill.displayName || skill.name}</p>
+      <p className="text-[10px] text-slate-400 mt-0.5 truncate">{skill.name}</p>
+    </button>
+  )
+
   return (
     <div className="h-full flex flex-col bg-slate-50">
       <div className="px-6 py-4 border-b bg-white flex items-center justify-between shrink-0">
@@ -9881,83 +10011,58 @@ function SkillLibrary({ role }) {
           <h2 className="text-lg font-semibold text-slate-900">技能库</h2>
           <p className="text-xs text-slate-400 mt-0.5">点击技能直接发起对话</p>
         </div>
-        <button onClick={() => setGroupMode(v => !v)}
-          className={cn("flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-sm transition-colors",
-            groupMode ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600 hover:bg-gray-50")}>
-          <Folder size={14} /> {groupMode ? '退出分组' : '分组视图'}
-        </button>
       </div>
 
-      <div className="flex-1 overflow-auto p-6">
-        {(() => {
-          if (loading) return <div className="text-center text-slate-400 py-12">加载中...</div>
-          if (skills.length === 0) return (
-            <div className="text-center text-slate-400 py-12">
-              <Zap size={32} className="mx-auto mb-2 opacity-30" />
-              <p className="text-sm">暂无可用技能</p>
-            </div>
-          )
-          if (groupMode) {
-            return (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <input type="text" placeholder="输入分组名称后回车创建" value={newGroupName}
-                    onChange={e => setNewGroupName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleCreateGroup() }}
-                    className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <button onClick={handleCreateGroup} disabled={!newGroupName.trim()}
-                    className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">新建分组</button>
-                </div>
-                {groups.map(g => (
-                  <div key={g.id} className="bg-white rounded-xl border border-gray-200 p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-                        <Folder size={16} className="text-blue-500" />{g.label}
-                        <span className="text-xs font-normal text-gray-400">({g.order.length})</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <button onClick={() => { setSelectedIds(skills.filter(s => !g.order.includes(s.name)).map(s => s.name)); setShowAssignPanel(true) }}
-                          className="text-xs text-blue-600 hover:text-blue-800">+ 添加</button>
-                        <button onClick={() => handleDeleteGroup(g.id)} className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {g.order.map(name => {
-                        const skill = skills.find(s => s.name === name)
-                        if (!skill) return null
-                        return (
-                          <div key={skill.name} className="flex items-center gap-1 px-2 py-1 bg-amber-50 border border-amber-200 rounded-lg">
-                            <span className="text-xs text-amber-700">{skill.displayName || skill.name}</span>
-                            <button onClick={() => handleRemoveFromGroup(g.id, skill.name)} className="text-amber-400 hover:text-red-600"><X size={10} /></button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {g.order.length === 0 && <p className="text-xs text-gray-400">暂无技能</p>}
+      {/* 吸顶分组导航栏 */}
+      {navGroups.length > 0 && (
+        <GroupNavBar
+          groups={navGroups}
+          activeGroupId={activeGroupId}
+          onGroupClick={setActiveGroupId}
+          onCreateGroup={() => {
+            const name = window.prompt('输入分组名称：')
+            if (name && name.trim()) {
+              const g = { id: Date.now().toString(), label: name.trim(), order: [] }
+              saveGroups([...groups, g])
+            }
+          }}
+        />
+      )}
+
+      <div className="flex-1 overflow-auto p-6 scroll-container">
+        {loading ? (
+          <div className="text-center text-slate-400 py-12">加载中...</div>
+        ) : skills.length === 0 ? (
+          <div className="text-center text-slate-400 py-12">
+            <Zap size={32} className="mx-auto mb-2 opacity-30" />
+            <p className="text-sm">暂无可用技能</p>
+          </div>
+        ) : sectionGroups.length === 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {currentSkills.map(s => renderSkillCard(s))}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {sectionGroups.map(group => {
+              const groupSkills = currentSkills.filter(s => {
+                if (group.id === '__ungrouped__') {
+                  const groupedIds = new Set(groups.flatMap(g => g.order))
+                  return !groupedIds.has(s.name)
+                }
+                const g = groups.find(g => g.id === group.id)
+                return g ? g.order.includes(s.name) : false
+              })
+              if (groupSkills.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
+              return (
+                <GroupSection key={group.id} groupId={group.id} groupName={group.name} count={groupSkills.length}>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {groupSkills.map(s => renderSkillCard(s))}
                   </div>
-                ))}
-                {groups.length === 0 && <p className="text-center text-sm text-gray-400 py-8">暂无分组</p>}
-              </div>
-            )
-          }
-          return (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {skills.map(skill => (
-                <button
-                  key={skill.name}
-                  onClick={() => handleSkillClick(skill)}
-                  className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all group"
-                >
-                  <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center mb-3 text-amber-500">
-                    {SKILL_ICONS[skill.name] || SKILL_ICONS.default}
-                  </div>
-                  <p className="text-sm font-medium text-slate-900 group-hover:text-blue-600 transition-colors">{skill.displayName || skill.name}</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5 truncate">{skill.name}</p>
-                </button>
-              ))}
-            </div>
-          )
-        })()}
+                </GroupSection>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Group Assign Modal */}
@@ -10145,7 +10250,7 @@ function ModelLibrary({ role }) {
     } catch {}
   }, [])
 
-  useEffect(() => { if (groupMode) loadGroups() }, [groupMode, loadGroups])
+  useEffect(() => { loadGroups() }, [loadGroups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -10258,11 +10363,6 @@ function ModelLibrary({ role }) {
           <p className="text-xs text-slate-400 mt-0.5">配置 Ollama / OpenAI 等模型</p>
         </div>
         <button onClick={() => setGroupMode(v => !v)}
-          className={cn("flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-sm transition-colors",
-            groupMode ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600 hover:bg-gray-50")}>
-          <Folder size={14} /> {groupMode ? '退出分组' : '分组视图'}
-        </button>
-        <button onClick={() => setShowForm(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
           <Plus size={14} /> 添加模型
         </button>
@@ -10291,16 +10391,11 @@ function ModelLibrary({ role }) {
                 className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="qwen2.5:7b" />
             </div>
             <div>
-              <label className="text-xs text-slate-500 mb-1 block">最大 Token</label>
-              <input type="number" value={form.maxTokens} onChange={e => setForm(f => ({ ...f, maxTokens: e.target.value }))}
-                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="4096" />
-            </div>
-            <div className="col-span-2">
-              <label className="text-xs text-slate-500 mb-1 block">基础 URL</label>
+              <label className="text-xs text-slate-500 mb-1 block">API 地址</label>
               <input value={form.baseUrl} onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
-                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="http://localhost:11434" />
+                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="http://host.docker.internal:11434" />
             </div>
-            <div className="col-span-2">
+            <div>
               <label className="text-xs text-slate-500 mb-1 block">API Key（可选）</label>
               <input type="password" value={form.apiKey} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
                 className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="sk-..." />
@@ -10318,7 +10413,23 @@ function ModelLibrary({ role }) {
         </div>
       )}
 
-      <div className="flex-1 overflow-auto p-6">
+      {/* 吸顶分组导航栏 */}
+      {navGroups.length > 0 && (
+        <GroupNavBar
+          groups={navGroups}
+          activeGroupId={activeGroupId}
+          onGroupClick={setActiveGroupId}
+          onCreateGroup={() => {
+            const name = window.prompt('输入分组名称：')
+            if (name && name.trim()) {
+              const g = { id: Date.now().toString(), label: name.trim(), order: [] }
+              saveGroups([...groups, g])
+            }
+          }}
+        />
+      )}
+
+      <div className="flex-1 overflow-auto p-6 scroll-container">
         {loading ? (
           <div className="text-center text-slate-400 py-12">加载中...</div>
         ) : models.length === 0 ? (
@@ -10327,54 +10438,30 @@ function ModelLibrary({ role }) {
             <p className="text-sm">暂无配置的模型</p>
             <p className="text-xs mt-1">点击右上角添加 Ollama 等模型</p>
           </div>
-        ) : (
+        ) : sectionGroups.length === 0 ? (
           <div className="space-y-3">
-            {models.map(model => (
-              <div key={model.id} className={cn(
-                'bg-white rounded-xl border p-4 transition-all',
-                model.isDefault ? 'border-blue-300 shadow-sm' : 'border-slate-200'
-              )}>
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <div className="w-9 h-9 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-500">
-                      <Cpu size={16} />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium text-slate-900">{model.displayName}</p>
-                        {model.isDefault && <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">默认</span>}
-                      </div>
-                      <p className="text-[10px] text-slate-400 font-mono">{model.name} · {model.modelType}</p>
-                    </div>
+            {currentModels.map(m => renderModelCard(m))}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {sectionGroups.map(group => {
+              const groupModels = currentModels.filter(m => {
+                if (group.id === '__ungrouped__') {
+                  const groupedIds = new Set(groups.flatMap(g => g.order))
+                  return !groupedIds.has(m.id)
+                }
+                const g = groups.find(g => g.id === group.id)
+                return g ? g.order.includes(m.id) : false
+              })
+              if (groupModels.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
+              return (
+                <GroupSection key={group.id} groupId={group.id} groupName={group.name} count={groupModels.length}>
+                  <div className="space-y-3">
+                    {groupModels.map(m => renderModelCard(m))}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className={cn('w-2 h-2 rounded-full', model.lastCheckOk === true ? 'bg-green-400' : model.lastCheckOk === false ? 'bg-red-400' : 'bg-slate-300')} />
-                    <span className="text-[10px] text-slate-400">{model.lastCheckOk === true ? '可用' : model.lastCheckOk === false ? '不可用' : '未测试'}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 text-[10px] text-slate-400 mb-3">
-                  <span className="font-mono">{model.baseUrl}</span>
-                  {model.maxTokens && <span>· 最大 {model.maxTokens} tokens</span>}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => handleTest(model.id)} disabled={testingId === model.id}
-                    className="flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-xs">
-                    {testingId === model.id ? <Loader2 size={10} className="animate-spin" /> : <Activity size={10} />}
-                    {testingId === model.id ? '测试中...' : '测试连接'}
-                  </button>
-                  {!model.isDefault && (
-                    <button onClick={() => handleSetDefault(model.id)}
-                      className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded text-xs">
-                      设为默认
-                    </button>
-                  )}
-                  <button onClick={() => handleDelete(model.id)}
-                    className="px-2 py-1 hover:bg-red-50 text-red-400 rounded text-xs ml-auto">
-                    <Trash2 size={10} />
-                  </button>
-                </div>
-              </div>
-            ))}
+                </GroupSection>
+              )
+            })}
           </div>
         )}
       </div>

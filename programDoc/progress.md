@@ -1,6 +1,6 @@
 # cloai-code 项目进度总览
 
-> 更新时间：2026-05-13
+> 更新时间：2026-05-13（第二次）
 > 作用：唯一进度来源。每次改动后同步更新，其他文档引用本文件。
 
 ---
@@ -141,6 +141,7 @@
 4. 接口：`GET/PATCH /api/v1/user/settings` — 用户设置（对话顺序、库分组）
 5. 前端：智能问答子侧边栏（拖拽排序 + 置顶 + 重命名 + 删除 + 新建对话）
 6. 前端会话统计图表：BarChart、LineChart、PieChart
+7. 四大模块（知识库/技能库/模型库/数据库）统一「吸顶分组导航栏 + 分组区块」交互
 
 ### 2.11 Brain 推理（src brain service）
 
@@ -230,6 +231,13 @@
 - **架构**：App 层统一管理 conversations 状态，ChatInterface 通过 useImperativeHandle 暴露切换/同步方法
 - **API 修复**：前端从 `/user/conversations` 迁移到 `/v1/conversations`（7 处）
 - **Bug 修复**：normalize 函数提升到模块级别解决作用域问题；handleSwitchConversation 顺序调整解决初始化错误
+
+### 2026-05-13 前端：四大模块统一「吸顶分组导航 + 分组区块」交互
+- **问题**：四大模块分组视图交互不一致（知识库有独立 groupMode，数据库/技能库/模型库各有一套逻辑），体验割裂
+- **修复**：引入 `GroupNavBar`（吸顶横向卡片导航）+ `GroupSection`（分组区块标题栏+分割线）+ `CardGrid` 三个通用组件
+- **统一交互**：吸顶导航栏、横向滚动、点击分组滚动到区块、页面滚动时自动高亮当前分组（IntersectionObserver）
+- **模块**：DatasetManager、DatabaseLibrary、SkillLibrary、ModelLibrary 全部重构
+- **ModelLibrary**：补充缺失的 groupMode 渲染逻辑（之前有状态有按钮但无渲染实现）
 
 ### 2026-05-12 前端改造
 - **智能问答子侧边栏**：`Sidebar` 智能问答菜单项点击展开对话列表，支持拖拽排序、置顶、新建对话
