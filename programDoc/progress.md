@@ -1,6 +1,6 @@
 # cloai-code 项目进度总览
 
-> 更新时间：2026-05-12
+> 更新时间：2026-05-13
 > 作用：唯一进度来源。每次改动后同步更新，其他文档引用本文件。
 
 ---
@@ -130,14 +130,17 @@
 ### 2.10 会话管理
 
 1. `conversations` 表 + `messages` 表（会话与消息持久化）
-2. 接口（前端适配层 `frontend/server.js`）：
-   - `GET /api/user/conversations` — 会话列表
-   - `POST /api/user/conversations` — 创建会话
-   - `PUT /api/user/conversations/{id}` — 重命名会话
-   - `DELETE /api/user/conversations/{id}` — 删除会话
-   - `GET /api/user/conversations/{id}/messages` — 消息历史
-   - `POST /api/user/conversations/{id}/messages` — 发送消息
-3. 前端会话统计图表：BarChart、LineChart、PieChart
+2. 接口：
+   - `GET /api/v1/conversations` — 会话列表
+   - `POST /api/v1/conversations` — 创建会话
+   - `PATCH /api/v1/conversations/:id` — 重命名会话
+   - `DELETE /api/v1/conversations/:id` — 删除会话
+   - `GET /api/v1/conversations/:id/messages` — 消息历史
+   - `POST /api/v1/conversations/:id/messages` — 发送消息
+3. `User.settings Json` 字段 — 保存用户偏好（对话排序、组件库分组）
+4. 接口：`GET/PATCH /api/v1/user/settings` — 用户设置（对话顺序、库分组）
+5. 前端：智能问答子侧边栏（拖拽排序 + 置顶 + 重命名 + 删除 + 新建对话）
+6. 前端会话统计图表：BarChart、LineChart、PieChart
 
 ### 2.11 Brain 推理（src brain service）
 
@@ -218,12 +221,28 @@
 
 ---
 
-## 4. 待完成内容
+## 4. 已完成内容（按日期）
+
+### 2026-05-13 前端：会话管理迁移到子侧边栏
+- **问题**：ChatInterface 左侧有独立对话面板 + `>` 按钮，与智能问答子侧边栏功能重复
+- **修复**：移除左侧面板和 `>` 按钮，所有会话管理功能（查看/新建/置顶/重命名/删除/排序）完全集成到子侧边栏
+- **子侧边栏增强**：新增行内重命名（输入框模式）、删除确认按钮
+- **架构**：App 层统一管理 conversations 状态，ChatInterface 通过 useImperativeHandle 暴露切换/同步方法
+- **API 修复**：前端从 `/user/conversations` 迁移到 `/v1/conversations`（7 处）
+- **Bug 修复**：normalize 函数提升到模块级别解决作用域问题；handleSwitchConversation 顺序调整解决初始化错误
+
+### 2026-05-12 前端改造
+- **智能问答子侧边栏**：`Sidebar` 智能问答菜单项点击展开对话列表，支持拖拽排序、置顶、新建对话
+- **组件库分组管理**：知识库/数据库/技能库/模型库均支持自定义分组创建和内容分配
+- **后端用户设置 API**：`User.settings Json` 字段 + `/api/v1/user/settings` GET/PATCH 接口
+- **前端适配层**：代理 `/api/v1/user/settings` 到 brain-server
+
+## 5. 待完成内容
 
 ### 高优先级
 1. 令牌轮换策略（refresh 失效机制）
 2. 审计/权限管理端分页与过滤
-3. LLM 模型管理前端（`llm_models` 表已有，需 UI）
+3. 模型管理 UI（`llm_models` 表已有，UI 待完善分组功能）
 
 ### 中优先级
 1. `test/run_governance_e2e.py` 扩展：新增 user/admin 边界与 rag/query 权限分支用例
@@ -234,7 +253,7 @@
 
 ---
 
-## 5. 架构不符合项
+## 6. 架构不符合项
 
 1. 接口测试主要是脚本回归，自动化测试覆盖不足
 2. RagFlow 上游连接稳定性问题（偶发 `APIConnectionError`）
@@ -251,7 +270,8 @@
 | 鉴权路径 | `/api/user/auth/login` | `/api/v1/auth/login` | ✅ 已适配 |
 | 权限管理 | `/api/admin/permission/*` | `/api/v1/admin/permissions/*` | ✅ 已适配 |
 | 数据集 CRUD | `/api/admin/datasets*` | `/api/v1/admin/datasets` | ✅ 已实现 |
-| 会话管理 | `/api/user/conversations*` | `/api/v1/conversations*` | ✅ 已适配 |
+| 会话管理 | `/api/user/conversations*` | `/api/v1/conversations*` + `/api/v1/user/settings` | ✅ 已适配 |
+| 用户设置 | 无 | `/api/v1/user/settings` (settings Json) | ✅ 已实现 |
 | 技能注册 | `/api/admin/skills/*` | 仅执行 + 审计，无注册中心 | 🔄 待评估 |
 | 模型管理 | 无 | `llm_models` 表已落地 | 🔄 待 UI 开发 |
 | 连接管理 | 无 | `database_connections` 表已落地 | 🔄 待评估 |

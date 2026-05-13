@@ -11,7 +11,9 @@ const PORT = Number(env.PORT || 80)
 const BACKEND_URL = new URL(env.BACKEND_URL || 'http://ai4kb-brain-server:8091')
 const DIST_DIR = join(cwd, 'dist')
 const CONVERSATION_RETENTION_DAYS = 90
+const MAX_CONVERSATIONS_PER_USER = 20
 const conversationStore = new Map()
+const conversationOrderStore = new Map() // userKey -> { order: string[], pinned: string[] }
 const toolDraftStore = new Map()
 const TOOL_CATALOG = [
   {
@@ -135,6 +137,13 @@ function ensureConversationBucket(userKey) {
   return conversationStore.get(userKey)
 }
 
+function getConversationOrder(userKey) {
+  if (!conversationOrderStore.has(userKey)) {
+    conversationOrderStore.set(userKey, { order: [], pinned: [] })
+  }
+  return conversationOrderStore.get(userKey)
+}
+
 function ensureToolDraftBucket(userKey) {
   if (!toolDraftStore.has(userKey)) {
     toolDraftStore.set(userKey, new Map())
@@ -190,9 +199,26 @@ function handleConversationsApi(req, res, urlObj) {
   if (listMatch && method === 'GET') {
     const page = Math.max(1, Number(urlObj.searchParams.get('page') || '1'))
     const pageSize = Math.max(1, Math.min(100, Number(urlObj.searchParams.get('pageSize') || '50')))
-    const rows = Array.from(bucket.values()).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+    const userOrder = getConversationOrder(userKey)
+    // Sort: user order first, then by updatedAt descending for unranked items
+    const allRows = Array.from(bucket.values())
+    const orderedRows = []
+    const orderMap = new Map()
+    allRows.forEach(r => orderMap.set(r.id, r))
+    // Pinned first in pinned order, then remaining in user order, then by updatedAt
+    const pinnedRows = (userOrder.pinned || [])
+      .map(id => orderMap.get(id))
+      .filter(Boolean)
+      .sort((a, b) => (userOrder.pinned.indexOf(a.id) - userOrder.pinned.indexOf(b.id)))
+    const orderedIds = userOrder.order || []
+    const orderedRowsRest = orderedIds
+      .map(id => orderMap.get(id))
+      .filter(Boolean)
+    const remaining = allRows.filter(r => !pinnedRows.includes(r) && !orderedRowsRest.includes(r))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+    const sorted = [...pinnedRows, ...orderedRowsRest, ...remaining]
     const start = (page - 1) * pageSize
-    const items = rows.slice(start, start + pageSize).map((x) => ({
+    const items = sorted.slice(start, start + pageSize).map((x) => ({
       id: x.id,
       title: x.title,
       created_at: x.createdAt,
@@ -200,16 +226,25 @@ function handleConversationsApi(req, res, urlObj) {
     }))
     return sendJson(res, 200, {
       items,
-      total: rows.length,
+      total: sorted.length,
       page,
       page_size: pageSize,
-      has_more: start + pageSize < rows.length,
+      has_more: start + pageSize < sorted.length,
       retention_days: CONVERSATION_RETENTION_DAYS,
+      max_conversations: MAX_CONVERSATIONS_PER_USER,
     })
   }
 
   if (listMatch && method === 'POST') {
     return readBody(req).then((buf) => {
+      // Enforce max conversations limit
+      const currentCount = bucket.size
+      if (currentCount >= MAX_CONVERSATIONS_PER_USER) {
+        return sendJson(res, 409, {
+          message: `会话数量已达上限（${MAX_CONVERSATIONS_PER_USER}个），请删除旧会话后再试。`,
+          max_conversations: MAX_CONVERSATIONS_PER_USER,
+        })
+      }
       const body = parseJsonBody(buf)
       const id = randomUUID()
       const now = new Date().toISOString()
@@ -288,6 +323,23 @@ function handleConversationsApi(req, res, urlObj) {
       bucket.set(conversationId, row)
       sendJson(res, 200, { id: msg.id })
     }).catch(() => sendJson(res, 500, { message: '保存消息失败' }))
+  }
+
+  // PATCH /api/user/conversations/order — 更新会话排序（置顶/拖拽排序）
+  const orderMatch = pathname.match(/^\/api\/user\/conversations\/order$/)
+  if (orderMatch && method === 'PATCH') {
+    return readBody(req).then((buf) => {
+      const body = parseJsonBody(buf)
+      const { order = [], pinned = [] } = body
+      if (!Array.isArray(order) || !Array.isArray(pinned)) {
+        return sendJson(res, 400, { message: 'order 和 pinned 必须为数组' })
+      }
+      const userOrder = getConversationOrder(userKey)
+      userOrder.order = order.filter(id => typeof id === 'string')
+      userOrder.pinned = pinned.filter(id => typeof id === 'string')
+      conversationOrderStore.set(userKey, userOrder)
+      return sendJson(res, 200, { success: true, order: userOrder.order, pinned: userOrder.pinned })
+    }).catch(() => sendJson(res, 500, { message: '保存排序失败' }))
   }
 
   sendJson(res, 404, { message: 'not found' })
@@ -782,6 +834,11 @@ const server = createServer((req, res) => {
   }
   if (urlObj.pathname.startsWith('/api/v1/agent/tool/')) {
     void handleAgentToolApi(req, res, urlObj)
+    return
+  }
+  // User settings API (conversations order, library groups) — proxy to brain-server
+  if (urlObj.pathname === '/api/v1/user/settings') {
+    void proxyApi(req, res)
     return
   }
   if (urlPath.startsWith('/api/')) {

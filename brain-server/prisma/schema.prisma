@@ -43,6 +43,7 @@ model User {
   role          Role
   managerUserId BigInt?    @map("manager_user_id")
   status        UserStatus @default(active)
+  settings      Json?      @map("settings")
   createdAt     DateTime   @default(now()) @map("created_at")
   updatedAt     DateTime   @updatedAt @map("updated_at")
 
@@ -63,6 +64,8 @@ model User {
   llmModels     LlmModel[] @relation("LlmModelOwner")
   dbConnections DatabaseConnection[] @relation("DbConnOwner")
   knowledgeBases KnowledgeBase[] @relation("KbOwner")
+
+  @@index([settings], map: "idx_users_settings")
 
   @@index([role], map: "idx_users_role")
   @@index([managerUserId], map: "idx_users_manager")

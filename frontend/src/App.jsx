@@ -1,5 +1,14 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench, Cpu, Server, Zap } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
+import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ChevronUp, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench, Cpu, Server, Zap, GripVertical, Pin, PinOff, ChevronsUpDown, FolderPlus, Folder } from 'lucide-react'
+import {
+  DndContext, DragOverlay, closestCenter, PointerSensor,
+  useSensor, useSensors, MouseSensor, TouchSensor
+} from '@dnd-kit/core'
+import {
+  SortableContext, useSortable, verticalListSortingStrategy,
+  arrayMove
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import clsx from 'clsx'
@@ -775,6 +784,10 @@ async function createConversation(title = '') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title })
   })
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.message || '会话数量已达上限')
+  }
   if (!res.ok) throw new Error('创建会话失败')
   return res.json()
 }
@@ -790,8 +803,19 @@ async function fetchConversations({ page = 1, pageSize = 50 } = {}) {
     total: Number(data?.total || 0),
     page: Number(data?.page || safePage),
     pageSize: Number(data?.pageSize || safePageSize),
-    hasMore: Boolean(data?.hasMore),
+    hasMore: Boolean(data?.has_more),
+    maxConversations: Number(data?.max_conversations || 20),
   }
+}
+
+async function saveConversationOrder(order = [], pinned = []) {
+  const res = await apiFetch('/v1/conversations/order', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order, pinned }),
+  })
+  if (!res.ok) throw new Error('保存排序失败')
+  return res.json()
 }
 
 async function renameConversation(conversationId, title) {
@@ -1473,8 +1497,272 @@ function LoginScreen({ onLogin }) {
   )
 }
 
-function Sidebar({ role, username, activeTab, setActiveTab, onLogout }) {
-  // 所有用户都有的侧边栏项目
+// =============================================================================
+// 智能问答子侧边栏 — 展开对话列表，支持拖拽排序、置顶、重命名、删除
+// =============================================================================
+function ChatSidebarItem({
+  item, isActive, onMainClick,
+  conversations, activeConvId, convOrder, loading,
+  renamingId, renamingTitle,
+  hasMore, loadingMore,
+  onSelect, onNew, onTogglePin,
+  onStartRename, onSubmitRename, onCancelRename, onDelete,
+  onRenameTitleChange, onDragEnd, onLoadMore,
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } })
+  )
+
+  // 构建排序后的显示列表
+  const pinnedConvs = convOrder.pinned.map(id => conversations.find(c => c.id === id)).filter(Boolean)
+  const displayedOrder = showAll
+    ? convOrder.order.map(id => conversations.find(c => c.id === id)).filter(Boolean)
+    : convOrder.order.slice(0, 10).map(id => conversations.find(c => c.id === id)).filter(Boolean)
+
+  return (
+    <div className="space-y-0.5">
+      {/* 主菜单按钮 */}
+      <div className="flex items-center">
+        <button
+          onClick={onMainClick}
+          className={cn(
+            "flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left",
+            isActive && !expanded
+              ? "bg-gray-100 text-gray-900 font-medium"
+              : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+          )}
+        >
+          <ChevronRight size={14} className={cn("text-gray-400 shrink-0 transition-transform duration-200", expanded && isActive && "rotate-90")} />
+          <item.icon size={18} className={isActive ? "text-gray-700" : "text-gray-400"} />
+          <span className="flex-1">{item.label}</span>
+        </button>
+        {/* 展开/折叠箭头 */}
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className="p-1.5 mr-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+          title={expanded ? "收起对话列表" : "展开对话列表"}
+        >
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+      </div>
+
+      {/* 子侧边栏 */}
+      {expanded && (
+        <div className="ml-3 pl-3 border-l border-gray-200 space-y-1 py-1">
+          {/* 新建对话 */}
+          <button
+            onClick={onNew}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-blue-600 hover:bg-blue-50 transition-colors"
+          >
+            <Plus size={12} />
+            <span>新建对话</span>
+          </button>
+
+          {loading ? (
+            <div className="px-2 py-2 text-[10px] text-slate-400 flex items-center gap-1">
+              <Loader2 size={10} className="animate-spin" />加载中...
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="px-2 py-2 text-[10px] text-slate-400">暂无对话</div>
+          ) : (
+            <>
+              {/* 拖拽排序区 */}
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+                {/* 已置顶 */}
+                {pinnedConvs.length > 0 && (
+                  <div className="mb-1">
+                    <div className="text-[9px] text-slate-400 font-medium px-1 mb-0.5 flex items-center gap-0.5">
+                      <Pin size={8} />置顶
+                    </div>
+                    <SortableContext items={convOrder.pinned} strategy={verticalListSortingStrategy}>
+                      {pinnedConvs.map(conv => (
+                        <MiniConvItem
+                          key={conv.id}
+                          conv={conv}
+                          isPinned
+                          isRenaming={renamingId === conv.id}
+                          renamingTitle={renamingId === conv.id ? renamingTitle : ''}
+                          onSelect={() => onSelect(conv.id)}
+                          onTogglePin={() => onTogglePin(conv.id)}
+                          onStartRename={() => onStartRename(conv)}
+                          onSubmitRename={() => onSubmitRename(conv.id)}
+                          onCancelRename={onCancelRename}
+                          onDelete={() => onDelete(conv.id)}
+                          onRenameTitleChange={onRenameTitleChange}
+                        />
+                      ))}
+                    </SortableContext>
+                  </div>
+                )}
+
+                {/* 主列表 */}
+                {displayedOrder.length > 0 && (
+                  <SortableContext items={displayedOrder.map(c => c.id)} strategy={verticalListSortingStrategy}>
+                    {displayedOrder.map(conv => (
+                      <MiniConvItem
+                        key={conv.id}
+                        conv={conv}
+                        isPinned={convOrder.pinned.includes(conv.id)}
+                        isRenaming={renamingId === conv.id}
+                        renamingTitle={renamingId === conv.id ? renamingTitle : ''}
+                        onSelect={() => onSelect(conv.id)}
+                        onTogglePin={() => onTogglePin(conv.id)}
+                        onStartRename={() => onStartRename(conv)}
+                        onSubmitRename={() => onSubmitRename(conv.id)}
+                        onCancelRename={onCancelRename}
+                        onDelete={() => onDelete(conv.id)}
+                        onRenameTitleChange={onRenameTitleChange}
+                      />
+                    ))}
+                  </SortableContext>
+                )}
+              </DndContext>
+
+              {/* 展开/收起 */}
+              {conversations.length > 10 && (
+                <button
+                  onClick={() => setShowAll(v => !v)}
+                  className="w-full text-[10px] text-slate-400 hover:text-blue-500 flex items-center justify-center gap-1 py-1 transition-colors"
+                >
+                  <ChevronDown size={10} className={cn("transition-transform", showAll && "rotate-180")} />
+                  {showAll ? '收起' : `展开全部（${conversations.length}条）`}
+                </button>
+              )}
+            </>
+          )}
+
+          {/* 加载更多 */}
+          {hasMore && (
+            <button
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="w-full text-[10px] text-slate-400 hover:text-blue-500 py-1 disabled:opacity-50"
+            >
+              {loadingMore ? '加载中...' : '加载更多'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 子侧边栏中的迷你对话项（支持选择/置顶/重命名/删除）
+function MiniConvItem({ conv, isPinned, isRenaming, renamingTitle, onSelect, onTogglePin, onStartRename, onSubmitRename, onCancelRename, onDelete, onRenameTitleChange }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: conv.id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  return (
+    <div ref={setNodeRef} style={style} className="group flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-slate-100 transition-colors">
+      {/* 拖拽手柄 */}
+      <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 shrink-0">
+        <GripVertical size={11} />
+      </div>
+
+      {isRenaming ? (
+        /* 重命名模式 */
+        <input
+          value={renamingTitle}
+          onChange={e => onRenameTitleChange(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); onSubmitRename() }
+            if (e.key === 'Escape') { e.preventDefault(); onCancelRename() }
+          }}
+          onBlur={onSubmitRename}
+          autoFocus
+          maxLength={120}
+          className="flex-1 min-w-0 px-1 py-0.5 text-[11px] rounded border border-blue-400 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+        />
+      ) : (
+        <>
+          {/* 对话标题 */}
+          <button
+            onClick={onSelect}
+            className="flex-1 min-w-0 text-left text-[11px] text-slate-600 truncate hover:text-blue-600"
+          >
+            {conv.title || '未命名会话'}
+          </button>
+
+          {/* 置顶按钮 */}
+          <button
+            onClick={onTogglePin}
+            className={cn("p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 transition-opacity",
+              isPinned ? "text-blue-400 hover:bg-blue-100" : "text-slate-300 hover:text-blue-400 hover:bg-blue-50"
+            )}
+            title={isPinned ? "取消置顶" : "置顶"}
+          >
+            {isPinned ? <PinOff size={10} /> : <Pin size={10} />}
+          </button>
+
+          {/* 重命名按钮 */}
+          <button
+            onClick={onStartRename}
+            className="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-slate-600 hover:bg-slate-200 transition-opacity"
+            title="重命名"
+          >
+            <Edit size={10} />
+          </button>
+
+          {/* 删除按钮 */}
+          <button
+            onClick={onDelete}
+            className="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 hover:bg-rose-50 transition-opacity"
+            title="删除"
+          >
+            <Trash2 size={10} />
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
+// 主侧边栏菜单项
+// =============================================================================
+function SidebarItem({ item, isActive, onClick }) {
+  const {
+    attributes, listeners, setNodeRef, transform, transition, isDragging
+  } = useSortable({ id: item.id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : 'auto',
+  }
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      <button
+        onClick={onClick}
+        {...listeners}
+        className={cn(
+          "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left group",
+          isActive
+            ? "bg-gray-100 text-gray-900 font-medium"
+            : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+        )}
+      >
+        <GripVertical size={14} className="text-gray-300 group-hover:text-gray-400 cursor-grab active:cursor-grabbing shrink-0" />
+        <item.icon size={18} className={isActive ? "text-gray-700" : "text-gray-400"} />
+        <span>{item.label}</span>
+      </button>
+    </div>
+  )
+}
+
+function Sidebar({ role, username, activeTab, setActiveTab, onLogout, menuOrder, onMenuOrderChange, onChatSelect, chatConversations, chatActiveConvId, chatConvOrder, chatLoading, chatRenamingId, chatRenamingTitle, chatHasMore, chatLoadingMore, onChatSelect: onConvSelect, onChatNew, onChatTogglePin, onChatStartRename, onChatSubmitRename, onChatCancelRename, onChatDelete, onChatRenameTitleChange, onChatDragEnd, onChatLoadMore }) {
   const commonItems = [
     { id: 'chat', label: '智能问答', icon: MessageSquare },
     { id: 'knowledge', label: '知识库', icon: Database },
@@ -1489,63 +1777,116 @@ function Sidebar({ role, username, activeTab, setActiveTab, onLogout }) {
     { id: 'skills', label: '技能管理', icon: Settings },
     { id: 'memory', label: '记忆管理', icon: Brain },
   ]
-  const menuItems = isSuperAdminRole(role)
+
+  const baseMenuItems = isSuperAdminRole(role)
     ? [...adminItems, ...commonItems]
     : isAdminLikeRole(role)
     ? [...adminItems, ...commonItems]
     : commonItems
 
-  return (
-    <div className="w-56 bg-white border-r border-gray-200 flex flex-col h-screen shrink-0" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
-      <div className="p-5 border-b border-gray-100">
-        <h1 className="text-lg font-semibold text-gray-900">
-          AI4KB
-        </h1>
-        <p className="text-xs text-gray-400 mt-0.5">智能知识库系统</p>
-      </div>
-      
-      <nav className="flex-1 p-3 space-y-0.5 scroll-container">
-        {menuItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setActiveTab(item.id)}
-            className={cn(
-              "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left",
-              activeTab === item.id 
-                ? "bg-gray-100 text-gray-900 font-medium" 
-                : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-            )}
-          >
-            <item.icon size={18} className={activeTab === item.id ? "text-gray-700" : "text-gray-400"} />
-            <span>{item.label}</span>
-          </button>
-        ))}
-      </nav>
+  const orderedMenuItems = useMemo(() => {
+    if (!menuOrder || !Array.isArray(menuOrder)) return baseMenuItems
+    const map = new Map(baseMenuItems.map(i => [i.id, i]))
+    const ordered = menuOrder.map(id => map.get(id)).filter(Boolean)
+    const remaining = baseMenuItems.filter(i => !menuOrder.includes(i.id))
+    return [...ordered, ...remaining]
+  }, [baseMenuItems, menuOrder])
 
-      <div className="p-3 border-t border-gray-100">
-        <div className="flex items-center gap-3 px-3 py-2 mb-2">
-          <div className={cn(
-            "w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium",
-            isAdminLikeRole(role) ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-600"
-          )}>
-            {username?.charAt(0).toUpperCase() || 'U'}
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  )
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIndex = orderedMenuItems.findIndex(i => i.id === active.id)
+    const newIndex = orderedMenuItems.findIndex(i => i.id === over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+    const newOrder = arrayMove(orderedMenuItems, oldIndex, newIndex).map(i => i.id)
+    onMenuOrderChange(newOrder)
+  }
+
+  const otherItems = orderedMenuItems.filter(i => i.id !== 'chat')
+  const chatItem = orderedMenuItems.find(i => i.id === 'chat')
+
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={orderedMenuItems.map(i => i.id)} strategy={verticalListSortingStrategy}>
+        <div className="w-56 bg-white border-r border-gray-200 flex flex-col h-screen shrink-0" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
+          <div className="p-5 border-b border-gray-100">
+            <h1 className="text-lg font-semibold text-gray-900">AI4KB</h1>
+            <p className="text-xs text-gray-400 mt-0.5">智能知识库系统</p>
           </div>
-          <div className="overflow-hidden">
-            <p className="text-sm font-medium text-gray-900 truncate">{username}</p>
-            <p className="text-xs text-gray-400">
-              {role === 'super_admin' ? '超级管理员' : role === 'admin' ? '管理员' : '用户'}
-            </p>
+
+          <nav className="flex-1 p-3 space-y-0.5 scroll-container overflow-y-auto">
+            {chatItem && (
+              <ChatSidebarItem
+                item={chatItem}
+                isActive={activeTab === 'chat'}
+                onMainClick={() => {
+                  if (activeTab !== 'chat') setActiveTab('chat')
+                }}
+                conversations={chatConversations || []}
+                activeConvId={chatActiveConvId}
+                convOrder={chatConvOrder || { pinned: [], order: [] }}
+                loading={chatLoading || false}
+                renamingId={chatRenamingId}
+                renamingTitle={chatRenamingTitle}
+                hasMore={chatHasMore || false}
+                loadingMore={chatLoadingMore || false}
+                onSelect={(convId) => {
+                  if (onConvSelect) onConvSelect(convId)
+                  if (activeTab !== 'chat') setActiveTab('chat')
+                }}
+                onNew={onChatNew}
+                onTogglePin={onChatTogglePin}
+                onStartRename={onChatStartRename}
+                onSubmitRename={onChatSubmitRename}
+                onCancelRename={onChatCancelRename}
+                onDelete={onChatDelete}
+                onRenameTitleChange={onChatRenameTitleChange}
+                onDragEnd={onChatDragEnd}
+                onLoadMore={onChatLoadMore}
+              />
+            )}
+            {otherItems.map((item) => (
+              <SidebarItem
+                key={item.id}
+                item={item}
+                isActive={activeTab === item.id}
+                onClick={() => setActiveTab(item.id)}
+              />
+            ))}
+          </nav>
+
+          <div className="p-3 border-t border-gray-100">
+            <div className="flex items-center gap-3 px-3 py-2 mb-2">
+              <div className={cn(
+                "w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium",
+                isAdminLikeRole(role) ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-600"
+              )}>
+                {username?.charAt(0).toUpperCase() || 'U'}
+              </div>
+              <div className="overflow-hidden">
+                <p className="text-sm font-medium text-gray-900 truncate">{username}</p>
+                <p className="text-xs text-gray-400">
+                  {role === 'super_admin' ? '超级管理员' : role === 'admin' ? '管理员' : '用户'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onLogout}
+              className="w-full flex items-center gap-2 text-gray-500 hover:text-gray-900 px-3 py-2 text-sm transition-colors rounded-lg hover:bg-gray-50"
+            >
+              <LogOut size={16} />
+              退出登录
+            </button>
           </div>
         </div>
-        <button 
-          onClick={onLogout}
-          className="w-full flex items-center gap-2 text-gray-500 hover:text-gray-900 px-3 py-2 text-sm transition-colors rounded-lg hover:bg-gray-50"
-        >
-          <LogOut size={16} />
-          退出登录
-        </button>
-      </div>
-    </div>
+      </SortableContext>
+    </DndContext>
   )
 }
 
@@ -2376,6 +2717,13 @@ function DatasetManager({ currentRole }) {
     isShared: false,
     isSubmitting: false
   })
+  // --- 分组状态 ---
+  const [groupMode, setGroupMode] = useState(false)
+  const [datasetGroups, setDatasetGroups] = useState(() => {
+    try { const s = localStorage.getItem('ai4kb_dataset_groups'); return s ? JSON.parse(s) : [] } catch { return [] }
+  })
+  const [newGroupName, setNewGroupName] = useState('')
+  const [showAssignPanel, setShowAssignPanel] = useState(false) // 当前要分配到的组
   const manageableDatasets = useMemo(() => datasets.filter(ds => ds?.manageable !== false), [datasets])
 
   const loadData = () => {
@@ -2507,6 +2855,59 @@ function DatasetManager({ currentRole }) {
     }
   }
 
+  // --- 分组管理 ---
+  const saveGroups = (groups) => {
+    setDatasetGroups(groups)
+    try { localStorage.setItem('ai4kb_dataset_groups', JSON.stringify(groups)) } catch {}
+  }
+
+  const handleCreateGroup = () => {
+    const name = newGroupName.trim()
+    if (!name) return
+    const next = [...datasetGroups, { id: `group_${Date.now()}`, name, items: [] }]
+    saveGroups(next)
+    setNewGroupName('')
+  }
+
+  const handleDeleteGroup = (groupId) => {
+    const next = datasetGroups.filter(g => g.id !== groupId)
+    saveGroups(next)
+  }
+
+  const handleRenameGroup = (groupId, newName) => {
+    const next = datasetGroups.map(g => g.id === groupId ? { ...g, name: newName } : g)
+    saveGroups(next)
+  }
+
+  // 分配数据集到某组（可选多个）
+  const handleAssignToGroup = (groupId) => {
+    if (selectedDatasets.length === 0) return
+    const next = datasetGroups.map(g => {
+      if (g.id !== groupId) return g
+      const existing = new Set(g.items)
+      selectedDatasets.forEach(id => existing.add(id))
+      return { ...g, items: [...existing] }
+    })
+    saveGroups(next)
+    setSelectedDatasets([])
+    setShowAssignPanel(false)
+  }
+
+  const handleRemoveFromGroup = (groupId, datasetId) => {
+    const next = datasetGroups.map(g =>
+      g.id === groupId ? { ...g, items: g.items.filter(id => id !== datasetId) } : g
+    )
+    saveGroups(next)
+  }
+
+  const getGroupedDatasets = () => {
+    // 有分组的：按组划分
+    // 无分组的数据集
+    const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
+    const ungrouped = datasets.filter(ds => !groupedIds.has(ds.id))
+    return { datasetGroups, ungrouped }
+  }
+
   const [detailVisible, setDetailVisible] = useState(false)
 
   useEffect(() => {
@@ -2556,8 +2957,20 @@ function DatasetManager({ currentRole }) {
             <p className="text-sm text-gray-500 mt-1">创建和管理知识库</p>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setGroupMode(v => !v)}
+              className={cn(
+                "px-3 py-1.5 text-sm border rounded-lg transition-colors",
+                groupMode
+                  ? "border-blue-400 bg-blue-50 text-blue-700"
+                  : "border-gray-300 text-gray-600 hover:bg-gray-50"
+              )}
+            >
+              <Folder size={14} className="inline mr-1" />
+              {groupMode ? '退出分组' : '分组视图'}
+            </button>
             {manageableDatasets.length > 0 && (
-              <button 
+              <button
                 onClick={handleSelectAll}
                 className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50"
               >
@@ -2565,90 +2978,219 @@ function DatasetManager({ currentRole }) {
               </button>
             )}
             {selectedDatasets.length > 0 && (
-              <button 
-                onClick={handleBatchDelete}
-                disabled={batchDeleting}
-                className="px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
-              >
-                {batchDeleting ? <Loader2 size={14} className="animate-spin inline" /> : null}
-                删除 ({selectedDatasets.length})
-              </button>
+              <>
+                <button
+                  onClick={() => setShowAssignPanel(true)}
+                  className="px-3 py-1.5 text-sm text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50"
+                >
+                  加入分组 ({selectedDatasets.length})
+                </button>
+                <button
+                  onClick={handleBatchDelete}
+                  disabled={batchDeleting}
+                  className="px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                >
+                  {batchDeleting ? <Loader2 size={14} className="animate-spin inline" /> : null}
+                  删除 ({selectedDatasets.length})
+                </button>
+              </>
             )}
-            <input
-              type="text"
-              placeholder="新知识库名称"
-              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
-              value={newDatasetName}
-              onChange={(e) => setNewDatasetName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            />
-            <label className="flex items-center gap-1.5 text-sm text-gray-600 select-none cursor-pointer">
-              <input type="checkbox" checked={newDatasetShared} onChange={e => setNewDatasetShared(e.target.checked)} className="rounded" />
-              共享
-            </label>
-            <button
-              onClick={handleCreate}
-              disabled={creating || !newDatasetName.trim()}
-              className="px-4 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
-            >
-              新建
-            </button>
+            {!groupMode && (
+              <>
+                <input
+                  type="text"
+                  placeholder="新知识库名称"
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
+                  value={newDatasetName}
+                  onChange={(e) => setNewDatasetName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                />
+                <label className="flex items-center gap-1.5 text-sm text-gray-600 select-none cursor-pointer">
+                  <input type="checkbox" checked={newDatasetShared} onChange={e => setNewDatasetShared(e.target.checked)} className="rounded" />
+                  共享
+                </label>
+                <button
+                  onClick={handleCreate}
+                  disabled={creating || !newDatasetName.trim()}
+                  className="px-4 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
+                >
+                  新建
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
 
       {/* Content */}
       <div className="p-6">
-        {loading ? (
-          <div className="flex justify-center items-center h-64">
-            <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
-          </div>
-        ) : datasets.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
-            <Database size={48} className="mb-4 text-gray-300" />
-            <p className="text-sm">暂无知识库</p>
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {datasets.map((ds, idx) => (
-              <div
-                key={ds.id}
-                style={{
-                    opacity: 0,
-                    transform: 'translateY(16px)',
-                  }}
-                ref={el => {
-                  if (!el) return
-                  el.style.transition = 'none'
-                  requestAnimationFrame(() => {
-                    el.style.transition = `opacity 0.4s ease ${idx * 40}ms, transform 0.4s ease ${idx * 40}ms`
-                    el.style.opacity = '1'
-                    el.style.transform = 'translateY(0)'
-                  })
-                }}
-              >
-              <DatasetCard
-                dataset={ds}
-                onClick={() => {
-                  if (ds?.manageable === false) {
-                    alert('该知识库不是你创建的，仅可查看存在，不可进入内部内容。')
-                    return
-                  }
-                  setViewingDataset(ds)
-                }}
-                onDelete={handleDelete}
-                onRename={handleRenameDataset}
-                onShare={handleOpenShare}
-                selected={selectedDatasets.includes(ds.id)}
-                onSelect={handleSelectDataset}
-                selectionMode={selectedDatasets.length > 0}
-                currentRole={currentRole}
-              />
+        {(() => {
+          if (loading) {
+            return (
+              <div className="flex justify-center items-center h-64">
+                <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
               </div>
-            ))}
-          </div>
-        )}
+            )
+          }
+          if (datasets.length === 0) {
+            return (
+              <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
+                <Database size={48} className="mb-4 text-gray-300" />
+                <p className="text-sm">暂无知识库</p>
+              </div>
+            )
+          }
+          if (groupMode) {
+            return (
+              <div className="space-y-6">
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <div className="flex items-center gap-3">
+                    <FolderPlus size={16} className="text-blue-500 shrink-0" />
+                    <input type="text" placeholder="输入分组名称后按回车新建" value={newGroupName}
+                      onChange={e => setNewGroupName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleCreateGroup() }}
+                      className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    <button onClick={handleCreateGroup} disabled={!newGroupName.trim()}
+                      className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">新建分组</button>
+                  </div>
+                  {datasetGroups.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {datasetGroups.map(g => (
+                        <div key={g.id} className="flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                          <Folder size={12} className="text-blue-500" />
+                          <span className="text-blue-700">{g.name}</span>
+                          <span className="text-[10px] text-blue-400">({g.items.length})</span>
+                          <button onClick={() => { const n = window.prompt('重命名分组：', g.name); if (n && n.trim()) handleRenameGroup(g.id, n.trim()) }} className="ml-1 text-blue-400 hover:text-blue-600"><Edit size={11} /></button>
+                          <button onClick={() => handleDeleteGroup(g.id)} className="text-blue-300 hover:text-red-500"><Trash2 size={11} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {datasetGroups.length === 0 && <div className="text-center py-6 text-sm text-gray-400">暂无分组，创建分组后将知识库拖入即可</div>}
+                {datasetGroups.map(group => {
+                  const groupDs = datasets.filter(ds => group.items.includes(ds.id))
+                  return (
+                    <div key={group.id} className="bg-white rounded-xl border border-gray-200 p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                          <Folder size={16} className="text-blue-500" />{group.name}
+                          <span className="text-xs font-normal text-gray-400">({groupDs.length})</span>
+                        </div>
+                        <button onClick={() => { setSelectedDatasets(groupDs.map(d => d.id)); setShowAssignPanel(true) }}
+                          className="text-xs text-blue-600 hover:text-blue-800">+ 添加更多</button>
+                      </div>
+                      {groupDs.length === 0 ? (
+                        <div className="py-4 text-center text-xs text-gray-400 border border-dashed border-gray-200 rounded-lg">该分组暂无知识库</div>
+                      ) : (
+                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                          {groupDs.map(ds => (
+                            <div key={ds.id} className="relative group/rm">
+                              <DatasetCard dataset={ds}
+                                onClick={() => { if (ds?.manageable === false) { alert('该知识库不是你创建的，仅可查看存在'); return }; setViewingDataset(ds) }}
+                                onDelete={handleDelete} onRename={handleRenameDataset} onShare={handleOpenShare}
+                                selected={false} onSelect={() => {}} selectionMode={false} currentRole={currentRole} />
+                              <button onClick={() => handleRemoveFromGroup(group.id, ds.id)}
+                                className="absolute top-2 left-2 opacity-0 group-hover/rm:opacity-100 transition-opacity px-1.5 py-0.5 bg-red-100 text-red-600 text-[10px] rounded border border-red-200 hover:bg-red-200">
+                                从组移除
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+                {(() => {
+                  const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
+                  const ungrouped = datasets.filter(ds => !groupedIds.has(ds.id))
+                  if (ungrouped.length === 0) return null
+                  return (
+                    <div className="bg-white rounded-xl border border-gray-200 p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2 text-sm font-semibold text-gray-500">
+                          <FolderOpen size={16} className="text-gray-400" />未分组<span className="text-xs font-normal text-gray-400">({ungrouped.length})</span>
+                        </div>
+                        <button onClick={() => setShowAssignPanel(true)} className="text-xs text-blue-600 hover:text-blue-800">+ 加入分组</button>
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {ungrouped.map(ds => (
+                          <div key={ds.id} className="relative">
+                            <DatasetCard dataset={ds}
+                              onClick={() => { if (ds?.manageable === false) { alert('该知识库不是你创建的，仅可查看存在'); return }; setViewingDataset(ds) }}
+                              onDelete={handleDelete} onRename={handleRenameDataset} onShare={handleOpenShare}
+                              selected={false} onSelect={() => {}} selectionMode={false} currentRole={currentRole} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            )
+          }
+          return (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {datasets.map((ds, idx) => (
+                <div
+                  key={ds.id}
+                  style={{ opacity: 0, transform: 'translateY(16px)' }}
+                  ref={el => {
+                    if (!el) return
+                    el.style.transition = 'none'
+                    requestAnimationFrame(() => {
+                      el.style.transition = `opacity 0.4s ease ${idx * 40}ms, transform 0.4s ease ${idx * 40}ms`
+                      el.style.opacity = '1'
+                      el.style.transform = 'translateY(0)'
+                    })
+                  }}
+                >
+                  <DatasetCard
+                    dataset={ds}
+                    onClick={() => {
+                      if (ds?.manageable === false) {
+                        alert('该知识库不是你创建的，仅可查看存在，不可进入内部内容。')
+                        return
+                      }
+                      setViewingDataset(ds)
+                    }}
+                    onDelete={handleDelete}
+                    onRename={handleRenameDataset}
+                    onShare={handleOpenShare}
+                    selected={selectedDatasets.includes(ds.id)}
+                    onSelect={handleSelectDataset}
+                    selectionMode={selectedDatasets.length > 0}
+                    currentRole={currentRole}
+                  />
+                </div>
+              ))}
+            </div>
+          )
+        })()}
       </div>
+      {/* 分组分配弹窗 */}
+        {showAssignPanel && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center">
+          <div className="bg-white rounded-xl shadow-xl w-80 overflow-hidden">
+            <div className="px-4 py-3 border-b flex items-center justify-between bg-slate-50">
+              <h3 className="font-semibold text-sm text-slate-700">选择分组</h3>
+              <button onClick={() => setShowAssignPanel(false)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+            </div>
+            <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
+              {datasetGroups.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-4">暂无分组，请先创建分组</p>
+              ) : datasetGroups.map(g => (
+                <button key={g.id} onClick={() => handleAssignToGroup(g.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-blue-50 text-left text-sm">
+                  <Folder size={14} className="text-blue-500" />
+                  <span className="flex-1">{g.name}</span>
+                  <span className="text-xs text-slate-400">({g.items.length})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <ShareModal
         isOpen={shareModal.isOpen}
@@ -6032,7 +6574,105 @@ function ThoughtBlock({ content, references, onViewReference, isStreaming }) {
   )
 }
 
-function ChatInterface() {
+// 模块级 normalize 函数，供 App 层和 ChatInterface 共同使用
+function normalizeConversationTitle(item) {
+  return item?.name || item?.title || item?.conversationTitle || item?.conversation_id || '未命名会话'
+}
+
+function normalizeConversationId(item) {
+  return item?.conversationId || item?.conversation_id || item?.id || ''
+}
+
+// 可排序对话项组件
+function SortableConvItem({
+  item, isActive, renamingId, renamingTitle, setRenamingTitle,
+  onSwitch, onStartRename, onSubmitRename, onCancelRename, onDelete,
+  isPinned, onTogglePin, conversationActionLoading
+}) {
+  const {
+    attributes, listeners, setNodeRef, transform, transition, isDragging
+  } = useSortable({ id: item.id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  const renaming = renamingId === item.id
+
+  return (
+    <div ref={setNodeRef} style={style} className={cn("mb-1 rounded-lg border", isActive ? "border-blue-200 bg-blue-50" : "border-transparent hover:border-slate-200 hover:bg-slate-50")}>
+      {renaming ? (
+        <div className="p-2 space-y-2">
+          <input
+            value={renamingTitle}
+            onChange={e => setRenamingTitle(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); onSubmitRename(item.id) }
+              if (e.key === 'Escape') { e.preventDefault(); onCancelRename() }
+            }}
+            maxLength={120}
+            className="w-full px-2 py-1.5 text-sm rounded border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <div className="flex items-center justify-end gap-1">
+            <button onClick={onCancelRename} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-100">取消</button>
+            <button onClick={() => onSubmitRename(item.id)} disabled={conversationActionLoading} className="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">保存</button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-0.5 p-1.5">
+          {/* 拖拽手柄 */}
+          <div
+            {...attributes} {...listeners}
+            className="p-1 rounded cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 shrink-0"
+            title="拖拽排序"
+          >
+            <GripVertical size={14} />
+          </div>
+          {/* 切换对话 */}
+          <button
+            onClick={onSwitch}
+            className={cn("flex-1 min-w-0 text-left text-sm truncate py-1", isActive ? "text-blue-700 font-medium" : "text-slate-700")}
+          >
+            {item.title || '未命名会话'}
+          </button>
+          {/* 置顶按钮 */}
+          {onTogglePin && (
+            <button
+              onClick={onTogglePin}
+              className={cn("p-1 rounded shrink-0", isPinned ? "text-blue-500 hover:bg-blue-100" : "text-slate-300 hover:text-blue-500 hover:bg-blue-50")}
+              title={isPinned ? "取消置顶" : "置顶"}
+            >
+              {isPinned ? <PinOff size={13} /> : <Pin size={13} />}
+
+            </button>
+          )}
+          {/* 重命名 */}
+          <button
+            onClick={() => onStartRename(item)}
+            disabled={conversationActionLoading}
+            className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            title="重命名"
+          >
+            <Edit size={13} />
+          </button>
+          {/* 删除 */}
+          <button
+            onClick={() => onDelete(item.id)}
+            disabled={conversationActionLoading}
+            className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+            title="删除"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const ChatInterface = forwardRef(function ChatInterface({ role, onConversationsChanged }, ref) {
   const createDefaultAssistantMessage = useCallback(() => ({
     role: 'assistant',
     content: '你好！我是 AI 助手，请问有什么可以帮你？'
@@ -6054,8 +6694,6 @@ function ChatInterface() {
   const [messageLoadingMore, setMessageLoadingMore] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [activeConversationTitle, setActiveConversationTitle] = useState('')
-  const [renamingConversationId, setRenamingConversationId] = useState('')
-  const [renamingTitle, setRenamingTitle] = useState('')
   const [conversationActionLoading, setConversationActionLoading] = useState(false)
   const [viewingRef, setViewingRef] = useState(null)
   const [toolForms, setToolForms] = useState({})
@@ -6064,12 +6702,14 @@ function ChatInterface() {
   const [toolCatalog, setToolCatalog] = useState([])
   const [toolCatalogLoading, setToolCatalogLoading] = useState(false)
   const [toolCatalogError, setToolCatalogError] = useState('')
-  const [manualDraftPending, setManualDraftPending] = useState('')
   const [planDrafts, setPlanDrafts] = useState({})
   const [planUiStates, setPlanUiStates] = useState({})
   const [selectedMemoryProfileId, setSelectedMemoryProfileId] = useState('')
   const [uploadedFiles, setUploadedFiles] = useState([])
   const [uploadProgress, setUploadProgress] = useState({})
+  // --- 对话排序状态（由子侧边栏管理，ChatInterface 内部不再使用，保留以兼容部分逻辑） ---
+  const [convOrder, setConvOrder] = useState({ pinned: [], order: [] })
+  const [activeConvId, setActiveConvId] = useState(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
   const abortControllerRef = useRef(null)
@@ -6077,7 +6717,6 @@ function ChatInterface() {
   // 上滑加载历史消息时关闭自动滚动到底部，避免视图被强制跳回最新消息。
   const suppressAutoScrollRef = useRef(false)
   const conversationIdRef = useRef('')
-  const conversationListRef = useRef(null)
   const messagesContainerRef = useRef(null)
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
@@ -6091,6 +6730,51 @@ function ChatInterface() {
     '什么是大模型',
     '如何进行半面积计算'
   ]
+
+  // 外部传入的对话ID（来自子侧边栏）
+  // 外部触发新建对话
+  const handleCreateConversationFromExternal = async () => {
+    try {
+      setConversationLoading(true)
+      setConversationError('')
+      const created = await createConversation('新对话')
+      const newId = created?.id || created?.conversationId || created?.conversation_id || ''
+      if (newId) {
+        await handleSwitchConversation(newId)
+        setConversations(prev => [{
+          id: newId,
+          title: '新对话',
+          createTime: new Date().toISOString(),
+          remainingDays: conversationRetentionDays
+        }, ...prev])
+      }
+    } catch (err) {
+      setConversationError(err?.message || '创建会话失败')
+    } finally {
+      setConversationLoading(false)
+    }
+  }
+
+  const handleSwitchConversation = async (targetConversationId) => {
+    if (!targetConversationId || targetConversationId === conversationIdRef.current) return
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    setLoading(false)
+    await loadConversationListAndMessages(targetConversationId)
+  }
+
+  useImperativeHandle(ref, () => ({
+    triggerNewConversation: () => handleCreateConversationFromExternal(),
+    switchToConversation: (convId) => handleSwitchConversation(convId),
+    refreshTitle: (convId, title) => {
+      setConversations(prev => prev.map(c => c.id === convId ? { ...c, title } : c))
+      if (activeConvId === convId) setActiveConversationTitle(title)
+    },
+    syncConversationsFromApp: (appConvs) => {
+      setConversations(appConvs)
+    },
+  }), [handleCreateConversationFromExternal, handleSwitchConversation])
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -6115,14 +6799,6 @@ function ChatInterface() {
     if (!node) return
     node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
     setShowScrollToBottom(false)
-  }, [])
-
-  const normalizeConversationTitle = useCallback((item) => {
-    return item?.name || item?.title || item?.conversationTitle || item?.conversation_id || '未命名会话'
-  }, [])
-
-  const normalizeConversationId = useCallback((item) => {
-    return item?.conversationId || item?.conversation_id || item?.id || ''
   }, [])
 
   const normalizeMessageRole = useCallback((item) => {
@@ -6305,6 +6981,11 @@ function ChatInterface() {
       setConversationPage(1)
       setConversationHasMore(Boolean(result?.hasMore))
       setConversationRetentionDays(Number(result?.retentionDays || 90))
+      // 初始化排序状态（从服务器返回顺序）
+      setConvOrder(prev => ({
+        pinned: prev.pinned || [],
+        order: normalizedList.map(c => c.id)
+      }))
       const preferred = normalizedList.find(item => item.id === preferConversationId)
       const current = preferred || normalizedList[0]
       if (!current) {
@@ -6316,6 +6997,7 @@ function ChatInterface() {
         return
       }
       conversationIdRef.current = current.id
+      setActiveConvId(current.id)
       setActiveConversationTitle(current.title || '')
       const historyPage = await loadConversationMessages(current.id, null)
       const { mappedMessages, recoveredPlanDrafts } = buildMessagesAndDraftsFromHistory(historyPage?.items || [], current.id)
@@ -6403,15 +7085,6 @@ function ChatInterface() {
       setMessageLoadingMore(false)
     }
   }, [buildMessagesAndDraftsFromHistory, loadConversationMessages, messageBeforeId, messageHasMore, messageLoadingMore, updateScrollToBottomVisibility])
-
-  const handleConversationListScroll = useCallback((event) => {
-    const target = event?.currentTarget
-    if (!target || !conversationHasMore || conversationListLoadingMore) return
-    const nearTop = target.scrollTop <= 24
-    if (nearTop) {
-      loadMoreConversations()
-    }
-  }, [conversationHasMore, conversationListLoadingMore, loadMoreConversations])
 
   const handleMessagesScroll = useCallback((event) => {
     const target = event?.currentTarget
@@ -7727,29 +8400,6 @@ function ChatInterface() {
     }
   }
 
-  const handleCreateConversation = async () => {
-    if (conversationLoading || conversationActionLoading) return
-    setConversationLoading(true)
-    setConversationError('')
-    try {
-      const created = await createConversation('新对话')
-      const nextConversationId = normalizeConversationId(created)
-      await loadConversationListAndMessages(nextConversationId)
-    } catch (err) {
-      setConversationError(err?.message || '新建会话失败')
-      setConversationLoading(false)
-    }
-  }
-
-  const handleSwitchConversation = async (targetConversationId) => {
-    if (!targetConversationId || targetConversationId === conversationIdRef.current) return
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-    setLoading(false)
-    await loadConversationListAndMessages(targetConversationId)
-  }
-
   // 文件选择处理
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files || [])
@@ -7854,54 +8504,6 @@ function ChatInterface() {
       return
     }
     handleSend()
-  }
-
-  const handleStartRenameConversation = (item) => {
-    if (!item?.id) return
-    setRenamingConversationId(item.id)
-    setRenamingTitle(item.title || '')
-  }
-
-  const handleCancelRenameConversation = () => {
-    setRenamingConversationId('')
-    setRenamingTitle('')
-  }
-
-  const handleSubmitRenameConversation = async (conversationId) => {
-    const nextTitle = String(renamingTitle || '').trim()
-    if (!conversationId || !nextTitle) {
-      setConversationError('会话名称不能为空')
-      return
-    }
-    setConversationActionLoading(true)
-    setConversationError('')
-    try {
-      await renameConversation(conversationId, nextTitle)
-      setRenamingConversationId('')
-      setRenamingTitle('')
-      await loadConversationListAndMessages(conversationId)
-    } catch (err) {
-      setConversationError(err?.message || '重命名会话失败')
-    } finally {
-      setConversationActionLoading(false)
-    }
-  }
-
-  const handleDeleteConversation = async (conversationId) => {
-    if (!conversationId || conversationActionLoading) return
-    if (!window.confirm('确定删除该会话及全部消息吗？')) return
-    setConversationActionLoading(true)
-    setConversationError('')
-    try {
-      await deleteConversation(conversationId)
-      const rest = conversations.filter(item => item.id !== conversationId)
-      const nextConversationId = rest[0]?.id || ''
-      await loadConversationListAndMessages(nextConversationId)
-    } catch (err) {
-      setConversationError(err?.message || '删除会话失败')
-    } finally {
-      setConversationActionLoading(false)
-    }
   }
 
   const handleToolArgChange = (toolCallId, key, value) => {
@@ -8177,141 +8779,7 @@ function ChatInterface() {
 
   return (
     <div className="flex flex-1 h-full overflow-hidden bg-slate-50 relative">
-      <div className="w-72 h-full border-r border-slate-200 bg-white flex flex-col shrink-0">
-        <div className="p-3 border-b border-slate-100">
-          <button
-            onClick={handleCreateConversation}
-            disabled={conversationLoading || conversationActionLoading}
-            className="w-full inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-          >
-            <Plus size={14} />
-            新建对话
-          </button>
-        </div>
-        <div
-          ref={conversationListRef}
-          onScroll={handleConversationListScroll}
-          className="flex-1 scroll-container p-2 space-y-1"
-        >
-          {conversationListLoadingMore && (
-            <div className="px-2 py-1 text-[11px] text-slate-400 flex items-center gap-1">
-              <Loader2 size={12} className="animate-spin" />
-              加载更早会话...
-            </div>
-          )}
-          {conversations.map((item) => {
-            const active = item.id === conversationIdRef.current
-            const renaming = renamingConversationId === item.id
-            return (
-              <div key={item.id} className={cn("rounded-lg border", active ? "border-blue-200 bg-blue-50" : "border-transparent hover:border-slate-200 hover:bg-slate-50")}>
-                {renaming ? (
-                  <div className="p-2 space-y-2">
-                    <input
-                      value={renamingTitle}
-                      onChange={(e) => setRenamingTitle(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          handleSubmitRenameConversation(item.id)
-                        }
-                        if (e.key === 'Escape') {
-                          e.preventDefault()
-                          handleCancelRenameConversation()
-                        }
-                      }}
-                      maxLength={120}
-                      className="w-full px-2 py-1.5 text-sm rounded border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        onClick={handleCancelRenameConversation}
-                        className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
-                      >
-                        取消
-                      </button>
-                      <button
-                        onClick={() => handleSubmitRenameConversation(item.id)}
-                        disabled={conversationActionLoading}
-                        className="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        保存
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1 p-2">
-                    <button
-                      onClick={() => handleSwitchConversation(item.id)}
-                      className={cn("flex-1 min-w-0 text-left text-sm truncate", active ? "text-blue-700 font-medium" : "text-slate-700")}
-                    >
-                      {item.title || '未命名会话'}
-                    </button>
-                    <button
-                      onClick={() => handleStartRenameConversation(item)}
-                      disabled={conversationActionLoading}
-                      className="p-1.5 rounded text-slate-500 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-50"
-                    >
-                      <Edit size={14} />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteConversation(item.id)}
-                      disabled={conversationActionLoading}
-                      className="p-1.5 rounded text-rose-500 hover:bg-rose-100 hover:text-rose-700 disabled:opacity-50"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-        <div className="border-t border-slate-100 p-2">
-          <div className="flex items-center justify-between px-1 mb-2">
-            <div className="text-xs font-semibold text-slate-600">技能快捷调用</div>
-            <button
-              onClick={loadToolCatalog}
-              disabled={toolCatalogLoading}
-              className="p-1 rounded text-slate-500 hover:bg-slate-100 disabled:opacity-50"
-              title="刷新技能目录"
-            >
-              <RefreshCw size={12} className={toolCatalogLoading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-          {toolCatalogError && (
-            <div className="px-2 py-1.5 text-[11px] text-rose-600 bg-rose-50 border border-rose-100 rounded mb-2">
-              {toolCatalogError}
-            </div>
-          )}
-          <div className="max-h-52 scroll-container space-y-1">
-            {toolCatalogLoading && (
-              <div className="px-2 py-2 text-[11px] text-slate-400 flex items-center gap-1">
-                <Loader2 size={12} className="animate-spin" />
-                加载中...
-              </div>
-            )}
-            {!toolCatalogLoading && toolCatalog.length === 0 && (
-              <div className="px-2 py-2 text-[11px] text-slate-400">暂无可用技能</div>
-            )}
-            {!toolCatalogLoading && toolCatalog.map((tool, idx) => (
-              <button
-                key={tool.code || tool.toolCode || `tool-${idx}`}
-                onClick={() => handleManualSkillInvoke(tool)}
-                disabled={loading || manualDraftPending === tool.name}
-                className="w-full text-left px-2 py-1.5 rounded border border-slate-200 hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50"
-              >
-                <div className="text-xs font-medium text-slate-700 truncate">
-                  {getToolDisplayLabel(tool) || tool.name}
-                </div>
-                <div className="text-[10px] text-slate-500 truncate">
-                  {manualDraftPending === tool.name ? '创建草稿中...' : (tool.description || tool.name)}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
+      {/* 主聊天区域 */}
       <div className="relative flex-1 flex flex-col h-full shadow-sm bg-white">
         <div className="p-4 border-b bg-white/80 backdrop-blur z-10 sticky top-0">
           <div className="flex items-center justify-between gap-3">
@@ -8320,7 +8788,7 @@ function ChatInterface() {
               智能问答助手
             </h2>
             <div className="text-xs text-slate-500 flex items-center gap-2">
-              <span>{activeConversationTitle || '未命名会话'}</span>
+              <span>{activeConversationTitle || '未选择对话'}</span>
             </div>
           </div>
           {conversationError && (
@@ -9026,18 +9494,74 @@ function ChatInterface() {
       </div>
     </div>
   )
-}
+})
 
 // =============================================================================
 // 数据库连接管理组件
 // =============================================================================
 function DatabaseLibrary() {
+  const username = loadAuthSession()?.user?.username || ''
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ name: '', dbType: 'mysql', host: '', port: 3306, databaseName: '', username: '', password: '' })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [groupMode, setGroupMode] = useState(false)
+  const [groups, setGroups] = useState([])
+  const [selectedIds, setSelectedIds] = useState([])
+  const [showAssignPanel, setShowAssignPanel] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+
+  const loadGroups = useCallback(async () => {
+    try {
+      const res = await apiFetch('/v1/user/settings?type=databases')
+      if (res.ok) {
+        const data = await res.json()
+        setGroups(Array.isArray(data?.groups) ? data.groups : [])
+      }
+    } catch {}
+  }, [])
+
+  const saveGroups = useCallback(async (newGroups) => {
+    setGroups(newGroups)
+    try {
+      await apiFetch('/v1/user/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groups: newGroups })
+      })
+    } catch {}
+  }, [])
+
+  useEffect(() => { if (groupMode) loadGroups() }, [groupMode, loadGroups])
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return
+    const g = { id: Date.now().toString(), label: newGroupName.trim(), order: [] }
+    await saveGroups([...groups, g])
+    setNewGroupName('')
+  }
+
+  const handleDeleteGroup = async (gid) => {
+    await saveGroups(groups.filter(g => g.id !== gid))
+  }
+
+  const handleAssignToGroup = async (gid) => {
+    const updated = groups.map(g => g.id === gid
+      ? { ...g, order: [...new Set([...g.order, ...selectedIds])] }
+      : { ...g, order: g.order.filter(id => !selectedIds.includes(id)) })
+    await saveGroups(updated)
+    setSelectedIds([])
+    setShowAssignPanel(false)
+  }
+
+  const handleRemoveFromGroup = async (gid, itemId) => {
+    const updated = groups.map(g => g.id === gid
+      ? { ...g, order: g.order.filter(id => id !== itemId) }
+      : g)
+    await saveGroups(updated)
+  }
 
   // 假数据占位
   const PLACEHOLDER_DBS = [
@@ -9157,33 +9681,104 @@ function DatabaseLibrary() {
       )}
 
       <div className="flex-1 overflow-auto p-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {items.map(item => (
-            <div key={item.id} className="bg-white rounded-xl border border-slate-200 p-4 hover:shadow-sm transition-all">
-              <div className="flex items-start justify-between mb-3">
-                <div className="w-9 h-9 rounded-lg bg-slate-50 flex items-center justify-center">
-                  <Database size={16} className={dbTypeColor[item.dbType] || 'text-slate-400'} />
+        {(() => {
+          if (groupMode) {
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <input type="text" placeholder="输入分组名称后回车创建" value={newGroupName}
+                    onChange={e => setNewGroupName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleCreateGroup() }}
+                    className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <button onClick={handleCreateGroup} disabled={!newGroupName.trim()}
+                    className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">新建分组</button>
                 </div>
-                {item.status && (
-                  <div className={cn('w-2 h-2 rounded-full mt-1', item.status === 'connected' ? 'bg-green-400' : 'bg-red-400')} />
-                )}
+                {groups.map(g => (
+                  <div key={g.id} className="bg-white rounded-xl border border-gray-200 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                        <Folder size={16} className="text-blue-500" />{g.label}
+                        <span className="text-xs font-normal text-gray-400">({g.order.length})</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={() => { setSelectedIds(items.filter(i => !g.order.includes(i.id) && !i.isPlaceholder).map(i => i.id)); setShowAssignPanel(true); }}
+                          className="text-xs text-blue-600 hover:text-blue-800">+ 添加</button>
+                        <button onClick={() => handleDeleteGroup(g.id)} className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {g.order.map(itemId => {
+                        const item = items.find(i => i.id === itemId)
+                        if (!item) return null
+                        return (
+                          <div key={item.id} className="flex items-center gap-2 p-2 bg-slate-50 rounded-lg">
+                            <Database size={14} className={dbTypeColor[item.dbType] || 'text-slate-400'} />
+                            <span className="text-xs text-slate-700 truncate flex-1">{item.name}</span>
+                            <button onClick={() => handleRemoveFromGroup(g.id, item.id)} className="text-red-400 hover:text-red-600 shrink-0"><X size={12} /></button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {g.order.length === 0 && <p className="text-xs text-gray-400">暂无连接</p>}
+                  </div>
+                ))}
+                {groups.length === 0 && <p className="text-center text-sm text-gray-400 py-8">暂无分组</p>}
               </div>
-              <p className="text-sm font-medium text-slate-900 mb-0.5">{item.name}</p>
-              <p className="text-[10px] text-slate-400 font-mono truncate mb-2">{item.host || '示例地址'}:{item.port || '3306'}</p>
-              <div className="flex items-center justify-between">
-                <span className={cn('text-[10px] px-1.5 py-0.5 rounded uppercase font-medium', dbTypeBg[item.dbType] || 'bg-slate-50', dbTypeColor[item.dbType] || 'text-slate-500')}>
-                  {item.dbType || 'mysql'}
-                </span>
-                {!item.isPlaceholder && (
-                  <button onClick={() => handleDelete(item.id)} className="p-1 hover:bg-red-50 rounded">
-                    <Trash2 size={12} className="text-red-400" />
-                  </button>
-                )}
-              </div>
+            )
+          }
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {items.map(item => (
+                <div key={item.id} className="bg-white rounded-xl border border-slate-200 p-4 hover:shadow-sm transition-all">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="w-9 h-9 rounded-lg bg-slate-50 flex items-center justify-center">
+                      <Database size={16} className={dbTypeColor[item.dbType] || 'text-slate-400'} />
+                    </div>
+                    {item.status && (
+                      <div className={cn('w-2 h-2 rounded-full mt-1', item.status === 'connected' ? 'bg-green-400' : 'bg-red-400')} />
+                    )}
+                  </div>
+                  <p className="text-sm font-medium text-slate-900 mb-0.5">{item.name}</p>
+                  <p className="text-[10px] text-slate-400 font-mono truncate mb-2">{item.host || '示例地址'}:{item.port || '3306'}</p>
+                  <div className="flex items-center justify-between">
+                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded uppercase font-medium', dbTypeBg[item.dbType] || 'bg-slate-50', dbTypeColor[item.dbType] || 'text-slate-500')}>
+                      {item.dbType || 'mysql'}
+                    </span>
+                    {!item.isPlaceholder && (
+                      <button onClick={() => handleDelete(item.id)} className="p-1 hover:bg-red-50 rounded">
+                        <Trash2 size={12} className="text-red-400" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )
+        })()}
       </div>
+
+      {/* Group Assign Modal */}
+      {showAssignPanel && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center">
+          <div className="bg-white rounded-xl shadow-xl w-72 overflow-hidden">
+            <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
+              <h3 className="font-semibold text-sm text-slate-700">添加到分组</h3>
+              <button onClick={() => setShowAssignPanel(false)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+            </div>
+            <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
+              {groups.map(g => (
+                <button key={g.id} onClick={() => handleAssignToGroup(g.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-blue-50 text-left text-sm">
+                  <Folder size={14} className="text-blue-500" />
+                  <span className="flex-1">{g.label}</span>
+                  <span className="text-xs text-slate-400">({g.order.length})</span>
+                </button>
+              ))}
+              {groups.length === 0 && <p className="text-sm text-slate-400 text-center py-4">暂无分组</p>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -9198,6 +9793,61 @@ function SkillLibrary({ role }) {
   const [chatOpen, setChatOpen] = useState(false)
   const [chatSkill, setChatSkill] = useState(null)
   const [error, setError] = useState('')
+  const [groupMode, setGroupMode] = useState(false)
+  const [groups, setGroups] = useState([])
+  const [selectedIds, setSelectedIds] = useState([])
+  const [showAssignPanel, setShowAssignPanel] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+
+  const loadGroups = useCallback(async () => {
+    try {
+      const res = await apiFetch('/v1/user/settings?type=skills')
+      if (res.ok) {
+        const data = await res.json()
+        setGroups(Array.isArray(data?.groups) ? data.groups : [])
+      }
+    } catch {}
+  }, [])
+
+  const saveGroups = useCallback(async (newGroups) => {
+    setGroups(newGroups)
+    try {
+      await apiFetch('/v1/user/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groups: newGroups })
+      })
+    } catch {}
+  }, [])
+
+  useEffect(() => { if (groupMode) loadGroups() }, [groupMode, loadGroups])
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return
+    const g = { id: Date.now().toString(), label: newGroupName.trim(), order: [] }
+    await saveGroups([...groups, g])
+    setNewGroupName('')
+  }
+
+  const handleDeleteGroup = async (gid) => {
+    await saveGroups(groups.filter(g => g.id !== gid))
+  }
+
+  const handleAssignToGroup = async (gid) => {
+    const updated = groups.map(g => g.id === gid
+      ? { ...g, order: [...new Set([...g.order, ...selectedIds])] }
+      : { ...g, order: g.order.filter(id => !selectedIds.includes(id)) })
+    await saveGroups(updated)
+    setSelectedIds([])
+    setShowAssignPanel(false)
+  }
+
+  const handleRemoveFromGroup = async (gid, skillName) => {
+    const updated = groups.map(g => g.id === gid
+      ? { ...g, order: g.order.filter(n => n !== skillName) }
+      : g)
+    await saveGroups(updated)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -9226,37 +9876,112 @@ function SkillLibrary({ role }) {
 
   return (
     <div className="h-full flex flex-col bg-slate-50">
-      <div className="px-6 py-4 border-b bg-white shrink-0">
-        <h2 className="text-lg font-semibold text-slate-900">技能库</h2>
-        <p className="text-xs text-slate-400 mt-0.5">点击技能直接发起对话</p>
+      <div className="px-6 py-4 border-b bg-white flex items-center justify-between shrink-0">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">技能库</h2>
+          <p className="text-xs text-slate-400 mt-0.5">点击技能直接发起对话</p>
+        </div>
+        <button onClick={() => setGroupMode(v => !v)}
+          className={cn("flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-sm transition-colors",
+            groupMode ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600 hover:bg-gray-50")}>
+          <Folder size={14} /> {groupMode ? '退出分组' : '分组视图'}
+        </button>
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        {loading ? (
-          <div className="text-center text-slate-400 py-12">加载中...</div>
-        ) : skills.length === 0 ? (
-          <div className="text-center text-slate-400 py-12">
-            <Zap size={32} className="mx-auto mb-2 opacity-30" />
-            <p className="text-sm">暂无可用技能</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {skills.map(skill => (
-              <button
-                key={skill.name}
-                onClick={() => handleSkillClick(skill)}
-                className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all group"
-              >
-                <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center mb-3 text-amber-500">
-                  {SKILL_ICONS[skill.name] || SKILL_ICONS.default}
+        {(() => {
+          if (loading) return <div className="text-center text-slate-400 py-12">加载中...</div>
+          if (skills.length === 0) return (
+            <div className="text-center text-slate-400 py-12">
+              <Zap size={32} className="mx-auto mb-2 opacity-30" />
+              <p className="text-sm">暂无可用技能</p>
+            </div>
+          )
+          if (groupMode) {
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <input type="text" placeholder="输入分组名称后回车创建" value={newGroupName}
+                    onChange={e => setNewGroupName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleCreateGroup() }}
+                    className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <button onClick={handleCreateGroup} disabled={!newGroupName.trim()}
+                    className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">新建分组</button>
                 </div>
-                <p className="text-sm font-medium text-slate-900 group-hover:text-blue-600 transition-colors">{skill.displayName || skill.name}</p>
-                <p className="text-[10px] text-slate-400 mt-0.5 truncate">{skill.name}</p>
-              </button>
-            ))}
-          </div>
-        )}
+                {groups.map(g => (
+                  <div key={g.id} className="bg-white rounded-xl border border-gray-200 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                        <Folder size={16} className="text-blue-500" />{g.label}
+                        <span className="text-xs font-normal text-gray-400">({g.order.length})</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={() => { setSelectedIds(skills.filter(s => !g.order.includes(s.name)).map(s => s.name)); setShowAssignPanel(true) }}
+                          className="text-xs text-blue-600 hover:text-blue-800">+ 添加</button>
+                        <button onClick={() => handleDeleteGroup(g.id)} className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {g.order.map(name => {
+                        const skill = skills.find(s => s.name === name)
+                        if (!skill) return null
+                        return (
+                          <div key={skill.name} className="flex items-center gap-1 px-2 py-1 bg-amber-50 border border-amber-200 rounded-lg">
+                            <span className="text-xs text-amber-700">{skill.displayName || skill.name}</span>
+                            <button onClick={() => handleRemoveFromGroup(g.id, skill.name)} className="text-amber-400 hover:text-red-600"><X size={10} /></button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {g.order.length === 0 && <p className="text-xs text-gray-400">暂无技能</p>}
+                  </div>
+                ))}
+                {groups.length === 0 && <p className="text-center text-sm text-gray-400 py-8">暂无分组</p>}
+              </div>
+            )
+          }
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {skills.map(skill => (
+                <button
+                  key={skill.name}
+                  onClick={() => handleSkillClick(skill)}
+                  className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all group"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center mb-3 text-amber-500">
+                    {SKILL_ICONS[skill.name] || SKILL_ICONS.default}
+                  </div>
+                  <p className="text-sm font-medium text-slate-900 group-hover:text-blue-600 transition-colors">{skill.displayName || skill.name}</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5 truncate">{skill.name}</p>
+                </button>
+              ))}
+            </div>
+          )
+        })()}
       </div>
+
+      {/* Group Assign Modal */}
+      {showAssignPanel && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center">
+          <div className="bg-white rounded-xl shadow-xl w-72 overflow-hidden">
+            <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
+              <h3 className="font-semibold text-sm text-slate-700">添加到分组</h3>
+              <button onClick={() => setShowAssignPanel(false)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+            </div>
+            <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
+              {groups.map(g => (
+                <button key={g.id} onClick={() => handleAssignToGroup(g.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-blue-50 text-left text-sm">
+                  <Folder size={14} className="text-blue-500" />
+                  <span className="flex-1">{g.label}</span>
+                  <span className="text-xs text-slate-400">({g.order.length})</span>
+                </button>
+              ))}
+              {groups.length === 0 && <p className="text-sm text-slate-400 text-center py-4">暂无分组</p>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {chatOpen && chatSkill && (
         <SkillChatModal skill={chatSkill} onClose={() => setChatOpen(false)} />
@@ -9394,6 +10119,59 @@ function ModelLibrary({ role }) {
   const [submitting, setSubmitting] = useState(false)
   const [testingId, setTestingId] = useState(null)
   const [error, setError] = useState('')
+  const [groupMode, setGroupMode] = useState(false)
+  const [groups, setGroups] = useState([])
+  const [showAssignPanel, setShowAssignPanel] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+
+  const loadGroups = useCallback(async () => {
+    try {
+      const res = await apiFetch('/v1/user/settings?type=models')
+      if (res.ok) {
+        const data = await res.json()
+        setGroups(Array.isArray(data?.groups) ? data.groups : [])
+      }
+    } catch {}
+  }, [])
+
+  const saveGroups = useCallback(async (newGroups) => {
+    setGroups(newGroups)
+    try {
+      await apiFetch('/v1/user/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groups: newGroups })
+      })
+    } catch {}
+  }, [])
+
+  useEffect(() => { if (groupMode) loadGroups() }, [groupMode, loadGroups])
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return
+    const g = { id: Date.now().toString(), label: newGroupName.trim(), order: [] }
+    await saveGroups([...groups, g])
+    setNewGroupName('')
+  }
+
+  const handleDeleteGroup = async (gid) => {
+    await saveGroups(groups.filter(g => g.id !== gid))
+  }
+
+  const handleAssignToGroup = async (gid, modelId) => {
+    const updated = groups.map(g => g.id === gid
+      ? { ...g, order: g.order.includes(modelId) ? g.order : [...g.order, modelId] }
+      : { ...g, order: g.order.filter(id => id !== modelId) })
+    await saveGroups(updated)
+    setShowAssignPanel(false)
+  }
+
+  const handleRemoveFromGroup = async (gid, modelId) => {
+    const updated = groups.map(g => g.id === gid
+      ? { ...g, order: g.order.filter(id => id !== modelId) }
+      : g)
+    await saveGroups(updated)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -9479,6 +10257,11 @@ function ModelLibrary({ role }) {
           <h2 className="text-lg font-semibold text-slate-900">模型库</h2>
           <p className="text-xs text-slate-400 mt-0.5">配置 Ollama / OpenAI 等模型</p>
         </div>
+        <button onClick={() => setGroupMode(v => !v)}
+          className={cn("flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-sm transition-colors",
+            groupMode ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600 hover:bg-gray-50")}>
+          <Folder size={14} /> {groupMode ? '退出分组' : '分组视图'}
+        </button>
         <button onClick={() => setShowForm(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
           <Plus size={14} /> 添加模型
@@ -9694,9 +10477,186 @@ function MemoryManager() {
 function App() {
   const [authSession, setAuthSession] = useState(() => loadAuthSession())
   const [activeTab, setActiveTab] = useState('chat')
+  const chatInterfaceRef = useRef(null)
   const role = authSession?.user?.role || null
   const username = authSession?.user?.username || ''
   const userId = authSession?.user?.id || null
+
+  // App 层统一管理对话相关状态
+  const [appConversations, setAppConversations] = useState([])
+  const [appConvOrder, setAppConvOrder] = useState({ pinned: [], order: [] })
+  const [appConvLoading, setAppConvLoading] = useState(false)
+  const [appConvHasMore, setAppConvHasMore] = useState(false)
+  const [appConvPage, setAppConvPage] = useState(1)
+  const [appConvLoadingMore, setAppConvLoadingMore] = useState(false)
+  const [appRenamingId, setAppRenamingId] = useState('')
+  const [appRenamingTitle, setAppRenamingTitle] = useState('')
+  const [appActiveConvId, setAppActiveConvId] = useState(null)
+
+  // App 层：加载对话列表
+  const loadAppConversations = useCallback(async (preferId = '') => {
+    setAppConvLoading(true)
+    try {
+      const result = await fetchConversations({ page: 1, pageSize: 50 })
+      const normalized = (result.items || []).map(item => ({
+        id: normalizeConversationId(item),
+        title: normalizeConversationTitle(item),
+        createTime: item?.createTime || item?.create_time || '',
+        remainingDays: Number(item?.remainingDays ?? item?.remaining_days ?? 0)
+      })).filter(c => c.id)
+      setAppConversations(normalized)
+      setAppConvPage(1)
+      setAppConvHasMore(Boolean(result.hasMore))
+      setAppConvOrder(prev => ({
+        pinned: prev.pinned || [],
+        order: normalized.map(c => c.id)
+      }))
+      // 同步到 ChatInterface
+      if (chatInterfaceRef.current?.syncConversationsFromApp) {
+        chatInterfaceRef.current.syncConversationsFromApp(normalized)
+      }
+    } catch {} finally {
+      setAppConvLoading(false)
+    }
+  }, [])
+
+  // App 层：新建对话
+  const handleAppNewConversation = useCallback(async () => {
+    try {
+      const created = await createConversation('新对话')
+      const newId = normalizeConversationId(created)
+      await loadAppConversations(newId)
+      setAppActiveConvId(newId)
+      if (chatInterfaceRef.current?.switchToConversation) {
+        chatInterfaceRef.current.switchToConversation(newId)
+      }
+    } catch (e) { console.error(e) }
+  }, [loadAppConversations])
+
+  // App 层：选择对话
+  const handleAppSelectConversation = useCallback((convId) => {
+    setAppActiveConvId(convId)
+    if (chatInterfaceRef.current?.switchToConversation) {
+      chatInterfaceRef.current.switchToConversation(convId)
+    }
+  }, [])
+
+  // App 层：删除对话
+  const handleAppDeleteConversation = useCallback(async (convId) => {
+    if (!window.confirm('确定删除该会话及全部消息吗？')) return
+    try {
+      await deleteConversation(convId)
+      const rest = appConversations.filter(c => c.id !== convId)
+      const nextId = rest[0]?.id || ''
+      setAppConversations(rest)
+      if (nextId) {
+        setAppActiveConvId(nextId)
+        if (chatInterfaceRef.current?.switchToConversation) {
+          chatInterfaceRef.current.switchToConversation(nextId)
+        }
+      }
+    } catch (e) { console.error(e) }
+  }, [appConversations])
+
+  // App 层：开始重命名
+  const handleAppStartRename = useCallback((conv) => {
+    setAppRenamingId(conv.id)
+    setAppRenamingTitle(conv.title || '')
+  }, [])
+
+  // App 层：提交重命名
+  const handleAppSubmitRename = useCallback(async (convId) => {
+    const title = String(appRenamingTitle || '').trim()
+    if (!convId || !title) {
+      setAppRenamingId('')
+      setAppRenamingTitle('')
+      return
+    }
+    try {
+      await renameConversation(convId, title)
+      setAppConversations(prev => prev.map(c => c.id === convId ? { ...c, title } : c))
+      setAppRenamingId('')
+      setAppRenamingTitle('')
+      if (chatInterfaceRef.current?.refreshTitle) {
+        chatInterfaceRef.current.refreshTitle(convId, title)
+      }
+    } catch (e) { console.error(e) }
+  }, [appRenamingTitle])
+
+  // App 层：取消重命名
+  const handleAppCancelRename = useCallback(() => {
+    setAppRenamingId('')
+    setAppRenamingTitle('')
+  }, [])
+
+  // App 层：加载更多对话
+  const handleAppLoadMore = useCallback(async () => {
+    if (appConvLoadingMore || !appConvHasMore) return
+    setAppConvLoadingMore(true)
+    try {
+      const nextPage = appConvPage + 1
+      const result = await fetchConversations({ page: nextPage, pageSize: 50 })
+      const normalized = (result.items || []).map(item => ({
+        id: normalizeConversationId(item),
+        title: normalizeConversationTitle(item),
+        createTime: item?.createTime || item?.create_time || '',
+        remainingDays: Number(item?.remainingDays ?? item?.remaining_days ?? 0)
+      })).filter(c => c.id && !appConversations.find(ec => ec.id === c.id))
+      setAppConversations(prev => [...prev, ...normalized])
+      setAppConvPage(nextPage)
+      setAppConvHasMore(Boolean(result.hasMore))
+    } catch {} finally {
+      setAppConvLoadingMore(false)
+    }
+  }, [appConvLoadingMore, appConvHasMore, appConvPage, appConversations])
+
+  // App 层：置顶/取消置顶
+  const handleAppTogglePin = useCallback((convId) => {
+    const isPinned = appConvOrder.pinned.includes(convId)
+    let newPinned, newOrder
+    if (isPinned) {
+      newPinned = appConvOrder.pinned.filter(id => id !== convId)
+      newOrder = appConvOrder.order
+    } else {
+      newPinned = [...appConvOrder.pinned, convId]
+      newOrder = appConvOrder.order.filter(id => id !== convId)
+    }
+    setAppConvOrder({ pinned: newPinned, order: newOrder })
+    saveConversationOrder(newOrder, newPinned).catch(() => {})
+  }, [appConvOrder])
+
+  // App 层：拖拽排序
+  const handleAppDragEnd = useCallback(({ active, over }) => {
+    if (!over || active.id === over.id) return
+    const allIds = [...appConvOrder.pinned, ...appConvOrder.order]
+    const oldIndex = allIds.indexOf(active.id)
+    const newIndex = allIds.indexOf(over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+    const newOrder = arrayMove(allIds, oldIndex, newIndex)
+    const pinnedSet = new Set(appConvOrder.pinned)
+    const splitPinned = newOrder.filter(id => pinnedSet.has(id))
+    const splitOrder = newOrder.filter(id => !pinnedSet.has(id))
+    setAppConvOrder({ pinned: splitPinned, order: splitOrder })
+    saveConversationOrder(splitOrder, splitPinned).catch(() => {})
+  }, [appConvOrder])
+
+  // 初始加载
+  useEffect(() => {
+    if (role) loadAppConversations()
+  }, [role, loadAppConversations])
+
+  // Sidebar menu order — persisted in localStorage per user
+  const [sidebarMenuOrder, setSidebarMenuOrder] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`ai4kb_sidebar_order_${username}`)
+      return saved ? JSON.parse(saved) : null
+    } catch { return null }
+  })
+
+  const handleMenuOrderChange = useCallback((newOrder) => {
+    setSidebarMenuOrder(newOrder)
+    try { localStorage.setItem(`ai4kb_sidebar_order_${username}`, JSON.stringify(newOrder)) } catch {}
+  }, [username])
 
   useEffect(() => {
     const syncAuthExpired = () => {
@@ -9734,15 +10694,35 @@ function App() {
 
   return (
     <div className="flex h-screen bg-slate-50">
-      <Sidebar 
-        role={role} 
+      <Sidebar
+        role={role}
         username={username}
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
         onLogout={handleLogout}
+        menuOrder={sidebarMenuOrder}
+        onMenuOrderChange={handleMenuOrderChange}
+        chatConversations={appConversations}
+        chatActiveConvId={appActiveConvId}
+        chatConvOrder={appConvOrder}
+        chatLoading={appConvLoading}
+        chatHasMore={appConvHasMore}
+        chatLoadingMore={appConvLoadingMore}
+        chatRenamingId={appRenamingId}
+        chatRenamingTitle={appRenamingTitle}
+        onChatSelect={handleAppSelectConversation}
+        onChatNew={handleAppNewConversation}
+        onChatTogglePin={handleAppTogglePin}
+        onChatStartRename={handleAppStartRename}
+        onChatSubmitRename={handleAppSubmitRename}
+        onChatCancelRename={handleAppCancelRename}
+        onChatDelete={handleAppDeleteConversation}
+        onChatRenameTitleChange={setAppRenamingTitle}
+        onChatDragEnd={handleAppDragEnd}
+        onChatLoadMore={handleAppLoadMore}
       />
       <main className="flex-1 h-full overflow-hidden relative">
-        {activeTab === 'chat' && <ChatInterface role={role} />}
+        {activeTab === 'chat' && <ChatInterface role={role} ref={chatInterfaceRef} onConversationsChanged={loadAppConversations} />}
         {activeTab === 'knowledge' && <DatasetManager currentRole={role} />}
         {activeTab === 'databases' && <DatabaseLibrary />}
         {activeTab === 'skill_lib' && <SkillLibrary role={role} />}

@@ -19,6 +19,7 @@ import { registerPostServerRoutes } from './routes/postServer.js'
 import { registerSkillRoutes } from './routes/skills.js'
 import { registerConversationRoutes } from './routes/conversations.js'
 import { registerResourceRoutes } from './routes/resources.js'
+import { registerUserSettingsRoutes } from './routes/userSettings.js'
 
 type Role = 'super_admin' | 'admin' | 'user'
 type ResourceType = 'DATASET' | 'DATASET_OWNER' | 'SKILL' | 'MEMORY_PROFILE'
@@ -1958,6 +1959,13 @@ export function createServer(config: AppConfig) {
 
   // Register conversation management routes
   registerConversationRoutes(app, {
+    authGuard,
+    getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
+      getActiveOperator(req as AuthedRequest, reply),
+  })
+
+  // Register user settings routes (conversations order, library groups)
+  registerUserSettingsRoutes(app, {
     authGuard,
     getActiveOperator: (req: FastifyRequest, reply: FastifyReply) =>
       getActiveOperator(req as AuthedRequest, reply),
