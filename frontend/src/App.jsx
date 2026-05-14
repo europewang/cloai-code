@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ChevronUp, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench, Cpu, Server, Zap, GripVertical, Pin, PinOff, ChevronsUpDown, FolderPlus, Folder } from 'lucide-react'
 import {
-  DndContext, DragOverlay, closestCenter, PointerSensor,
+  DndContext, DragOverlay, rectIntersection, closestCenter, PointerSensor,
   useSensor, useSensors, MouseSensor, TouchSensor,
   useDroppable
 } from '@dnd-kit/core'
@@ -2613,15 +2613,15 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, onShare, selected, 
   const canSelect = manageable
   const cardClickable = selectionMode ? canSelect : manageable
   return (
-    <div 
+    <div
       onClick={selectionMode ? (e) => canSelect && onSelect(dataset.id, e) : (cardClickable ? onClick : undefined)}
       className={`bg-white rounded-xl border p-6 hover:shadow-lg transition-all group relative ${cardClickable ? 'cursor-pointer' : 'cursor-not-allowed opacity-90'} ${selected ? 'border-blue-500 ring-1 ring-blue-500 bg-blue-50/10' : 'border-slate-100 hover:border-blue-200'}`}
     >
-      <div className="absolute top-4 right-4 z-10 flex gap-2">
+      <div className="absolute top-4 right-4 z-10 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
         {!selectionMode && manageable && (
           <>
             {canShare && onShare && (
-              <button 
+              <button
                 onClick={(e) => onShare(dataset, e)}
                 className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-all"
                 title="共享设置"
@@ -2629,14 +2629,14 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, onShare, selected, 
                 <Lock size={12} />
               </button>
             )}
-            <button 
+            <button
               onClick={(e) => onRename(dataset, e)}
               className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-all"
               title="重命名"
             >
               <FileText size={12} />
             </button>
-            <button 
+            <button
               onClick={(e) => onDelete(dataset.id, e)}
               className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
               title="删除知识库"
@@ -2645,7 +2645,7 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, onShare, selected, 
             </button>
           </>
         )}
-        <div 
+        <div
           onClick={(e) => canSelect && onSelect(dataset.id, e)}
           className={`w-5 h-5 rounded border flex items-center justify-center transition-all ${canSelect ? '' : 'opacity-40 cursor-not-allowed'} ${selected ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white border-slate-300 hover:border-blue-400'}`}
         >
@@ -2719,7 +2719,7 @@ function DatasetManager({ currentRole }) {
     isSubmitting: false
   })
   // --- 分组状态（与后端 user/settings API 对齐） ---
-  const [activeGroupId, setActiveGroupId] = useState('__all__') // '__all__' | groupId
+  const [scrollGroupId, setScrollGroupId] = useState(null) // 仅用于点击滚动定位
   const [datasetGroups, setDatasetGroups] = useState([])  // [{ id, name, items }]
   const [newGroupName, setNewGroupName] = useState('')
   const [showAssignPanel, setShowAssignPanel] = useState(false)
@@ -2728,12 +2728,16 @@ function DatasetManager({ currentRole }) {
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=knowledge')
+      console.log('[loadGroups/knowledge] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
+        console.log('[loadGroups/knowledge] received:', JSON.stringify(data))
         // 必须保证 datasetGroups 为数组，防止 {} 对象导致 flatMap/map 报错
         if (Array.isArray(data)) {
+          console.log('[loadGroups/knowledge] → setDatasetGroups (array direct)')
           setDatasetGroups(data)
         } else if (Array.isArray(data?.knowledge)) {
+          console.log('[loadGroups/knowledge] → setDatasetGroups (from data.knowledge)')
           setDatasetGroups(data.knowledge)
         } else {
           console.warn('[loadGroups/knowledge] unexpected data shape:', data)
@@ -2763,6 +2767,10 @@ function DatasetManager({ currentRole }) {
 
   // 组件挂载时加载分组
   useEffect(() => { loadGroups() }, [loadGroups])
+  // 诊断：监听 datasetGroups 状态变化
+  useEffect(() => {
+    console.log('[DatasetManager] datasetGroups state changed:', JSON.stringify(datasetGroups))
+  }, [datasetGroups])
   const manageableDatasets = useMemo(() => datasets.filter(ds => ds?.manageable !== false), [datasets])
 
   const loadData = () => {
@@ -3007,18 +3015,6 @@ function DatasetManager({ currentRole }) {
     ]
   }, [datasetGroups, datasets])
 
-  // 当前要渲染的卡片
-  const currentDatasets = useMemo(() => {
-    if (activeGroupId === '__all__') return datasets
-    if (activeGroupId === '__ungrouped__') {
-      const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
-      return datasets.filter(ds => !groupedIds.has(ds.id))
-    }
-    const group = datasetGroups.find(g => g.id === activeGroupId)
-    if (!group) return datasets
-    return datasets.filter(ds => group.items.includes(ds.id))
-  }, [activeGroupId, datasets, datasetGroups])
-
   const handleDatasetClick = (ds) => {
     if (ds?.manageable === false) {
       alert('该知识库不是你创建的，仅可查看存在')
@@ -3089,7 +3085,7 @@ function DatasetManager({ currentRole }) {
           })
           saveGroups(next)
         }
-        setActiveGroupId(targetGroupId)
+        setScrollGroupId(targetGroupId)
       }
     }
     setActiveId(null)
@@ -3178,8 +3174,7 @@ function DatasetManager({ currentRole }) {
       {(
         <GroupNavBar
           groups={navGroups}
-          activeGroupId={activeGroupId}
-          onGroupClick={setActiveGroupId}
+          onGroupClick={setScrollGroupId}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -3195,7 +3190,7 @@ function DatasetManager({ currentRole }) {
       {/* Content */}
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
+        collisionDetection={rectIntersection}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
@@ -3230,7 +3225,6 @@ function DatasetManager({ currentRole }) {
                   const g = datasetGroups.find(g => g.id === group.id)
                   return g ? g.items.includes(ds.id) : false
                 })
-                if (groupDs.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
                 return (
                   <DroppableGroupSection
                     key={group.id}
@@ -3239,7 +3233,8 @@ function DatasetManager({ currentRole }) {
                     groupDs={groupDs}
                     isOver={overGroupId === group.id}
                     isDragging={!!activeId}
-                    onRemove={(datasetId) => handleRemoveFromGroup(group.id, datasetId)}
+                    overGroupId={overGroupId}
+                    onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
                     renderCard={(ds) => <SortableDatasetCard key={ds.id} ds={ds} />}
                   />
                 )
@@ -6682,7 +6677,7 @@ function normalizeConversationId(item) {
 // =============================================================================
 // 可拖拽分组区块组件（拖拽目标区域）
 // =============================================================================
-function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging, onRemove, renderCard }) {
+function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging, overGroupId, onRemove, renderCard }) {
   const { setNodeRef, isOver: droppableIsOver } = useDroppable({
     id: `droppable-group_${groupId}`
   })
@@ -6722,12 +6717,12 @@ function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {groupDs.map(ds => (
-              <div key={ds.id} className="relative group/card">
-                {renderCard(ds)}
+            {groupDs.map((item, index) => (
+              <div key={item.id || item.name || index} className="relative group/card">
+                {renderCard(item)}
                 {groupId !== '__ungrouped__' && (
                   <button
-                    onClick={() => onRemove(ds.id)}
+                    onClick={() => onRemove(item)}
                     title="从分组移除"
                     className="absolute top-2 left-2 opacity-0 group-hover/card:opacity-100 transition-opacity px-1.5 py-0.5 bg-red-100 text-red-600 text-[10px] rounded border border-red-200 hover:bg-red-200 z-10"
                   >
@@ -6744,57 +6739,28 @@ function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging
 }
 
 // =============================================================================
-function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
+function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
   const navRef = useRef(null)
-  const sectionObserver = useRef(null)
-
-  // 初始化 / 更新 IntersectionObserver：监听各分组区块，实现滚动联动
-  useEffect(() => {
-    if (sectionObserver.current) {
-      sectionObserver.current.disconnect()
-    }
-
-    const observers = []
-    const setupObserver = () => {
-      groups.forEach(group => {
-        const el = document.getElementById(`group-section-${group.id}`)
-        if (!el) return
-        const obs = new IntersectionObserver(
-          ([entry]) => {
-            if (entry.isIntersecting) {
-              // 通知父组件更新 activeGroupId（双向联动的核心）
-              onGroupClick(group.id)
-              // 自动将卡片滚动到可视区域
-              const cardEl = navRef.current?.querySelector(`[data-group-id="${group.id}"]`)
-              if (cardEl) {
-                cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
-              }
-            }
-          },
-          { rootMargin: '-15% 0px -75% 0px', threshold: 0 }
-        )
-        obs.observe(el)
-        observers.push(obs)
-      })
-    }
-
-    // 延迟初始化，等待 DOM 完全渲染
-    const timer = setTimeout(setupObserver, 80)
-    sectionObserver.current = {
-      disconnect: () => { observers.forEach(o => o.disconnect()); clearTimeout(timer) }
-    }
-
-    return () => {
-      if (sectionObserver.current) sectionObserver.current.disconnect()
-    }
-  }, [groups, onGroupClick])
 
   const handleCardClick = (groupId) => {
     onGroupClick(groupId)
     const el = document.getElementById(`group-section-${groupId}`)
-    if (el) {
-      // sticky nav bar 高度约 56px，额外留 8px 空隙
-      const offset = el.getBoundingClientRect().top + window.scrollY - 64
+    if (!el) return
+
+    // 运行时测量导航栏实际高度（用于 fallback window 滚动场景）
+    const navEl = document.querySelector('.sticky.top-0.z-20.bg-white\\/95')
+    const navHeight = navEl ? navEl.getBoundingClientRect().height : 50
+    const GAP = 6
+    // 找到最近的滚动容器（内容区使用内层 overflow-auto div）
+    const scrollable = el.closest('.overflow-auto')
+    if (scrollable) {
+      // GroupNavBar 在滚动容器外部（sticky top-0），offsetTop 不包含它的高度
+      // scrollTop = offsetTop - 导航栏高度，让 section 顶部对齐导航栏底部
+      const targetTop = el.offsetTop - navHeight - GAP
+      scrollable.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
+    } else {
+      // window 滚动场景
+      const offset = el.getBoundingClientRect().top + window.scrollY - navHeight - GAP
       window.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' })
     }
   }
@@ -6808,30 +6774,10 @@ function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRen
         className="flex items-center gap-2 px-4 py-2 overflow-x-auto scroll-container"
         style={{ scrollbarWidth: 'thin', scrollbarColor: '#e5e7eb transparent' }}
       >
-        {/* 全部 */}
-        <button
-          data-group-id="__all__"
-          onClick={() => { onGroupClick('__all__'); window.scrollTo({ top: -62, behavior: 'smooth' }) }}
-          className={cn(
-            "shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all whitespace-nowrap flex items-center gap-1",
-            activeGroupId === '__all__'
-              ? "bg-blue-600 text-white border-blue-600 shadow-sm"
-              : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
-          )}
-        >
-          全部
-        </button>
-
         {groups.map(group => (
           <div
             key={group.id}
-            data-group-id={group.id}
-            className={cn(
-              "group/card shrink-0 flex items-center gap-0.5 pl-2 pr-1 py-1 rounded-lg text-xs font-medium border transition-all whitespace-nowrap",
-              activeGroupId === group.id
-                ? "bg-blue-600 text-white border-blue-600 shadow-sm"
-                : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
-            )}
+            className="group/card shrink-0 flex items-center gap-0.5 pl-2 pr-1 py-1 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-all whitespace-nowrap"
           >
             <button
               onClick={() => handleCardClick(group.id)}
@@ -6840,7 +6786,6 @@ function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRen
               <span>{group.name}</span>
               <span className="text-[10px] opacity-70">({group.count})</span>
             </button>
-            {/* 卡片操作按钮（hover 显示） */}
             <div className="flex items-center gap-0.5 ml-0.5 opacity-0 group-hover/card:opacity-100 transition-opacity">
               {onRenameGroup && (
                 <button
@@ -6850,7 +6795,7 @@ function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRen
                     const newName = window.prompt('输入分组名称：', group.name)
                     if (newName && newName.trim()) onRenameGroup(group.id, newName.trim())
                   }}
-                  className="p-0.5 rounded hover:bg-blue-400/40 text-white/70 hover:text-white"
+                  className="p-0.5 rounded hover:bg-blue-400/40 text-gray-400 hover:text-blue-600"
                 >
                   <Edit size={10} />
                 </button>
@@ -6864,7 +6809,7 @@ function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRen
                       onDeleteGroup(group.id)
                     }
                   }}
-                  className="p-0.5 rounded hover:bg-red-400/40 text-white/70 hover:text-white"
+                  className="p-0.5 rounded hover:bg-red-400/40 text-gray-400 hover:text-red-500"
                 >
                   <X size={10} />
                 </button>
@@ -6873,7 +6818,6 @@ function GroupNavBar({ groups, activeGroupId, onGroupClick, onCreateGroup, onRen
           </div>
         ))}
 
-        {/* 新建分组按钮 */}
         {onCreateGroup && (
           <button
             onClick={onCreateGroup}
@@ -9866,16 +9810,20 @@ function DatabaseLibrary() {
   const [selectedIds, setSelectedIds] = useState([])
   const [showAssignPanel, setShowAssignPanel] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
-  const [activeGroupId, setActiveGroupId] = useState('__all__')
+  const [scrollGroupId, setScrollGroupId] = useState(null) // 仅用于点击滚动定位
 
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=databases')
+      console.log('[loadGroups/databases] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
+        console.log('[loadGroups/databases] received:', JSON.stringify(data))
         if (Array.isArray(data)) {
+          console.log('[loadGroups/databases] → setGroups (array direct)')
           setGroups(data)  // flat array: [{ id, label, order }]
         } else if (Array.isArray(data?.groups)) {
+          console.log('[loadGroups/databases] → setGroups (from data.groups)')
           setGroups(data.groups)
         } else {
           console.warn('[loadGroups/databases] unexpected data shape:', data)
@@ -9936,7 +9884,7 @@ function DatabaseLibrary() {
           })
           saveGroups(next)
         }
-        setActiveGroupId(target)
+        setScrollGroupId(target)
       }
     }
     setActiveId(null)
@@ -9945,6 +9893,10 @@ function DatabaseLibrary() {
 
   // 修复：必须调用 loadGroups 加载分组
   useEffect(() => { loadGroups() }, [loadGroups])
+  // 诊断：监听 groups 状态变化
+  useEffect(() => {
+    console.log('[DatabaseLibrary] groups state changed:', JSON.stringify(groups))
+  }, [groups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -10035,39 +9987,27 @@ function DatabaseLibrary() {
     ]
   }, [groups, items])
 
-  // 当前要渲染的数据库
-  const currentDbs = useMemo(() => {
-    if (activeGroupId === '__all__') return items
-    if (activeGroupId === '__ungrouped__') {
-      const groupedIds = new Set(groups.flatMap(g => g.order))
-      return items.filter(i => !groupedIds.has(i.id))
-    }
-    const group = groups.find(g => g.id === activeGroupId)
-    if (!group) return items
-    return items.filter(i => group.order.includes(i.id))
-  }, [activeGroupId, items, groups])
-
   const renderDbCard = (item) => (
     <div
-      className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all"
+      className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-sm transition-all group relative"
     >
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <Database size={16} className={dbTypeColor[item.dbType] || 'text-gray-400'} />
           <span className="text-sm font-medium text-slate-900">{item.name}</span>
         </div>
-        <span className={cn(
-          'text-[10px] px-1.5 py-0.5 rounded-full font-medium',
-          item.status === 'connected' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-500'
-        )}>
-          {item.status === 'connected' ? '已连接' : '未连接'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={cn(
+            'text-[10px] px-1.5 py-0.5 rounded-full font-medium',
+            item.status === 'connected' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-500'
+          )}>
+            {item.status === 'connected' ? '已连接' : '未连接'}
+          </span>
+          <button onClick={() => handleDelete(item.id)}
+            className="text-xs text-red-400 hover:text-red-600 transition-colors opacity-0 group-hover:opacity-100">删除</button>
+        </div>
       </div>
       <p className="text-[10px] text-slate-400">{item.dbType?.toUpperCase()} · {item.host}:{item.port}</p>
-      <div className="flex items-center justify-end mt-3">
-        <button onClick={() => handleDelete(item.id)}
-          className="text-xs text-red-400 hover:text-red-600 transition-colors">删除</button>
-      </div>
     </div>
   )
 
@@ -10158,8 +10098,7 @@ function DatabaseLibrary() {
       {(
         <GroupNavBar
           groups={navGroups}
-          activeGroupId={activeGroupId}
-          onGroupClick={setActiveGroupId}
+          onGroupClick={setScrollGroupId}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -10175,7 +10114,7 @@ function DatabaseLibrary() {
         />
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter}
+      <DndContext sensors={sensors} collisionDetection={rectIntersection}
         onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
         <div className="flex-1 overflow-auto p-6 scroll-container">
           {loading ? (
@@ -10187,7 +10126,7 @@ function DatabaseLibrary() {
             </div>
           ) : sectionGroups.length === 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {currentDbs.map(item => <SortableCard key={item.id} item={item} />)}
+              {items.map(item => <SortableCard key={item.id} item={item} />)}
             </div>
           ) : (
             <div className="space-y-0">
@@ -10200,7 +10139,6 @@ function DatabaseLibrary() {
                   const g = groups.find(g => g.id === group.id)
                   return g ? g.order.includes(i.id) : false
                 })
-                if (groupItems.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
                 return (
                   <DroppableGroupSection
                     key={group.id}
@@ -10209,7 +10147,8 @@ function DatabaseLibrary() {
                     groupDs={groupItems}
                     isOver={overGroupId === group.id}
                     isDragging={!!activeId}
-                    onRemove={(id) => handleRemoveFromGroup(group.id, id)}
+                    overGroupId={overGroupId}
+                    onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
                     renderCard={(item) => <SortableCard key={item.id} item={item} />}
                   />
                 )
@@ -10267,16 +10206,20 @@ function SkillLibrary({ role }) {
   const [selectedIds, setSelectedIds] = useState([])
   const [showAssignPanel, setShowAssignPanel] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
-  const [activeGroupId, setActiveGroupId] = useState('__all__')
+  const [scrollGroupId, setScrollGroupId] = useState(null) // 仅用于点击滚动定位
 
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=skills')
+      console.log('[loadGroups/skills] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
+        console.log('[loadGroups/skills] received:', JSON.stringify(data))
         if (Array.isArray(data)) {
+          console.log('[loadGroups/skills] → setGroups (array direct)')
           setGroups(data)
         } else if (Array.isArray(data?.groups)) {
+          console.log('[loadGroups/skills] → setGroups (from data.groups)')
           setGroups(data.groups)
         } else {
           console.warn('[loadGroups/skills] unexpected data shape:', data)
@@ -10304,6 +10247,10 @@ function SkillLibrary({ role }) {
   }, [])
 
   useEffect(() => { loadGroups() }, [loadGroups])
+  // 诊断：监听 groups 状态变化
+  useEffect(() => {
+    console.log('[SkillLibrary] groups state changed:', JSON.stringify(groups))
+  }, [groups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -10375,7 +10322,7 @@ function SkillLibrary({ role }) {
           })
           saveGroups(next)
         }
-        setActiveGroupId(target)
+        setScrollGroupId(target)
       }
     }
     setActiveId(null)
@@ -10409,18 +10356,6 @@ function SkillLibrary({ role }) {
       ...(ungrouped.length > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungrouped.length }] : []),
     ]
   }, [groups, skills])
-
-  // 当前要渲染的技能
-  const currentSkills = useMemo(() => {
-    if (activeGroupId === '__all__') return skills
-    if (activeGroupId === '__ungrouped__') {
-      const groupedIds = new Set(groups.flatMap(g => g.order))
-      return skills.filter(s => !groupedIds.has(s.name))
-    }
-    const group = groups.find(g => g.id === activeGroupId)
-    if (!group) return skills
-    return skills.filter(s => group.order.includes(s.name))
-  }, [activeGroupId, skills, groups])
 
   // 可拖拽技能卡片
   const SortableSkillCard = ({ skill }) => {
@@ -10461,8 +10396,7 @@ function SkillLibrary({ role }) {
       {(
         <GroupNavBar
           groups={navGroups}
-          activeGroupId={activeGroupId}
-          onGroupClick={setActiveGroupId}
+          onGroupClick={setScrollGroupId}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -10478,7 +10412,7 @@ function SkillLibrary({ role }) {
         />
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter}
+      <DndContext sensors={sensors} collisionDetection={rectIntersection}
         onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
         <div className="flex-1 overflow-auto p-6 scroll-container">
           {loading ? (
@@ -10490,7 +10424,7 @@ function SkillLibrary({ role }) {
             </div>
           ) : sectionGroups.length === 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {currentSkills.map(s => <SortableSkillCard key={s.name} skill={s} />)}
+              {skills.map(s => <SortableSkillCard key={s.name} skill={s} />)}
             </div>
           ) : (
             <div className="space-y-0">
@@ -10503,7 +10437,6 @@ function SkillLibrary({ role }) {
                   const g = groups.find(g => g.id === group.id)
                   return g ? g.order.includes(s.name) : false
                 })
-                if (groupSkills.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
                 return (
                   <DroppableGroupSection
                     key={group.id}
@@ -10512,7 +10445,8 @@ function SkillLibrary({ role }) {
                     groupDs={groupSkills}
                     isOver={overGroupId === group.id}
                     isDragging={!!activeId}
-                    onRemove={(skillName) => handleRemoveFromGroup(group.id, skillName)}
+                    overGroupId={overGroupId}
+                    onRemove={(item) => handleRemoveFromGroup(group.id, item.name)}
                     renderCard={(s) => <SortableSkillCard key={s.name} skill={s} />}
                   />
                 )
@@ -10692,17 +10626,24 @@ function ModelLibrary({ role }) {
   const [groups, setGroups] = useState([])
   const [showAssignPanel, setShowAssignPanel] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
-  const [activeGroupId, setActiveGroupId] = useState('__all__')
+  const [scrollGroupId, setScrollGroupId] = useState(null) // 仅用于点击滚动定位
 
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=models')
+      console.log('[loadGroups/models] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
+        console.log('[loadGroups/models] received:', JSON.stringify(data))
         if (Array.isArray(data)) {
+          console.log('[loadGroups/models] → setGroups (array direct)')
           setGroups(data)
         } else if (Array.isArray(data?.groups)) {
+          console.log('[loadGroups/models] → setGroups (from data.groups)')
           setGroups(data.groups)
+        } else if (Array.isArray(data?.models)) {
+          console.log('[loadGroups/models] → setGroups (from data.models)')
+          setGroups(data.models)
         } else {
           console.warn('[loadGroups/models] unexpected data shape:', data)
           setGroups([])
@@ -10729,6 +10670,11 @@ function ModelLibrary({ role }) {
   }, [])
 
   useEffect(() => { loadGroups() }, [loadGroups])
+
+  // 诊断：监听 groups 状态变化
+  useEffect(() => {
+    console.log('[ModelLibrary] groups state changed:', JSON.stringify(groups))
+  }, [groups])
 
   // --- 拖拽相关状态 ---
   const [activeId, setActiveId] = useState(null)
@@ -10758,7 +10704,7 @@ function ModelLibrary({ role }) {
           })
           saveGroups(next)
         }
-        setActiveGroupId(target)
+        setScrollGroupId(target)
       }
     }
     setActiveId(null)
@@ -10870,7 +10816,7 @@ function ModelLibrary({ role }) {
 
   const renderModelCard = (model) => (
     <div className={cn(
-      'bg-white rounded-xl border p-4 transition-all',
+      'bg-white rounded-xl border p-4 transition-all group relative',
       model.isDefault ? 'border-blue-300 shadow-sm' : 'border-slate-200'
     )}>
       <div className="flex items-start justify-between mb-2">
@@ -10895,7 +10841,7 @@ function ModelLibrary({ role }) {
         <span className="font-mono">{model.baseUrl}</span>
         {model.maxTokens && <span>· 最大 {model.maxTokens} tokens</span>}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
         <button onClick={() => handleTest(model.id)} disabled={testingId === model.id}
           className="flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-xs">
           {testingId === model.id ? <Loader2 size={10} className="animate-spin" /> : <Activity size={10} />}
@@ -10924,7 +10870,7 @@ function ModelLibrary({ role }) {
         style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }}
         {...attributes}
         {...listeners}
-        className="cursor-grab active:cursor-grabbing"
+        className="cursor-grab active:cursor-grabbing group"
       >
         {renderModelCard(model)}
       </div>
@@ -10947,18 +10893,6 @@ function ModelLibrary({ role }) {
       ...(ungrouped.length > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungrouped.length }] : []),
     ]
   }, [groups, models])
-
-  // 当前要渲染的模型
-  const currentModels = useMemo(() => {
-    if (activeGroupId === '__all__') return models
-    if (activeGroupId === '__ungrouped__') {
-      const groupedIds = new Set(groups.flatMap(g => g.order))
-      return models.filter(m => !groupedIds.has(m.id))
-    }
-    const group = groups.find(g => g.id === activeGroupId)
-    if (!group) return models
-    return models.filter(m => group.order.includes(m.id))
-  }, [activeGroupId, models, groups])
 
   return (
     <div className="h-full flex flex-col bg-slate-50">
@@ -11022,8 +10956,7 @@ function ModelLibrary({ role }) {
       {(
         <GroupNavBar
           groups={navGroups}
-          activeGroupId={activeGroupId}
-          onGroupClick={setActiveGroupId}
+          onGroupClick={setScrollGroupId}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -11039,7 +10972,7 @@ function ModelLibrary({ role }) {
         />
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter}
+      <DndContext sensors={sensors} collisionDetection={rectIntersection}
         onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
         <div className="flex-1 overflow-auto p-6 scroll-container">
           {loading ? (
@@ -11052,7 +10985,7 @@ function ModelLibrary({ role }) {
             </div>
           ) : sectionGroups.length === 0 ? (
             <div className="space-y-3">
-              {currentModels.map(m => <SortableModelCard key={m.id} model={m} />)}
+              {models.map(m => <SortableModelCard key={m.id} model={m} />)}
             </div>
           ) : (
             <div className="space-y-0">
@@ -11065,7 +10998,6 @@ function ModelLibrary({ role }) {
                   const g = groups.find(g => g.id === group.id)
                   return g ? g.order.includes(m.id) : false
                 })
-                if (groupModels.length === 0 && activeGroupId !== '__all__' && activeGroupId !== group.id) return null
                 return (
                   <DroppableGroupSection
                     key={group.id}
@@ -11074,7 +11006,8 @@ function ModelLibrary({ role }) {
                     groupDs={groupModels}
                     isOver={overGroupId === group.id}
                     isDragging={!!activeId}
-                    onRemove={(modelId) => handleRemoveFromGroup(group.id, modelId)}
+                    overGroupId={overGroupId}
+                    onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
                     renderCard={(m) => <SortableModelCard key={m.id} model={m} />}
                   />
                 )

@@ -1,6 +1,6 @@
 # cloai-code 项目进度总览
 
-> 更新时间：2026-05-13（第八次）
+> 更新时间：2026-05-14（第十三次）
 > 作用：唯一进度来源。每次改动后同步更新，其他文档引用本文件。
 
 ---
@@ -224,6 +224,46 @@
 ---
 
 ## 4. 已完成内容（按日期）
+
+### 2026-05-14（第十三次）分组交互彻底改造 ✅
+
+**需求**：1）所有分组始终显示（空分组常显）；2）移除"全部"按钮；3）点击分组只滚动不过滤。
+
+**改动**：
+- `GroupNavBar`：移除 `activeGroupId` prop、移除 IntersectionObserver、移除"全部"按钮、移除蓝色高亮视觉状态
+- 四个模块（DatasetManager/DatabaseLibrary/SkillLibrary/ModelLibrary）：移除 `currentDatasets/CurrentDbs/CurrentSkills/CurrentModels` 过滤 useMemo；移除 `activeGroupId !== '__all__' && ... && groupItems.length === 0` 跳过条件；`activeGroupId` state 改为 `scrollGroupId`（仅滚动用）
+- 空分组始终渲染 `DroppableGroupSection`，显示"暂无内容"占位
+
+**验证**：8086/8087 均 200 ✅
+
+### 2026-05-14（第十一次）空分组占位显示修复 ✅
+
+**问题**：创建分组后即使没有内容也不显示"暂无内容"占位，分组区块完全消失。
+
+**根因**：四个模块渲染逻辑将 `groupDs.length === 0` 放在 `&&` 链首，无内容时直接 `return null`。
+
+**修复**：`frontend/src/App.jsx` 第 3233、10204、10508、11073 行，将空分组条件判断移至 `&&` 链末尾，使空分组始终渲染占位区块。
+
+**验证**：旧模式全部移除，新模式 4/4 正确，前端服务正常。
+
+### 2026-05-14（第十次）四大模块拖拽分组不持久化修复 ✅
+
+**问题**：拖拽分组后重新打开页面，数据丢失。
+
+**根因**：`ai4kb-brain-server` 容器运行的是 5 月 12 日的旧编译代码，`saveSettingsSchema` 缺少 `models`/`skills`/`databases`/`knowledge` 字段，Zod 校验静默失败，数据未写入 DB。
+
+**修复**：
+- `userSettings.ts`：`saveSettingsSchema` 增加四个独立字段
+- 重新编译部署 `brain-server`（`docker cp dist/. ai4kb-brain-server:/app/dist/`）
+- 重新构建部署 `frontend`（`npm run build && docker cp dist/. ai4kb-frontend:/app/dist/`）
+
+**验证**：curl 全链路测试四模块 PATCH/GET 均成功，DB 确认写入。
+
+### 2026-05-14 前端：四大模块分组功能 Bug 修复 ✅
+- **空分组不显示**：四个模块增加 `&& group.id !== '__ungrouped__'` 条件，空分组始终显示"暂无内容"占位区块
+- **拖拽高亮延迟**：DndContext 从 `closestCenter` 改为 `rectIntersection`，拖入分组矩形区域即高亮
+- **技能库移除无效**：`onRemove` 回调传 skill 对象改为 skill.name，正确触发移除
+- **模型库分组不持久化**：`loadGroups` 增加 `data?.models` 分支，正确读取后端返回数据
 
 ### 2026-05-13 前端：会话管理迁移到子侧边栏
 - **问题**：ChatInterface 左侧有独立对话面板 + `>` 按钮，与智能问答子侧边栏功能重复

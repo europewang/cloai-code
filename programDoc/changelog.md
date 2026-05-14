@@ -1,19 +1,158 @@
 # 变更日志
 
-> 更新时间：2026-05-13（第八次）
+> 更新时间：2026-05-14（第十三次）
 > 作用：每次重要改动后追加，按时间倒序排列。
 
 ---
 
+## 2026-05-14（第十三次）分组交互彻底改造：移除"全部"按钮 + 空分组常显 + 点击滚动定位 ✅
+
+**需求**：
+1. 所有分组始终全部显示（空分组常显，不隐藏）
+2. 移除"全部"按钮（无意义）
+3. 点击分组只做页面滚动定位，不做过滤/隐藏
+
+**改动概述**：
+
+### GroupNavBar 组件（4 处调用点同步更新）
+- **移除** `activeGroupId` prop（无视觉高亮状态）
+- **移除** IntersectionObserver（不再需要页面滚动自动高亮联动）
+- **移除** "全部"按钮
+- 导航栏仅保留：自定义分组按钮 + 新建分组按钮
+- 视觉风格统一：白底灰字边框，无蓝色高亮
+
+### 四个模块统一改造（DatasetManager / DatabaseLibrary / SkillLibrary / ModelLibrary）
+| 模块 | 改动 |
+|---|---|
+| DatasetManager | `activeGroupId` → `scrollGroupId`（仅滚动用）；移除 `currentDatasets` useMemo；移除 `__all__` skip 条件 |
+| DatabaseLibrary | 同上，移除 `currentDbs` useMemo 和 skip 条件 |
+| SkillLibrary | 同上，移除 `currentSkills` useMemo 和 skip 条件 |
+| ModelLibrary | 同上，移除 `currentModels` useMemo 和 skip 条件 |
+
+### 渲染逻辑
+- 所有分组（即使为空）始终渲染 `DroppableGroupSection` 区块
+- 空分组显示 "暂无内容" 占位文字（灰色虚线框）
+- 拖拽进入时高亮蓝色，松开提示"拖拽到这里"
+- 点击分组按钮 → 页面平滑滚动到该分组区块（`group-section-{id}` 锚点，偏移 -64px 避开 sticky 导航栏）
+
+**涉及文件**：`frontend/src/App.jsx`
+
+**部署**：`npm run build && docker cp dist/. ai4kb-frontend:/app/dist/ && docker cp dist/. ai4kb-frontend-dev:/app/dist/`
+
+**验证**：8086/8087 均 200，知识库/技能库/数据库/模型库四个模块均已测试通过。
+
+---
+
+## 2026-05-14（第十二次）空分组隐藏条件修复 ✅
+
+**问题描述**：创建空分组后，在"全部"视图下该分组区块不显示（需要点击该分组才显示）。
+
+**根因**：四个模块的渲染条件为：
+```js
+// ❌ 修复前 — `&& groupXxx.length === 0` 条件：当分组内容为空时返回 null
+if (activeGroupId !== '__all__' && activeGroupId !== group.id && group.id !== '__ungrouped__' && groupDs.length === 0) return null
+```
+
+这导致在非"全部"视图时（`activeGroupId !== '__all__'`），空分组仍然被隐藏。更关键的是，即使在"全部"视图，如果 `IntersectionObserver` 触发时将 `activeGroupId` 设为空分组ID，空分组也会被隐藏。
+
+**修复**：将四个模块的条件统一改为：
+```js
+// ✅ 修复后 — 完全移除长度判断，空分组始终可见
+if (activeGroupId !== '__all__' && activeGroupId !== group.id && group.id !== '__ungrouped__') return null
+```
+
+**涉及文件**：`frontend/src/App.jsx`
+- DatasetManager 第 3235 行
+- DatabaseLibrary 第 10214 行
+- SkillLibrary 第 10526 行
+- ModelLibrary 第 11071 行
+
+**验证**：`npm run build && docker cp dist/. ai4kb-frontend-dev:/app/dist/ && docker cp dist/. ai4kb-frontend:/app/dist/`
+- 旧模式 `length === 0 && activeGroupId` 已全部移除 ✅
+- 新 skip 条件 4/4 正确 ✅
+- 前端服务正常（8087/8086 均 200）✅
+
+---
+
+## 2026-05-14（第十一次）空分组占位显示修复 ✅
+
+**问题描述**：创建分组后即使没有内容也不显示"暂无内容"占位，分组区块完全消失。
+
+**根因**：四个模块的渲染逻辑中，空分组条件判断将 `groupDs.length === 0` 放在 `&&` 链首，导致无内容时直接 `return null`。
+
+**修复**：`frontend/src/App.jsx` 四处位置，将条件从：
+```js
+// ❌ 修复前
+if (groupDs.length === 0 && activeGroupId !== '__all__' && ...group.id !== '__ungrouped__') return null
+```
+改为：
+```js
+// ✅ 修复后
+if (activeGroupId !== '__all__' && activeGroupId !== group.id && group.id !== '__ungrouped__' && groupDs.length === 0) return null
+```
+
+**涉及文件**：`frontend/src/App.jsx` 第 3233、10204、10508、11073 行
+
+**验证**：`npm run build` → `docker cp dist/. ai4kb-frontend:/app/dist/ && docker cp dist/. ai4kb-frontend-dev:/app/dist/`
+- 旧模式已全部移除 ✅
+- 新模式 4/4 全部正确 ✅
+- 前端服务正常（8087、8086 均 200）✅
+
+---
+
+**问题描述**：知识库、技能库、数据库、模型库拖拽分组后重新打开页面，数据丢失，分组不持久化。
+
+**根因排查过程**：
+1. 前端代码审查：`loadGroups`/`saveGroups` 实现正确，API 调用路径正确
+2. 数据库直接测试：PATCH 返回 `{"success": true}` 但 `models` 字段未写入 DB
+3. 容器代码检查：**容器内 `userSettings.js` 是旧版本（May 12），不包含 `models`/`skills`/`databases`/`knowledge` 字段**
+4. **根因确认**：`ai4kb-brain-server` 容器自 5 月 12 日后未重新部署新编译代码，`saveSettingsSchema` 缺少必要字段导致 Zod 校验静默失败
+
+**修复措施**：
+- `brain-server/src/routes/userSettings.ts`：`saveSettingsSchema` 增加独立 `knowledge`/`skills`/`databases`/`models` 四个 flat array 字段
+- 编译：`npx tsc -p tsconfig.json`
+- 部署：`docker cp dist/. ai4kb-brain-server:/app/dist/ && docker restart ai4kb-brain-server`
+- 前端：`npm run build && docker cp dist/. ai4kb-frontend:/app/dist/ && docker cp dist/. ai4kb-frontend-dev:/app/dist/`
+
+**验证结果**（curl 全链路测试）：
+- `PATCH /v1/user/settings { models: [...] }` → 返回 200，DB 确认写入 ✅
+- `PATCH /v1/user/settings { skills: [...] }` → 返回 200，DB 确认写入 ✅
+- `PATCH /v1/user/settings { databases: [...] }` → 返回 200，DB 确认写入 ✅
+- `PATCH /v1/user/settings { knowledge: [...] }` → 返回 200，DB 确认写入 ✅
+- 重新 GET 可正确读取已保存数据 ✅
+- 通过前端代理（`localhost:8087`）全链路测试通过 ✅
+
+**教训**：容器内代码版本可能与主机源码不同步，排查持久化问题时必须同时检查容器内实际运行的代码。
+
+---
+
+## 2026-05-14（第九次）四大模块分组功能 Bug 修复 ✅
+
+**概述**：修复空分组不显示、拖拽高亮延迟、技能库移除无效、模型库分组不持久化四个问题。
+
+### 问题1：空分组不显示
+- **根因**：四个模块在渲染分组区块时，当 `groupDs.length === 0` 且 `activeGroupId` 既不是"全部"也不是当前分组时，直接 `return null`，导致空分组完全不渲染
+- **修复**：增加 `&& group.id !== '__ungrouped__'` 条件，使空的自定义分组始终显示带"暂无内容"占位的区块，方便用户感知可拖入内容
+- **涉及**：DatasetManager、DatabaseLibrary、SkillLibrary、ModelLibrary
+
+### 问题2：拖拽分组高亮触发延迟
+- **根因**：DndContext 使用 `collisionDetection={closestCenter}`，只在鼠标指针精确落在 droppable 区域中心时才触发碰撞检测，导致需要拖到分组正中央才高亮
+- **修复**：改用 `rectIntersection` 碰撞检测（@dnd-kit/core 内置），当拖拽卡片进入分组区块的矩形范围时即触发高亮，体验更流畅
+- **涉及**：DatasetManager、DatabaseLibrary、SkillLibrary、ModelLibrary
+
+### 问题3：技能库移除按钮无效
+- **根因**：`DroppableGroupSection` 调用 `onRemove(ds.id)`，而技能库传的是 `onRemove={(skillName) => handleRemoveFromGroup(group.id, skillName)}`，但实际 `renderCard` 回调传回的是技能对象 `s` 而非字符串，导致 `filter(n => n !== s)` 比对失败（字符串 vs 对象），移除不生效
+- **修复**：改为 `onRemove={(skill) => handleRemoveFromGroup(group.id, skill.name)}`，正确传递 skill 对象的 name 字段
+- **涉及**：SkillLibrary
+
+### 问题4：模型库分组不持久化
+- **根因**：`ModelLibrary` 的 `loadGroups` 读取后端响应时，只检查 `data?.groups`，但 `PATCH /v1/user/settings` 保存时后端以 `models` 字段存储，`type=models` GET 返回的是 `data.models` 而非 `data.groups`，导致下次加载分组数据永远为空
+- **修复**：`loadGroups` 增加 `Array.isArray(data?.models)` 分支，正确读取 `data.models`
+- **涉及**：ModelLibrary
+
+---
+
 ## 2026-05-13（第八次）固定标签体系（固定标签 + 自定义分组双模式） ✅
-
-**需求**：全局7个固定标签（智管/智测/智查/智防/智规/智建/智治），每模块独立切换固定模式/自定义分组，卡片必须分配标签（不选默认智管），仅管理员可改标签。
-
-### 数据库变更
-- Prisma schema 新增 `enum FixedLabel`（7个值）
-- 四张表新增非空字段 `fixedLabel FixedLabel`：`knowledge_bases`、`skills`、`llm_models`、`database_connections`
-- 各表默认标签：知识库=智管，技能库=智测，数据库=智查，模型库=智建
-- `users.settings` 新增 `viewMode` 结构：`{ knowledge?, skills?, databases?, models? }`
 
 ### 后端 API 变更
 - `server.ts`：GET `/v1/admin/datasets` 响应加入 `fixedLabel`，POST 接受 `fixedLabel` 参数
