@@ -1,6 +1,6 @@
 # cloai-code 项目进度总览
 
-> 更新时间：2026-05-13（第二次）
+> 更新时间：2026-05-13（第八次）
 > 作用：唯一进度来源。每次改动后同步更新，其他文档引用本文件。
 
 ---
@@ -141,7 +141,8 @@
 4. 接口：`GET/PATCH /api/v1/user/settings` — 用户设置（对话顺序、库分组）
 5. 前端：智能问答子侧边栏（拖拽排序 + 置顶 + 重命名 + 删除 + 新建对话）
 6. 前端会话统计图表：BarChart、LineChart、PieChart
-7. 四大模块（知识库/技能库/模型库/数据库）统一「吸顶分组导航栏 + 分组区块」交互
+7. 四大模块（知识库/技能库/模型库/数据库）统一「吸顶分组导航栏 + 分组区块 + 拖拽卡片到分组」交互
+8. 四大模块分组数据统一通过 `/v1/user/settings` API 持久化
 
 ### 2.11 Brain 推理（src brain service）
 
@@ -233,6 +234,43 @@
 - **Bug 修复**：normalize 函数提升到模块级别解决作用域问题；handleSwitchConversation 顺序调整解决初始化错误
 
 ### 2026-05-13 前端：四大模块统一「吸顶分组导航 + 分组区块」交互
+
+---
+
+### 2026-05-13（第四次）前端：分组持久化调试 + 拖拽视觉修复 + 导航增强 ✅
+
+**概述**：修复技能库/数据库/模型库分组不持久化、拖拽时分组标题悬浮、点击分组标签无法跳转。
+
+**持久化修复**：
+- `loadGroups`/`saveGroups` 增加错误级别日志（console.error），API 失败时有可调试的日志输出
+- `loadGroups` 增加数组类型兜底判断，防止空对象 {} 导致渲染错误
+- 四个模块（知识库/技能库/数据库/模型库）全部补全日志
+
+**拖拽视觉修复**：
+- `DroppableGroupSection` 标题栏移除 `sticky top-[56px]`，改为 `flex flex-col` 布局
+- 拖拽时分组标题随卡片一起滚动，不再悬浮在卡片上方
+- 空状态文案改为通用文本（适配所有四个模块）
+
+**导航增强**：
+- "全部"按钮 `scrollTo({ top: -62 })` 绕过 sticky 导航栏
+- 分组点击偏移改为 `top - 64px`（56px 导航栏 + 8px 空隙）
+- `SkillLibrary`/`ModelLibrary`/`DatabaseLibrary` 均添加 `onRenameGroup` 支持
+
+---
+
+### 2026-05-13（第三次）前端：四大模块分组导航交互修复与增强 ✅
+
+**问题修复**：
+- `DatabaseLibrary`：修复 `currentItems` → `currentDbs` 引用错误；添加 `activeGroupId` state、`navGroups`/`sectionGroups`/`currentDbs` 状态与 useMemo 定义；添加 `GroupNavBar` 渲染
+- `ModelLibrary`：添加缺失的 `activeGroupId` state 及 `navGroups`/`sectionGroups`/`currentModels` useMemo；修复「添加模型」按钮 bug（`setGroupMode` 改为 `setShowForm`）
+- `GroupNavBar`：`navGroups.length > 0 &&` 条件移除，导航栏始终显示「全部」按钮
+
+**交互增强**：
+- IntersectionObserver 触发后自动 `scrollIntoView` 将高亮卡片滚动到可视区域
+- hover 分组卡片时显示编辑/删除图标按钮（`group-hover/card` CSS 组合类）
+- scroll offset `Math.max(0, offset)` 防止滚动到负值
+
+**测试**：前端 `npm run dev` → http://localhost:3000/ ✅
 - **问题**：四大模块分组视图交互不一致（知识库有独立 groupMode，数据库/技能库/模型库各有一套逻辑），体验割裂
 - **修复**：引入 `GroupNavBar`（吸顶横向卡片导航）+ `GroupSection`（分组区块标题栏+分割线）+ `CardGrid` 三个通用组件
 - **统一交互**：吸顶导航栏、横向滚动、点击分组滚动到区块、页面滚动时自动高亮当前分组（IntersectionObserver）

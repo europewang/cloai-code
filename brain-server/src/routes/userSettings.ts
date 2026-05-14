@@ -11,11 +11,36 @@ const saveSettingsSchema = z.object({
     pinned: z.array(z.string()),
     expanded: z.boolean().optional(),
   }).optional(),
-  groups: z.record(z.array(z.object({
+  // flat array 格式（知识库分组使用）
+  knowledge: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    items: z.array(z.string()),
+  })).optional(),
+  // 技能库分组（独立存储）
+  skills: z.array(z.object({
     id: z.string(),
     label: z.string(),
     order: z.array(z.string()),
-  }))).optional(),
+  })).optional(),
+  // 数据库分组（独立存储）
+  databases: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    order: z.array(z.string()),
+  })).optional(),
+  // 模型库分组（独立存储）
+  models: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    order: z.array(z.string()),
+  })).optional(),
+  // 旧格式兼容（已废弃，PATCH 不再接收 groups 字段）
+  groups: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    order: z.array(z.string()),
+  })).optional(),
 })
 
 export function registerUserSettingsRoutes(app: FastifyInstance, deps: {
@@ -43,6 +68,28 @@ export function registerUserSettingsRoutes(app: FastifyInstance, deps: {
     const { type } = parsed.data
 
     if (type) {
+      // type=knowledge -> 读 settings.knowledge
+      if (type === 'knowledge') {
+        return Array.isArray(settings.knowledge) ? settings.knowledge : []
+      }
+      // type=skills -> 读 settings.skills（兼容旧 settings.groups）
+      if (type === 'skills') {
+        if (Array.isArray(settings.skills)) return settings.skills
+        if (Array.isArray(settings.groups)) return settings.groups  // 旧数据迁移
+        return []
+      }
+      // type=databases -> 读 settings.databases
+      if (type === 'databases') {
+        if (Array.isArray(settings.databases)) return settings.databases
+        if (Array.isArray(settings.groups)) return settings.groups  // 旧数据迁移
+        return []
+      }
+      // type=models -> 读 settings.models
+      if (type === 'models') {
+        if (Array.isArray(settings.models)) return settings.models
+        if (Array.isArray(settings.groups)) return settings.groups  // 旧数据迁移
+        return []
+      }
       return settings[type] ?? {}
     }
 

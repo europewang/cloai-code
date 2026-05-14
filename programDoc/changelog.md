@@ -1,7 +1,221 @@
 # 变更日志
 
-> 更新时间：2026-05-13
+> 更新时间：2026-05-13（第八次）
 > 作用：每次重要改动后追加，按时间倒序排列。
+
+---
+
+## 2026-05-13（第八次）固定标签体系（固定标签 + 自定义分组双模式） ✅
+
+**需求**：全局7个固定标签（智管/智测/智查/智防/智规/智建/智治），每模块独立切换固定模式/自定义分组，卡片必须分配标签（不选默认智管），仅管理员可改标签。
+
+### 数据库变更
+- Prisma schema 新增 `enum FixedLabel`（7个值）
+- 四张表新增非空字段 `fixedLabel FixedLabel`：`knowledge_bases`、`skills`、`llm_models`、`database_connections`
+- 各表默认标签：知识库=智管，技能库=智测，数据库=智查，模型库=智建
+- `users.settings` 新增 `viewMode` 结构：`{ knowledge?, skills?, databases?, models? }`
+
+### 后端 API 变更
+- `server.ts`：GET `/v1/admin/datasets` 响应加入 `fixedLabel`，POST 接受 `fixedLabel` 参数
+- `server.ts`：PUT `/v1/admin/datasets/:id` 支持 `fixedLabel` 更新，PATCH `/v1/admin/datasets/:id` 独立更新标签
+- `resources.ts`：`/api/v1/kb` GET/POST/PUT，`/api/v1/models` GET/POST/PUT，`/api/v1/db-connections` GET/POST 均加入 `fixedLabel`
+- `resources.ts`：新增 `PATCH /api/v1/kb/:id/fixed-label`、`PATCH /api/v1/db-connections/:id/fixed-label`、`PATCH /api/v1/models/:id/fixed-label`
+- `skills.ts`：GET `/v1/skills`、GET `/v1/skills/:name`、PUT `/v1/skills/:name` 响应加入 `fixedLabel`，新增 `PATCH /v1/skills/:name/fixed-label`
+- `userSettings.ts`：GET 按 type 返回 `{ groups, viewMode }`，PATCH 接受 `viewMode` 结构
+
+### 前端变更
+- 全局定义 `FIXED_LABELS` 常量、`FixedLabelBadge` 组件、`FixedLabelPicker` 组件、`FixedGroupNavBar` 组件
+- 四个模块（知识库/技能库/数据库/模型库）各自：
+  - Header 添加 ⚙️ 设置按钮，点击弹出视图模式切换菜单
+  - Header 创建表单加入标签下拉选择
+  - 支持 `viewMode` 状态，保存到后端
+  - 固定模式：显示7个固定标签分组，`FixedGroupNavBar` 横向标签导航，点击标签滚动到对应区块
+  - 自定义模式：保留原有的 `GroupNavBar` + 用户自定义分组
+  - 卡片左上角显示 `FixedLabelBadge`
+  - admin/super_admin 可点击标签进入编辑弹窗修改标签
+
+---
+
+## 2026-05-13（第七次）前端：技能库/数据库/模型库分组存储隔离 + 数据库迁移 ✅
+
+**问题**：技能库/数据库/模型库三个模块共用同一个 `groups` 字段，PATCH 时互相覆盖，导致分组混乱。
+
+**后端改动**：
+- `brain-server/src/routes/userSettings.ts`：GET/PATCH 支持独立的 `skills`/`databases`/`models` 三个 key（flat array 格式）
+- GET 按 `type` 参数读对应字段：`type=skills → settings.skills`，`type=databases → settings.databases`，`type=models → settings.models`
+- PATCH 接受 `skills`/`databases`/`models` flat array 格式
+- 保留 `groups` 旧格式兼容（仅 GET 读取 fallback），PATCH 不再接收 `groups` 字段
+
+**前端改动**（三个模块各自独立）：
+- `DatabaseLibrary`：`loadGroups` → `GET /v1/user/settings?type=databases`，`saveGroups` → `PATCH { databases: newGroups }`
+- `SkillLibrary`：`loadGroups` → `GET /v1/user/settings?type=skills`，`saveGroups` → `PATCH { skills: newGroups }`
+- `ModelLibrary`：`loadGroups` → `GET /v1/user/settings?type=models`，`saveGroups` → `PATCH { models: newGroups }`
+
+**数据库迁移**：
+- 新建 `brain-server/src/scripts/migrateGroupsToModules.ts` 一次性脚本
+- 将 `settings.groups`（旧测试数据）迁移到 `settings.skills`
+- 清除 `settings.groups` 字段，避免 fallback 干扰
+- 已执行：14 个用户扫描，2 个有旧数据，迁移完成
+
+**部署**：`docker cp dist/. ai4kb-brain-server:/app/dist/` + `docker restart ai4kb-brain-server` ✅
+
+---
+
+## 2026-05-13（第六次）前端：分组持久化调试日志 + 拖拽视觉修复 + 导航增强 ✅
+
+**概述**：修复技能库/数据库/模型库分组不持久化、拖拽时分组标题悬浮不动、点击分组标签无法跳转三个问题。
+
+### 问题1：技能库/数据库/模型库分组不持久化
+
+**根因**：`saveGroups` / `loadGroups` 对错误静默吞掉（`catch {}`），API 调用失败时无任何日志。
+
+**修复**（四个模块统一实施）：
+- `loadGroups`：增加 `!res.ok` 分支 `console.error`，`catch` 打印错误对象
+- `saveGroups`：对非 2xx 响应 `console.error` 打印状态码和响应体，`catch` 打印错误对象
+- `loadGroups` 增加数组类型兜底判断，打印 `unexpected data shape` 警告
+
+### 问题2：拖拽卡片时分组标题悬浮不动
+
+**根因**：`DroppableGroupSection` 标题栏使用 `sticky top-[56px]`，在页面滚动时标题吸附在顶部不动，卡片在其下方滚动，看起来标题"悬浮"在移动的卡片上方。
+
+**修复**：
+- 移除标题栏的 `sticky top-[56px] z-10`
+- 外层容器加 `flex flex-col` 使标题自然位于内容上方
+- 外层移除 `sticky`，改为内容区各自 `pt-6` 避开顶部导航栏
+- 空状态文案改为通用 "暂无内容" / "拖拽到这里"（适配所有四个模块）
+
+### 问题3：点击分组标签无法跳转 / "全部"按钮滚动位置错误
+
+**根因**：
+1. `GroupNavBar` "全部"按钮 `scrollTo({ top: 0 })` 导致页面停在 sticky 导航栏下方，内容仍被遮盖
+2. `SkillLibrary`/`ModelLibrary`/`DatabaseLibrary` 调用 `GroupNavBar` 时未传 `onRenameGroup`，导致无法重命名分组
+
+**修复**：
+- "全部"按钮改为 `scrollTo({ top: -62 })`（向上偏移绕过 sticky 导航栏高度）
+- 分组点击改为 `offset = top - 64`（导航栏高度 56px + 8px 空隙）
+- `SkillLibrary`/`ModelLibrary`/`DatabaseLibrary` 的 `GroupNavBar` 均添加 `onRenameGroup` 处理函数
+
+**部署**：`npm run build` + `docker cp dist/. ai4kb-frontend:/app/dist/` + `docker restart ai4kb-frontend` ✅
+
+---
+
+## 2026-05-13（第五次）前端：知识库卡片遮挡修复 + 技能库/数据库/模型库拖拽分组功能补全 ✅
+
+**概述**：修复知识库卡片被遮盖问题，并将拖拽分组功能扩展到技能库、数据库、模型库。
+
+### 问题1：知识库卡片被遮盖
+
+**根因**：`renderDatasetCard` 用 `<div key={ds.id} style={{ opacity: 0, transform: 'translateY(16px)' }} className="animate-fade-in">` 包裹，导致卡片初始 opacity=0，在动画未生效或 DOM 更新时不可见。
+
+**修复**：
+- 移除 `renderDatasetCard` 中多余的 `<div>` 包裹和 `animate-fade-in` 样式，直接返回 `DatasetCard` 组件
+- 统一 `DroppableGroupSection` section header 的 sticky 定位为 `top-[56px]`，与其他三个模块一致
+
+### 问题2：技能库/数据库/模型库缺少拖拽功能
+
+**根因**：之前仅在知识库（`DatasetManager`）实现了拖拽分组，其余三个模块仅有分组导航栏和分组分配弹窗，没有 DragContext 和可拖拽卡片。
+
+**修复**（三个模块统一实施）：
+
+**DatabaseLibrary**：
+- 添加拖拽状态：`activeId`、`overGroupId`、`sensors`
+- 添加 `handleDragStart`、`handleDragOver`、`handleDragEnd` 处理函数
+- 添加 `SortableCard` 组件（用 `useSortable` 包装数据库卡片）
+- 用 `DndContext + DragOverlay` 包裹内容区
+- 将分组区块渲染替换为 `DroppableGroupSection` 组件
+- 修复 `loadGroups` 未被调用的问题（原来 `useEffect(() => { if (groups.length > 0) {} })` 无效，改为 `useEffect(() => { loadGroups() }, [loadGroups])`）
+
+**SkillLibrary**：
+- 添加拖拽状态、handler、传感器
+- 添加 `SortableSkillCard` 组件（用 `useSortable` 包装技能卡片）
+- 用 `DndContext + DragOverlay` 包裹内容区
+- 将分组区块渲染替换为 `DroppableGroupSection` 组件
+
+**ModelLibrary**：
+- 添加拖拽状态、handler、传感器
+- 添加 `SortableModelCard` 组件（用 `useSortable` 包装模型卡片）
+- 用 `DndContext + DragOverlay` 包裹内容区
+- 将分组区块渲染替换为 `DroppableGroupSection` 组件
+
+**共同行为**：
+- 拖拽卡片时卡片变为半透明（opacity: 0.35）
+- 鼠标经过分组区域时背景高亮 + "松开鼠标加入该分组" 提示
+- 松开后自动归属到新分组，导航栏计数实时更新
+- 分组数据通过 `/v1/user/settings` API 持久化到后端
+
+**部署**：`docker cp dist/. ai4kb-frontend:/app/dist/ && docker restart ai4kb-frontend` ✅
+
+---
+
+## 2026-05-13（第四次）前端：知识库分组持久化 + 拖拽功能 + 空对象 Bug 修复 ✅
+
+**概述**：修复知识库分组无法持久化、拖拽功能缺失、知识库列表不显示三个问题。
+
+### 问题1：创建分组后切换页面再回来消失
+**根因**：`DatasetManager` 用 `localStorage` 存分组，换浏览器/清缓存/换设备就没了
+**修复**：`DatasetManager` 分组改为调用后端 API `/v1/user/settings?type=knowledge` 加载和保存，与技能库/数据库/模型库保持一致。
+
+### 问题2：知识库页面看不到已有知识库（superadmin 登录只显示"未分组(12)"但无内容）
+**根因**：`loadGroups` 接收后端返回的 `{}`（空对象，superadmin 尚未创建分组时返回）后，`Array.isArray({})` 返回 `false`，`datasetGroups` 被设为 `{}` 对象。随后 `datasetGroups.flatMap()` 在对象上调用导致 React 渲染崩溃，整个组件树空白。
+**修复**：`loadGroups` 增加兜底判断，确保 `datasetGroups` 永远是数组。同时修复 `brain-server` 的 GET 逻辑，让 `type=knowledge` 时正确返回 `settings.knowledge`（数组）而非空对象。
+
+### 问题3：各个区块不可拖拽到各个分组
+**修复**：
+- 引入 `@dnd-kit` 的 `useDroppable`
+- 创建 `DroppableGroupSection` 组件（分组区块 + 放置目标区域，hover 高亮 + 拖拽提示）
+- `SortableDatasetCard` 包装知识库卡片（`useSortable`）
+- `handleDragStart/Over/End` 实现拖拽结束时自动将卡片加入目标分组，松开后高亮消失
+
+### 后端 Schema 修复
+`brain-server/src/routes/userSettings.ts`：
+- `knowledge` 字段从 `z.record(...)` 改为 `z.array(...)`（匹配前端发送的 flat array 格式）
+- GET 时 `type=skills/databases/models` 额外兼容读取 `settings.groups`（flat array 格式）
+
+**改动文件**：
+- `frontend/src/App.jsx`（`loadGroups`/`saveGroups` 重构 + 拖拽功能 + `DroppableGroupSection`）
+- `brain-server/src/routes/userSettings.ts`（Schema + GET 逻辑）
+- `programDoc/changelog.md`（本文档）
+- `programDoc/progress.md`（进度更新）
+
+**验证**：http://localhost:8087/ → superadmin 登录 → 知识库页面应正常显示12个知识库，可以创建分组、拖拽卡片加入分组、切换页面分组持续保留。
+
+**问题修复**：
+- `DatabaseLibrary`：`currentItems` 未定义（引用错误），修复为 `currentDbs`；添加 `activeGroupId` state、`navGroups`、`GroupNavBar` 渲染
+- `ModelLibrary`：添加缺失的 `activeGroupId` state、`navGroups`/`sectionGroups`/`currentModels` 定义；修复「添加模型」按钮只切换 `groupMode` 不展开表单的 bug
+- `GroupNavBar`：`navGroups.length > 0 &&` 条件导致无分组时导航栏不显示 → 改为始终渲染，保证「全部」按钮始终可见
+
+**交互增强**：
+- `GroupNavBar` 滚动联动：IntersectionObserver 触发后自动将高亮卡片滚动到可视区域（`scrollIntoView`）
+- `GroupNavBar` 卡片内操作：hover 分组卡片时显示编辑/删除按钮（`group/card` CSS 组合类实现），点击编辑弹出 `window.prompt` 重命名
+- `GroupNavBar` scroll offset 优化：`Math.max(0, offset)` 防止滚动到负值区域
+
+---
+
+## 2026-05-13（第四次）前端：四大模块修复 — 白屏/遮挡/空分组问题 ✅
+
+**根因分析**：
+1. **ModelLibrary 白屏**：重构后引入 `renderModelCard` 引用但函数不存在（原来内联 `models.map`，重构时遗漏）
+2. **知识库只显示"未分组(12)"**：① `navGroups` 缺少"未分组"虚拟分组 ② 分组区块内部 `sectionGroups.map` 使用 `currentDatasets.filter` 二次过滤导致空结果
+3. **技能库被导航栏遮盖**：`GroupSection` 的 `sticky top-[52px]` 在 flex 布局中相对于滚动容器定位，被导航栏覆盖
+4. **数据库/模型库白屏**：`sectionGroups.map` 使用 `currentModels.filter` / `currentDbs.filter` 二次过滤（根因同上）
+
+**修复内容**：
+- **ModelLibrary**：从 git 历史恢复 `renderModelCard` 函数（包含模型卡片的完整 UI）
+- **DatasetManager/SkillLibrary/DatabaseLibrary/ModelLibrary**：所有 `sectionGroups.map` 内部过滤改用原始数据（`datasets`/`skills`/`items`/`models`）而非过滤后的 `current*` 状态，避免双重过滤
+- **GroupSection sticky offset**：改为 `sticky top-0` + 每个区块标题内加 `style={{ marginTop: '56px' }}` 避开导航栏高度
+- **navGroups**：补充"未分组"虚拟分组，确保未分组内容也能出现在导航栏
+
+**测试**：前端 `npm run dev` → http://localhost:3000/ ✅
+
+**问题修复**：
+- `DatabaseLibrary`：`currentItems` 未定义（引用错误），修复为 `currentDbs`；添加 `activeGroupId` state、`navGroups`、`GroupNavBar` 渲染
+- `ModelLibrary`：添加缺失的 `activeGroupId` state、`navGroups`/`sectionGroups`/`currentModels` 定义；修复「添加模型」按钮只切换 `groupMode` 不展开表单的 bug
+- `GroupNavBar`：`navGroups.length > 0 &&` 条件导致无分组时导航栏不显示 → 改为始终渲染，保证「全部」按钮始终可见
+
+**交互增强**：
+- `GroupNavBar` 滚动联动：IntersectionObserver 触发后自动将高亮卡片滚动到可视区域（`scrollIntoView`）
+- `GroupNavBar` 卡片内操作：hover 分组卡片时显示编辑/删除按钮（`group/card` CSS 组合类实现），点击编辑弹出 `window.prompt` 重命名
+- `GroupNavBar` scroll offset 优化：`Math.max(0, offset)` 防止滚动到负值区域
 
 ---
 
