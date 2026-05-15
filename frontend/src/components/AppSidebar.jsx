@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { DndContext, closestCenter, PointerSensor, MouseSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { LogOut, GripVertical, ChevronDown, ChevronUp, Plus, Loader2, Pin, PinOff, Edit, Trash2, MessageSquare, Database, Server, Zap, Cpu, Users, User, Lock, Settings, Brain } from 'lucide-react'
+import { LogOut, ChevronDown, ChevronUp, Plus, Loader2, Pin, PinOff, Edit, Trash2, MessageSquare, Database, Server, Zap, Cpu, Users, User, Lock, Settings, Brain } from 'lucide-react'
 import clsx from 'clsx'
 import { twMerge } from 'tailwind-merge'
 
@@ -17,6 +17,7 @@ function isAdminLikeRole(role) {
 
 export const COMMON_MENU_ITEMS = [
   { id: 'chat', label: '智能问答', icon: MessageSquare },
+  { id: 'memory', label: '记忆管理', icon: Brain },
   { id: 'knowledge', label: '知识库', icon: Database },
   { id: 'databases', label: '数据库', icon: Server },
   { id: 'skill_lib', label: '技能库', icon: Zap },
@@ -28,7 +29,6 @@ export const ADMIN_MENU_ITEMS = [
   { id: 'user_management', label: '用户管理', icon: User },
   { id: 'permissions', label: '权限分配', icon: Lock },
   { id: 'skills', label: '技能管理', icon: Settings },
-  { id: 'memory', label: '记忆管理', icon: Brain },
 ]
 
 export function getBaseMenuItemsByRole(role) {
@@ -54,6 +54,7 @@ function ChatSidebarItem({
   isActive,
   onMainClick,
   conversations,
+  activeConversationId,
   convOrder,
   loading,
   renamingId,
@@ -70,10 +71,10 @@ function ChatSidebarItem({
   onRenameTitleChange,
   onDragEnd,
   onLoadMore,
-  dragHandleProps,
+  dragListeners,
+  dragAttributes,
 }) {
   const [expanded, setExpanded] = useState(false)
-  const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
     if (isActive) {
@@ -106,15 +107,15 @@ function ChatSidebarItem({
   }, [conversations, convOrder])
 
   const pinnedConvs = orderedConversations.pinned
-  const displayedOrder = showAll
-    ? orderedConversations.regular
-    : orderedConversations.regular.slice(0, 10)
+  const displayedOrder = orderedConversations.regular
 
   return (
     <div className="space-y-0.5">
       <div className="flex items-center">
         <button
           onClick={onMainClick}
+          {...dragListeners}
+          {...dragAttributes}
           className={cn(
             'flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left',
             isActive && !expanded
@@ -122,14 +123,6 @@ function ChatSidebarItem({
               : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
           )}
         >
-          <span
-            {...dragHandleProps}
-            onClick={(e) => e.stopPropagation()}
-            className="text-gray-300 hover:text-gray-400 cursor-grab active:cursor-grabbing shrink-0"
-            title="拖拽排序"
-          >
-            <GripVertical size={14} />
-          </span>
           <item.icon size={18} className={isActive ? 'text-gray-700' : 'text-gray-400'} />
           <span className="flex-1">{item.label}</span>
         </button>
@@ -146,9 +139,9 @@ function ChatSidebarItem({
         <div className="ml-3 pl-3 border-l border-gray-200 space-y-1 py-1">
           <button
             onClick={onNew}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-blue-600 hover:bg-blue-50 transition-colors"
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-slate-600 hover:bg-slate-100 hover:text-blue-600 transition-colors"
           >
-            <Plus size={12} />
+            <Plus size={14} />
             <span>新建对话</span>
           </button>
 
@@ -172,6 +165,7 @@ function ChatSidebarItem({
                           key={conv.id}
                           conv={conv}
                           isPinned
+                          isActive={activeConversationId === conv.id}
                           isRenaming={renamingId === conv.id}
                           renamingTitle={renamingId === conv.id ? renamingTitle : ''}
                           onSelect={() => onSelect(conv.id)}
@@ -194,6 +188,7 @@ function ChatSidebarItem({
                         key={conv.id}
                         conv={conv}
                         isPinned={convOrder.pinned.includes(conv.id)}
+                        isActive={activeConversationId === conv.id}
                         isRenaming={renamingId === conv.id}
                         renamingTitle={renamingId === conv.id ? renamingTitle : ''}
                         onSelect={() => onSelect(conv.id)}
@@ -209,15 +204,6 @@ function ChatSidebarItem({
                 )}
               </DndContext>
 
-              {conversations.length > 10 && (
-                <button
-                  onClick={() => setShowAll(v => !v)}
-                  className="w-full text-[10px] text-slate-400 hover:text-blue-500 flex items-center justify-center gap-1 py-1 transition-colors"
-                >
-                  <ChevronDown size={10} className={cn('transition-transform', showAll && 'rotate-180')} />
-                  {showAll ? '收起' : `展开全部（${conversations.length}条）`}
-                </button>
-              )}
             </>
           )}
 
@@ -247,13 +233,13 @@ function SortableChatSidebarItem(props) {
   }
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes}>
-      <ChatSidebarItem {...props} dragHandleProps={listeners} />
+    <div ref={setNodeRef} style={style}>
+      <ChatSidebarItem {...props} dragListeners={listeners} dragAttributes={attributes} />
     </div>
   )
 }
 
-function MiniConvItem({ conv, isPinned, isRenaming, renamingTitle, onSelect, onTogglePin, onStartRename, onSubmitRename, onCancelRename, onDelete, onRenameTitleChange }) {
+function MiniConvItem({ conv, isPinned, isActive, isRenaming, renamingTitle, onSelect, onTogglePin, onStartRename, onSubmitRename, onCancelRename, onDelete, onRenameTitleChange }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: conv.id })
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -262,10 +248,16 @@ function MiniConvItem({ conv, isPinned, isRenaming, renamingTitle, onSelect, onT
   }
 
   return (
-    <div ref={setNodeRef} style={style} className="group flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-slate-100 transition-colors">
-      <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 shrink-0">
-        <GripVertical size={11} />
-      </div>
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={cn(
+        'group relative flex items-center gap-1 px-2 py-1.5 rounded-md transition-colors cursor-grab active:cursor-grabbing',
+        isActive ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200' : 'hover:bg-slate-100'
+      )}
+    >
 
       {isRenaming ? (
         <input
@@ -284,43 +276,47 @@ function MiniConvItem({ conv, isPinned, isRenaming, renamingTitle, onSelect, onT
           onBlur={onSubmitRename}
           autoFocus
           maxLength={120}
-          className="flex-1 min-w-0 px-1 py-0.5 text-[11px] rounded border border-blue-400 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+          className="flex-1 min-w-0 px-1 py-0.5 text-sm rounded border border-blue-400 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
         />
       ) : (
         <>
           <button
             onClick={onSelect}
-            className="flex-1 min-w-0 text-left text-[11px] text-slate-600 truncate hover:text-blue-600"
+            className={cn(
+              'flex-1 min-w-0 pr-1 text-left text-sm truncate transition-all group-hover:pr-16',
+              isActive ? 'font-medium text-blue-700' : 'text-slate-600 hover:text-blue-600'
+            )}
           >
             {conv.title || '未命名会话'}
           </button>
+          <div className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-white/90 px-1 opacity-0 shadow-sm ring-1 ring-slate-200/80 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            <button
+              onClick={onTogglePin}
+              className={cn(
+                'p-0.5 rounded shrink-0 transition-colors',
+                isPinned ? 'text-blue-400 hover:bg-blue-100' : 'text-slate-300 hover:text-blue-400 hover:bg-blue-50'
+              )}
+              title={isPinned ? '取消置顶' : '置顶'}
+            >
+              {isPinned ? <PinOff size={10} /> : <Pin size={10} />}
+            </button>
 
-          <button
-            onClick={onTogglePin}
-            className={cn(
-              'p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 transition-opacity',
-              isPinned ? 'text-blue-400 hover:bg-blue-100' : 'text-slate-300 hover:text-blue-400 hover:bg-blue-50'
-            )}
-            title={isPinned ? '取消置顶' : '置顶'}
-          >
-            {isPinned ? <PinOff size={10} /> : <Pin size={10} />}
-          </button>
+            <button
+              onClick={onStartRename}
+              className="p-0.5 rounded shrink-0 text-slate-300 hover:text-slate-600 hover:bg-slate-200 transition-colors"
+              title="重命名"
+            >
+              <Edit size={10} />
+            </button>
 
-          <button
-            onClick={onStartRename}
-            className="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-slate-600 hover:bg-slate-200 transition-opacity"
-            title="重命名"
-          >
-            <Edit size={10} />
-          </button>
-
-          <button
-            onClick={onDelete}
-            className="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 hover:bg-rose-50 transition-opacity"
-            title="删除"
-          >
-            <Trash2 size={10} />
-          </button>
+            <button
+              onClick={onDelete}
+              className="p-0.5 rounded shrink-0 text-slate-300 hover:text-rose-500 hover:bg-rose-50 transition-colors"
+              title="删除"
+            >
+              <Trash2 size={10} />
+            </button>
+          </div>
         </>
       )}
     </div>
@@ -346,7 +342,6 @@ function SidebarItem({ item, isActive, onClick }) {
           isActive ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
         )}
       >
-        <GripVertical size={14} className="text-gray-300 group-hover:text-gray-400 cursor-grab active:cursor-grabbing shrink-0" />
         <item.icon size={18} className={isActive ? 'text-gray-700' : 'text-gray-400'} />
         <span>{item.label}</span>
       </button>
@@ -364,6 +359,7 @@ export function Sidebar({
   menuOrder,
   onMenuOrderChange,
   chatConversations,
+  chatActiveConvId,
   chatConvOrder,
   chatLoading,
   chatRenamingId,
@@ -420,6 +416,7 @@ export function Sidebar({
                     if (activeTab !== 'chat') onNavigateTab('chat')
                   }}
                   conversations={chatConversations || []}
+                  activeConversationId={chatActiveConvId}
                   convOrder={chatConvOrder || { pinned: [], order: [] }}
                   loading={chatLoading || false}
                   renamingId={chatRenamingId}

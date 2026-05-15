@@ -29,6 +29,7 @@ import type { QueryDeps } from 'src/query/deps.js'
 import { productionDeps } from 'src/query/deps.js'
 import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
 import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
+import { createAssistantMessage, createUserMessage } from 'src/utils/messages.js'
 import { setBrainToken, clearBrainToken, getBrainToken } from './client.js'
 import type { StructuredSkillResult } from 'src/utils/forkedAgent.js'
 import { getMongoDBSkills } from './mongoDBSkills.js'
@@ -53,6 +54,17 @@ type BrainRequest = {
   query: string
   conversationId?: string
   skillInputDir?: string
+}
+
+type ConversationContextPayload = {
+  conversationId: string
+  messages: Array<{
+    id?: string
+    role: string
+    content: string
+    createdAt?: string
+  }>
+  fetchedCount?: number
 }
 
 const PORT = Number(process.env.BRAIN_SERVICE_PORT || '3100')
@@ -123,6 +135,71 @@ async function fetchMemoryFromBrainServer(profileId: string): Promise<MemoryCont
     console.error('fetchMemoryFromBrainServer: error', e)
     return null
   }
+}
+
+async function fetchConversationContextFromBrainServer(
+  conversationId: string,
+  limit = 20,
+): Promise<ConversationContextPayload | null> {
+  try {
+    const token = requestContext.authToken || process.env.BRAIN_SERVER_ACCESS_TOKEN || ''
+    const resp = await fetch(
+      `${BRAIN_SERVER_BASE_URL}/api/v1/conversations/${encodeURIComponent(conversationId)}/context?limit=${limit}`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+    if (!resp.ok) {
+      console.error('fetchConversationContextFromBrainServer: failed with status', resp.status)
+      return null
+    }
+    return await resp.json() as ConversationContextPayload
+  } catch (e) {
+    console.error('fetchConversationContextFromBrainServer: error', e)
+    return null
+  }
+}
+
+function normalizeComparableText(value: string) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
+}
+
+function buildConversationHistoryMessages(
+  contextPayload: ConversationContextPayload | null,
+  currentQueryText: string,
+): Message[] {
+  const history = Array.isArray(contextPayload?.messages) ? [...contextPayload.messages] : []
+  if (history.length === 0) {
+    return []
+  }
+
+  const last = history[history.length - 1]
+  if (
+    last?.role === 'user'
+    && normalizeComparableText(last.content) === normalizeComparableText(currentQueryText)
+  ) {
+    history.pop()
+  }
+
+  return history.flatMap((item) => {
+    const content = String(item?.content || '').trim()
+    if (!content) return []
+
+    if (item.role === 'assistant') {
+      return [createAssistantMessage({ content })]
+    }
+    if (item.role === 'user') {
+      return [createUserMessage({
+        content,
+        timestamp: item.createdAt ? new Date(item.createdAt).toISOString() : new Date().toISOString(),
+      })]
+    }
+    return []
+  })
 }
 
 /**
@@ -285,7 +362,10 @@ function injectStructuredResultIntoAnswer(
 /**
  * Process a query through the src brain
  */
-async function processQueryThroughBrain(queryText: string): Promise<{ answer: string; loopCount: number; structuredResult?: StructuredSkillResult }> {
+async function processQueryThroughBrain(
+  queryText: string,
+  conversationId?: string,
+): Promise<{ answer: string; loopCount: number; structuredResult?: StructuredSkillResult }> {
   // Enable config reading (required before any config access)
   ensureBootstrapMacro()
   enableConfigs()
@@ -306,6 +386,10 @@ async function processQueryThroughBrain(queryText: string): Promise<{ answer: st
 
   const memoryContent = memory?.content || null
   const memoryProfileId = memory?.profileId || preCtx.profileId
+  const conversationContext = conversationId
+    ? await fetchConversationContextFromBrainServer(conversationId, 24)
+    : null
+  const historyMessages = buildConversationHistoryMessages(conversationContext, queryText)
 
   // Step 3: Build system prompt with memory and skill context
   const systemPrompt = buildSystemPromptWithMemory(
@@ -344,7 +428,7 @@ async function processQueryThroughBrain(queryText: string): Promise<{ answer: st
   const appState = createBrainServiceAppState(preCtx.allowedSkills)
 
   // Step 7: Run query through src brain
-  let messages: Message[] = []
+  let messages: Message[] = historyMessages
   let loopCount = 0
   let finalAnswer = ''
 
@@ -551,7 +635,12 @@ function handleBrainQueryStream(req: any, res: any): void {
 
       try {
         // Process through src brain with streaming
-        const streamResult = await processQueryThroughBrainStream(request.query, authHeader, request.skillInputDir)
+        const streamResult = await processQueryThroughBrainStream(
+          request.query,
+          authHeader,
+          request.skillInputDir,
+          request.conversationId,
+        )
 
         for await (const event of streamResult) {
           if (event.type === 'chunk') {
@@ -635,7 +724,12 @@ type StreamEventType =
 /**
  * Stream query through the src brain - yields events in real-time
  */
-async function* processQueryThroughBrainStream(queryText: string, _authHeader: string, skillInputDir?: string): AsyncGenerator<StreamEventType, void, unknown> {
+async function* processQueryThroughBrainStream(
+  queryText: string,
+  _authHeader: string,
+  skillInputDir?: string,
+  conversationId?: string,
+): AsyncGenerator<StreamEventType, void, unknown> {
   // Enable config reading (required before any config access)
   ensureBootstrapMacro()
   enableConfigs()
@@ -657,6 +751,10 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
 
   const memoryContent = memory?.content || null
   const memoryProfileId = memory?.profileId || preCtx.profileId
+  const conversationContext = conversationId
+    ? await fetchConversationContextFromBrainServer(conversationId, 24)
+    : null
+  const historyMessages = buildConversationHistoryMessages(conversationContext, queryText)
 
   // Always set a unique skillInputDir — even when no files are uploaded,
   // we must isolate this request from any stale files in the shared volume.
@@ -703,7 +801,7 @@ async function* processQueryThroughBrainStream(queryText: string, _authHeader: s
   const appState = createBrainServiceAppState(preCtx.allowedSkills)
 
   // Step 7: Run query through src brain with streaming
-  let messages: Message[] = []
+  let messages: Message[] = historyMessages
   let loopCount = 0
   let hasStructuredResult = false
 

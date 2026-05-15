@@ -34,8 +34,42 @@ const listMessagesSchema = z.object({
   beforeId: z.coerce.number().int().positive().optional(),
 })
 
+const conversationContextSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+})
+
 export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps) {
   const { prisma } = require('../lib/prisma.js')
+
+  async function loadConversationWithAccessCheck(
+    operator: Operator,
+    conversationId: string,
+  ) {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: BigInt(conversationId) },
+    })
+
+    if (!conversation) {
+      return {
+        ok: false as const,
+        status: 404,
+        error: 'Conversation not found',
+      }
+    }
+
+    if (conversation.userId !== operator.id && operator.role === 'user') {
+      return {
+        ok: false as const,
+        status: 403,
+        error: 'Access denied',
+      }
+    }
+
+    return {
+      ok: true as const,
+      conversation,
+    }
+  }
 
   // ==================== Conversation CRUD ====================
 
@@ -342,6 +376,47 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
       page: Math.max(1, page),
       pageSize: Math.min(100, Math.max(1, pageSize)),
       hasMore: beforeId ? messages.length === Math.min(100, Math.max(1, pageSize)) : skip + messages.length < total,
+    }
+  })
+
+  // Get recent conversation context for the current operator.
+  app.get('/api/v1/conversations/:id/context', { preHandler: deps.authGuard }, async (req, reply) => {
+    const operator = await deps.getActiveOperator(req, reply)
+    if (!operator) return
+
+    const { id } = req.params as { id: string }
+    const parsed = conversationContextSchema.safeParse(req.query ?? {})
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues })
+    }
+
+    const resolved = await loadConversationWithAccessCheck(operator, id)
+    if (!resolved.ok) {
+      return reply.code(resolved.status).send({ error: resolved.error })
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { conversationId: BigInt(id) },
+      orderBy: { createdAt: 'desc' },
+      take: parsed.data.limit,
+      select: {
+        id: true,
+        role: true,
+        content: true,
+        createdAt: true,
+      },
+    })
+
+    const orderedMessages = messages.reverse()
+    return {
+      conversationId: String(resolved.conversation.id),
+      messages: orderedMessages.map((m: any) => ({
+        id: String(m.id),
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+      })),
+      fetchedCount: orderedMessages.length,
     }
   })
 
@@ -746,14 +821,25 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
   })
 
   // Get conversation context for brain service (last N messages)
-  app.get('/api/v1/internal/conversations/:id/context', async (req, reply) => {
+  app.get('/api/v1/internal/conversations/:id/context', { preHandler: deps.authGuard }, async (req, reply) => {
+    const operator = await deps.getActiveOperator(req, reply)
+    if (!operator) return
+
     const { id } = req.params as { id: string }
-    const { limit = 20 } = req.query as { limit?: number }
+    const parsed = conversationContextSchema.safeParse(req.query ?? {})
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid query', details: parsed.error.issues })
+    }
+
+    const resolved = await loadConversationWithAccessCheck(operator, id)
+    if (!resolved.ok) {
+      return reply.code(resolved.status).send({ error: resolved.error })
+    }
 
     const messages = await prisma.message.findMany({
       where: { conversationId: BigInt(id) },
       orderBy: { createdAt: 'desc' },
-      take: Math.min(100, Math.max(1, Number(limit) || 20)),
+      take: parsed.data.limit,
       select: {
         role: true,
         content: true,
@@ -761,14 +847,13 @@ export function registerConversationRoutes(app: FastifyInstance, deps: AuthDeps)
       },
     })
 
-    // Return in chronological order (oldest first)
     return {
       messages: messages.reverse().map((m: any) => ({
         role: m.role,
         content: m.content,
         createdAt: m.createdAt,
       })),
-      totalInConversation: messages.length,
+      fetchedCount: messages.length,
     }
   })
 }

@@ -47,7 +47,14 @@ function normalizeConversationId(item) {
 }
 
 // 共享分组导航，供数据库/技能/模型等仍驻留在 App.jsx 的页面复用。
-function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
+function GroupNavBar({
+  groups,
+  onGroupClick,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  isManageMode = false,
+}) {
   const handleGroupClick = (groupId) => {
     onGroupClick?.(groupId)
     const section = document.getElementById(`group-section-${groupId}`)
@@ -63,9 +70,9 @@ function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDel
               onClick={() => handleGroupClick(group.id)}
               className="rounded-full px-3 py-1 text-sm text-slate-700 transition-colors hover:bg-white hover:text-blue-600"
             >
-              {group.name} ({group.count})
+              {group.name}{isManageMode ? ` (${group.count})` : ''}
             </button>
-            {group.id !== '__ungrouped__' && (
+            {isManageMode && group.id !== '__ungrouped__' && (
               <>
                 <button
                   onClick={() => {
@@ -95,20 +102,32 @@ function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDel
           </div>
         ))}
 
-        <button
-          onClick={onCreateGroup}
-          className="ml-auto flex items-center gap-1 rounded-full border border-blue-200 px-3 py-1.5 text-sm text-blue-600 transition-colors hover:bg-blue-50"
-        >
-          <Plus size={14} />
-          新建分组
-        </button>
+        {isManageMode && (
+          <button
+            onClick={onCreateGroup}
+            className="ml-auto flex items-center gap-1 rounded-full border border-blue-200 px-3 py-1.5 text-sm text-blue-600 transition-colors hover:bg-blue-50"
+          >
+            <Plus size={14} />
+            新建分组
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
 // 共享拖拽落组区块，保持剩余页面在迁移完成前仍能共用同一套分组外壳。
-function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging, overGroupId, onRemove, renderCard }) {
+function DroppableGroupSection({
+  groupId,
+  groupName,
+  groupDs,
+  isOver,
+  isDragging,
+  overGroupId,
+  onRemove,
+  renderCard,
+  canManage = false,
+}) {
   const { setNodeRef } = useDroppable({
     id: `droppable-group_${groupId}`,
   })
@@ -119,7 +138,7 @@ function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging
       ref={setNodeRef}
       className={cn(
         'scroll-mt-24 rounded-2xl border p-4 transition-colors',
-        (isOver || overGroupId === groupId) && isDragging ? 'border-blue-300 bg-blue-50/60' : 'border-transparent bg-transparent'
+        canManage && (isOver || overGroupId === groupId) && isDragging ? 'border-blue-300 bg-blue-50/60' : 'border-transparent bg-transparent'
       )}
     >
       <div className="mb-4 flex items-center gap-2">
@@ -130,13 +149,13 @@ function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging
 
       {groupDs.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 bg-white/80 px-4 py-8 text-center text-sm text-slate-400">
-          拖拽内容到这里完成分组
+          {canManage ? '拖拽内容到这里完成分组' : '当前分组暂无内容'}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {groupDs.map((item) => (
             <div key={item.id || item.name} className="group relative">
-              {groupId !== '__ungrouped__' && (
+              {canManage && groupId !== '__ungrouped__' && (
                 <button
                   onClick={() => onRemove?.(item)}
                   className="absolute left-3 top-3 z-10 rounded-full bg-white/90 p-1 text-slate-400 shadow opacity-0 transition-opacity transition-colors hover:text-red-500 group-hover:opacity-100 focus:opacity-100"
@@ -6146,12 +6165,18 @@ function DatabaseLibrary() {
 
   const handleDragStart = ({ active }) => setActiveId(String(active.id))
   const handleDragOver = ({ over }) => {
+    if (!groupMode) return
     if (over) {
       const match = String(over.id).match(/^droppable-group_(.+)$/)
       setOverGroupId(match ? match[1] : null)
     } else setOverGroupId(null)
   }
   const handleDragEnd = ({ active, over }) => {
+    if (!groupMode) {
+      setActiveId(null)
+      setOverGroupId(null)
+      return
+    }
     if (over && active) {
       const draggedId = String(active.id)
       const match = String(over.id).match(/^droppable-group_(.+)$/)
@@ -6296,14 +6321,14 @@ function DatabaseLibrary() {
   )
 
   const SortableCard = ({ item }) => {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: String(item.id) })
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: String(item.id), disabled: !groupMode })
     return (
       <div
         ref={setNodeRef}
         style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }}
-        {...attributes}
-        {...listeners}
-        className="cursor-grab active:cursor-grabbing"
+        {...(groupMode ? attributes : {})}
+        {...(groupMode ? listeners : {})}
+        className={groupMode ? 'cursor-grab active:cursor-grabbing' : ''}
       >
         {renderDbCard(item)}
       </div>
@@ -6317,10 +6342,28 @@ function DatabaseLibrary() {
           <h2 className="text-lg font-semibold text-slate-900">数据库</h2>
           <p className="text-xs text-slate-400 mt-0.5">连接管理内网数据库</p>
         </div>
-        <button onClick={() => setShowForm(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
-          <Plus size={14} /> 添加连接
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowForm(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+            <Plus size={14} /> 添加连接
+          </button>
+          <button
+            onClick={() => {
+              setGroupMode((value) => !value)
+              setActiveId(null)
+              setOverGroupId(null)
+            }}
+            className={cn(
+              'rounded-lg border p-2 transition-colors',
+              groupMode
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-700'
+            )}
+            title={groupMode ? '保存分组设置' : '分组设置'}
+          >
+            {groupMode ? <CheckSquare size={16} /> : <Settings size={16} />}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -6383,6 +6426,7 @@ function DatabaseLibrary() {
         <GroupNavBar
           groups={navGroups}
           onGroupClick={setScrollGroupId}
+          isManageMode={groupMode}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -6430,8 +6474,9 @@ function DatabaseLibrary() {
                     groupName={group.name}
                     groupDs={groupItems}
                     isOver={overGroupId === group.id}
-                    isDragging={!!activeId}
+                    isDragging={groupMode && !!activeId}
                     overGroupId={overGroupId}
+                    canManage={groupMode}
                     onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
                     renderCard={(item) => <SortableCard key={item.id} item={item} />}
                   />
@@ -6574,12 +6619,18 @@ function SkillLibrary({ role }) {
 
   const handleDragStart = ({ active }) => setActiveId(String(active.id))
   const handleDragOver = ({ over }) => {
+    if (!groupMode) return
     if (over) {
       const match = String(over.id).match(/^droppable-group_(.+)$/)
       setOverGroupId(match ? match[1] : null)
     } else setOverGroupId(null)
   }
   const handleDragEnd = ({ active, over }) => {
+    if (!groupMode) {
+      setActiveId(null)
+      setOverGroupId(null)
+      return
+    }
     if (over && active) {
       const draggedId = String(active.id)
       const match = String(over.id).match(/^droppable-group_(.+)$/)
@@ -6632,14 +6683,14 @@ function SkillLibrary({ role }) {
 
   // 可拖拽技能卡片
   const SortableSkillCard = ({ skill }) => {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: skill.name })
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: skill.name, disabled: !groupMode })
     return (
       <div
         ref={setNodeRef}
         style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }}
-        {...attributes}
-        {...listeners}
-        className="cursor-grab active:cursor-grabbing"
+        {...(groupMode ? attributes : {})}
+        {...(groupMode ? listeners : {})}
+        className={groupMode ? 'cursor-grab active:cursor-grabbing' : ''}
       >
         <button
           onClick={() => handleSkillClick(skill)}
@@ -6663,6 +6714,22 @@ function SkillLibrary({ role }) {
           <h2 className="text-lg font-semibold text-slate-900">技能库</h2>
           <p className="text-xs text-slate-400 mt-0.5">点击技能直接发起对话</p>
         </div>
+        <button
+          onClick={() => {
+            setGroupMode((value) => !value)
+            setActiveId(null)
+            setOverGroupId(null)
+          }}
+          className={cn(
+            'rounded-lg border p-2 transition-colors',
+            groupMode
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+              : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-700'
+          )}
+          title={groupMode ? '保存分组设置' : '分组设置'}
+        >
+          {groupMode ? <CheckSquare size={16} /> : <Settings size={16} />}
+        </button>
       </div>
 
       {/* 吸顶分组导航栏 */}
@@ -6670,6 +6737,7 @@ function SkillLibrary({ role }) {
         <GroupNavBar
           groups={navGroups}
           onGroupClick={setScrollGroupId}
+          isManageMode={groupMode}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -6717,8 +6785,9 @@ function SkillLibrary({ role }) {
                     groupName={group.name}
                     groupDs={groupSkills}
                     isOver={overGroupId === group.id}
-                    isDragging={!!activeId}
+                    isDragging={groupMode && !!activeId}
                     overGroupId={overGroupId}
+                    canManage={groupMode}
                     onRemove={(item) => handleRemoveFromGroup(group.id, item.name)}
                     renderCard={(s) => <SortableSkillCard key={s.name} skill={s} />}
                   />
@@ -6832,12 +6901,18 @@ function ModelLibrary({ role }) {
 
   const handleDragStart = ({ active }) => setActiveId(String(active.id))
   const handleDragOver = ({ over }) => {
+    if (!groupMode) return
     if (over) {
       const match = String(over.id).match(/^droppable-group_(.+)$/)
       setOverGroupId(match ? match[1] : null)
     } else setOverGroupId(null)
   }
   const handleDragEnd = ({ active, over }) => {
+    if (!groupMode) {
+      setActiveId(null)
+      setOverGroupId(null)
+      return
+    }
     if (over && active) {
       const draggedId = String(active.id)
       const match = String(over.id).match(/^droppable-group_(.+)$/)
@@ -7012,14 +7087,14 @@ function ModelLibrary({ role }) {
 
   // 可拖拽模型卡片
   const SortableModelCard = ({ model }) => {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: String(model.id) })
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: String(model.id), disabled: !groupMode })
     return (
       <div
         ref={setNodeRef}
         style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }}
-        {...attributes}
-        {...listeners}
-        className="cursor-grab active:cursor-grabbing group"
+        {...(groupMode ? attributes : {})}
+        {...(groupMode ? listeners : {})}
+        className={cn(groupMode && 'cursor-grab active:cursor-grabbing', 'group')}
       >
         {renderModelCard(model)}
       </div>
@@ -7050,10 +7125,28 @@ function ModelLibrary({ role }) {
           <h2 className="text-lg font-semibold text-slate-900">模型库</h2>
           <p className="text-xs text-slate-400 mt-0.5">配置 Ollama / OpenAI 等模型</p>
         </div>
-        <button onClick={() => { setShowForm(v => !v); setGroupMode(v => !v) }}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
-          <Plus size={14} /> 添加模型
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowForm(v => !v)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+            <Plus size={14} /> 添加模型
+          </button>
+          <button
+            onClick={() => {
+              setGroupMode((value) => !value)
+              setActiveId(null)
+              setOverGroupId(null)
+            }}
+            className={cn(
+              'rounded-lg border p-2 transition-colors',
+              groupMode
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-700'
+            )}
+            title={groupMode ? '保存分组设置' : '分组设置'}
+          >
+            {groupMode ? <CheckSquare size={16} /> : <Settings size={16} />}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -7106,6 +7199,7 @@ function ModelLibrary({ role }) {
         <GroupNavBar
           groups={navGroups}
           onGroupClick={setScrollGroupId}
+          isManageMode={groupMode}
           onCreateGroup={() => {
             const name = window.prompt('输入分组名称：')
             if (name && name.trim()) {
@@ -7154,8 +7248,9 @@ function ModelLibrary({ role }) {
                     groupName={group.name}
                     groupDs={groupModels}
                     isOver={overGroupId === group.id}
-                    isDragging={!!activeId}
+                    isDragging={groupMode && !!activeId}
                     overGroupId={overGroupId}
+                    canManage={groupMode}
                     onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
                     renderCard={(m) => <SortableModelCard key={m.id} model={m} />}
                   />
@@ -7564,7 +7659,7 @@ function App() {
           <Route path={getPathForTab('user_management')} element={isAdminLikeRole(role) ? <UserManagement currentRole={role} currentUserId={userId} /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
           <Route path={getPathForTab('permissions')} element={isAdminLikeRole(role) ? <PermissionManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
           <Route path={getPathForTab('skills')} element={isAdminLikeRole(role) ? <SkillManager role={role} /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
-          <Route path={getPathForTab('memory')} element={isAdminLikeRole(role) ? <MemoryManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('memory')} element={role ? <MemoryManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
           <Route path={getPathForTab('route_samples')} element={isSuperAdminRole(role) ? <RouteSampleManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
           <Route path="*" element={<Navigate replace to={getPathForTab(defaultHomeTab)} />} />
         </Routes>

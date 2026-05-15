@@ -1,7 +1,122 @@
 # 变更日志
 
-> 更新时间：2026-05-15（第十七次）
+> 更新时间：2026-05-15（第二十次）
 > 作用：每次重要改动后追加，按时间倒序排列。
+
+---
+
+## 2026-05-15（第二十次）修复聊天历史列表截断并调整顶部设置/知识库新建交互 ✅
+
+**问题**：
+1. 智能问答历史会话只能显示少量条目，其余条目既不显示也缺少明确入口
+2. 单条会话标题会被隐藏操作按钮预留宽度挤压，导致过早截断
+3. 四类资源页的分组“设置”按钮位置过低，且带文字干扰浏览
+4. 知识库页顶部“新知识库名称/共享/新建”行内表单过重
+
+**修复**：
+- `frontend/src/components/AppSidebar.jsx`
+  - 移除聊天历史列表前端二次 `slice(0, 10)` 截断
+  - 已加载的会话全部显示，继续通过后端分页 `加载更多` 补后续历史
+  - 将单条会话的置顶/重命名/删除改为右侧绝对定位浮层，默认不占标题宽度
+- `frontend/src/App.jsx`
+  - 将数据库/技能库/模型库的分组设置入口移到顶部栏最右侧
+  - 设置入口改为纯图标按钮：
+    - 普通态 `Settings`
+    - 设置态 `CheckSquare`
+- `frontend/src/pages/knowledge/KnowledgePage.jsx`
+  - 知识库页分组设置入口同样上移到顶部栏右侧并改为图标按钮
+  - 新增 `CreateDatasetModal`
+  - 将顶部行内“名称 + 共享 + 新建”改为蓝色 `新建` 按钮打开弹层
+
+**验证**：
+- `AppSidebar.jsx`、`App.jsx`、`KnowledgePage.jsx` 诊断无错误 ✅
+- `cd frontend && npm run build` 通过 ✅
+
+**专项文档**：
+- `programDoc/specs/bugfix-chat-list-topbar-create-modal-20260515.md`
+
+---
+
+## 2026-05-15（第十九次）统一侧边栏会话显示与四类分组栏设置态 ✅
+
+**问题**：
+1. 智能问答当前会话没有明显高亮，不易识别当前停留在哪个对话
+2. “新建对话”长期蓝色，视觉上和普通会话不统一
+3. 对话列表字号过小
+4. 侧边栏所有标签左侧六点拖拽手柄占位明显
+5. 知识库、数据库、技能库、模型库分组栏平时就暴露重命名/删除/拖拽能力，日常浏览噪声较大
+
+**修复**：
+- `frontend/src/components/AppSidebar.jsx`
+  - 当前会话增加高亮样式
+  - “新建对话”默认改为中性色，仅 hover 时变蓝
+  - 会话标题字号提升到 `text-sm`
+  - 去掉主侧边栏与会话列表左侧六点拖拽图标
+  - 改为整项即可拖拽排序
+- `frontend/src/App.jsx`
+  - 重构数据库/技能库/模型库共享分组栏为“普通态 / 设置态”
+  - 普通态只显示已有分组与“设置”按钮
+  - 设置态才允许新建、重命名、删除分组及拖拽卡片
+  - 修正模型库里“添加模型”误切换 `groupMode` 的逻辑
+- `frontend/src/pages/knowledge/KnowledgePage.jsx`
+  - 知识库分组栏同步切换到相同的“设置 / 保存设置”模式
+
+**验证**：
+- `AppSidebar.jsx`、`KnowledgePage.jsx` 诊断无错误
+- `App.jsx` 无新增错误，仅保留历史 Hint
+- `cd frontend && npm run build` 通过 ✅
+- 浏览器验证：
+  - 技能库分组栏默认仅显示已有分组和“设置”
+  - 点击“设置”后出现“新建分组 / 重命名 / 删除 / 保存设置”
+
+**专项文档**：
+- `programDoc/specs/bugfix-sidebar-group-settings-20260515.md`
+
+---
+
+## 2026-05-15（第十八次）补齐会话上下文注入并开放用户级记忆入口 ✅
+
+**问题**：
+1. 用户反馈新建或连续追问的对话没有上下文
+2. 记忆功能看起来没有按用户隔离生效
+3. 前端“记忆管理”对普通用户不可用，形同虚设
+
+**排查结论**：
+- 后端数据库层面已有用户级 `MemoryProfile` 绑定 `userId`
+- `Conversation` / `Message` 也已按 `userId` 与 `conversationId` 持久化
+- 真正问题在于：
+  - `brain-service` 没有把 `conversationId` 对应的历史消息注入模型
+  - 前端把“记忆管理”限制在管理员菜单，普通用户没有可用入口
+
+**修复**：
+- 在 `brain-server/src/routes/conversations.ts` 新增受鉴权保护的：
+  - `GET /api/v1/conversations/:id/context`
+- 同时为原 `/api/v1/internal/conversations/:id/context` 增加鉴权和访问校验
+- 在 `src/services/brainOrchestration/brainService.ts` 中：
+  - 真正使用 `conversationId`
+  - 拉取最近会话历史并注入模型
+  - 对“当前用户消息已入库”的场景做去重，避免重复注入
+- 在前端：
+  - `frontend/src/components/AppSidebar.jsx` 将“记忆管理”移入通用菜单
+  - `frontend/src/App.jsx` 将 `/memory` 开放给所有登录用户
+
+**验证**：
+- `conversations.ts`、`brainService.ts`、`AppSidebar.jsx` 诊断无错误
+- `App.jsx` 无新增错误，仅保留历史 Hint
+- 本地执行：
+  - `cd frontend && npm run build`
+  - `cd brain-server && npm run build`
+  均通过 ✅
+- `curl` 验证普通用户 `zhangsan`：
+  - `GET /api/v1/memory/profiles` 返回 `profile-49`
+  - `GET /api/v1/memory/current` 成功返回当前用户自己的记忆内容
+- 按项目 Docker 方式重建并重启 `brain-server` 与 `brain` 后，在线验证：
+  - `GET /api/v1/conversations/50/context?limit=10` 可返回同一对话历史
+  - `POST /api/v1/brain/query` 在 `conversationId=50` 上追问“我叫什么名字”返回 `赵六`
+  - 普通用户 `zhangsan` 在 `8087` 前端可看到并打开 `/memory` 页面，页面内 `profile-49`、刷新、保存记忆、文本框均可见
+
+**专项文档**：
+- `programDoc/specs/bugfix-conversation-context-memory-isolation-20260515.md`
 
 ---
 

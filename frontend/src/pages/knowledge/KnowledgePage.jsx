@@ -424,6 +424,77 @@ function ShareModal({ isOpen, dataset, isShared, isSubmitting, onClose, onConfir
   )
 }
 
+function CreateDatasetModal({ isOpen, isSubmitting, initialName, initialShared, onClose, onConfirm }) {
+  const [name, setName] = useState(initialName || '')
+  const [shared, setShared] = useState(Boolean(initialShared))
+
+  useEffect(() => {
+    setName(initialName || '')
+    setShared(Boolean(initialShared))
+  }, [initialName, initialShared, isOpen])
+
+  if (!isOpen) return null
+
+  return (
+    <div className="animate-in fade-in fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 duration-200 backdrop-blur-sm">
+      <div className="animate-in zoom-in-95 w-full max-w-md overflow-hidden rounded-xl bg-white shadow-2xl duration-200">
+        <div className="flex items-center justify-between border-b bg-slate-50 p-4">
+          <h3 className="flex items-center gap-2 font-bold text-slate-800">
+            <Plus size={18} className="text-blue-500" />
+            新建知识库
+          </h3>
+          <button onClick={onClose} className="rounded-full p-1 transition-colors hover:bg-slate-200">
+            <X size={20} className="text-slate-500" />
+          </button>
+        </div>
+        <div className="space-y-4 p-6">
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">知识库名称</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className="w-full rounded-lg border bg-slate-50 px-4 py-2 transition-colors focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="请输入知识库名称"
+              autoFocus
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && name.trim()) {
+                  onConfirm(name, shared)
+                }
+              }}
+            />
+          </div>
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={shared}
+              onChange={(event) => setShared(event.target.checked)}
+              className="mt-0.5 rounded border-gray-300 text-blue-600"
+            />
+            <div>
+              <p className="text-sm font-medium text-slate-700">共享知识库</p>
+              <p className="mt-0.5 text-xs text-slate-400">勾选后，管理员可见，其他管理员可分配给用户使用。</p>
+            </div>
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 border-t bg-slate-50 p-4">
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200">
+            取消
+          </button>
+          <button
+            onClick={() => onConfirm(name, shared)}
+            disabled={!name.trim() || isSubmitting}
+            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isSubmitting && <Loader2 className="animate-spin" size={16} />}
+            新建
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SettingsModal({ isOpen, dataset, isSubmitting, onClose, onConfirm }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -563,16 +634,23 @@ function SettingsModal({ isOpen, dataset, isSubmitting, onClose, onConfirm }) {
   )
 }
 
-function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
+function GroupNavBar({
+  groups,
+  onGroupClick,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  isManageMode = false,
+}) {
   return (
     <div className="sticky top-0 z-10 border-b bg-white/95 px-6 py-3 backdrop-blur">
       <div className="flex flex-wrap items-center gap-2">
         {groups.map((group) => (
           <div key={group.id} className="flex items-center gap-1 rounded-full border bg-slate-50 px-1 py-1">
             <button onClick={() => onGroupClick(group.id)} className="rounded-full px-3 py-1 text-sm text-slate-700 transition-colors hover:bg-white hover:text-blue-600">
-              {group.name} ({group.count})
+              {group.name}{isManageMode ? ` (${group.count})` : ''}
             </button>
-            {group.id !== '__ungrouped__' && (
+            {isManageMode && group.id !== '__ungrouped__' && (
               <>
                 <button
                   onClick={() => {
@@ -602,10 +680,12 @@ function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDel
           </div>
         ))}
 
-        <button onClick={onCreateGroup} className="ml-auto flex items-center gap-1 rounded-full border border-blue-200 px-3 py-1.5 text-sm text-blue-600 transition-colors hover:bg-blue-50">
-          <Plus size={14} />
-          新建分组
-        </button>
+        {isManageMode && (
+          <button onClick={onCreateGroup} className="ml-auto flex items-center gap-1 rounded-full border border-blue-200 px-3 py-1.5 text-sm text-blue-600 transition-colors hover:bg-blue-50">
+            <Plus size={14} />
+            新建分组
+          </button>
+        )}
       </div>
     </div>
   )
@@ -720,9 +800,10 @@ function DatasetCard({ dataset, onClick, onDelete, onRename, onShare, selected, 
 }
 
 function DraggableDatasetCard(props) {
-  const { dataset } = props
+  const { dataset, manageMode = false } = props
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: String(dataset.id),
+    disabled: !manageMode,
   })
 
   return (
@@ -731,23 +812,23 @@ function DraggableDatasetCard(props) {
       style={{
         transform: CSS.Translate.toString(transform),
         opacity: isDragging ? 0.4 : 1,
-        cursor: 'grab',
+        cursor: manageMode ? 'grab' : 'default',
       }}
-      {...listeners}
-      {...attributes}
+      {...(manageMode ? listeners : {})}
+      {...(manageMode ? attributes : {})}
     >
       <DatasetCard {...props} />
     </div>
   )
 }
 
-function DroppableGroupSection({ groupId, groupName, items, renderCard, overGroupId, isDragging, onRemove }) {
+function DroppableGroupSection({ groupId, groupName, items, renderCard, overGroupId, isDragging, onRemove, canManage = false }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `droppable-group_${groupId}`,
   })
 
   return (
-    <section id={`knowledge-group-${groupId}`} ref={setNodeRef} className={cn('scroll-mt-24 rounded-2xl border p-4 transition-colors', (isOver || overGroupId === groupId) && isDragging ? 'border-blue-300 bg-blue-50/60' : 'border-transparent bg-transparent')}>
+    <section id={`knowledge-group-${groupId}`} ref={setNodeRef} className={cn('scroll-mt-24 rounded-2xl border p-4 transition-colors', canManage && (isOver || overGroupId === groupId) && isDragging ? 'border-blue-300 bg-blue-50/60' : 'border-transparent bg-transparent')}>
       <div className="mb-4 flex items-center gap-2">
         <Folder size={16} className="text-blue-500" />
         <h3 className="text-base font-semibold text-slate-800">{groupName}</h3>
@@ -756,13 +837,13 @@ function DroppableGroupSection({ groupId, groupName, items, renderCard, overGrou
 
       {items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-200 bg-white/80 px-4 py-8 text-center text-sm text-slate-400">
-          拖拽知识库到这里完成分组
+          {canManage ? '拖拽知识库到这里完成分组' : '当前分组暂无内容'}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {items.map((item) => (
             <div key={item.id} className="group relative">
-              {groupId !== '__ungrouped__' && (
+              {canManage && groupId !== '__ungrouped__' && (
                 <button
                   onClick={() => onRemove(item)}
                   className="absolute left-3 top-3 z-10 rounded-full bg-white/90 p-1 text-slate-400 shadow opacity-0 transition-opacity transition-colors hover:text-red-500 group-hover:opacity-100 focus:opacity-100"
@@ -1149,6 +1230,7 @@ export default function KnowledgePage({ currentRole }) {
   const [creating, setCreating] = useState(false)
   const [newDatasetName, setNewDatasetName] = useState('')
   const [newDatasetShared, setNewDatasetShared] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
   const [viewingDataset, setViewingDataset] = useState(null)
   const [selectedDatasets, setSelectedDatasets] = useState([])
   const [batchDeleting, setBatchDeleting] = useState(false)
@@ -1167,6 +1249,7 @@ export default function KnowledgePage({ currentRole }) {
   })
   const [scrollGroupId, setScrollGroupId] = useState(null)
   const [datasetGroups, setDatasetGroups] = useState([])
+  const [groupMode, setGroupMode] = useState(false)
   const [showAssignPanel, setShowAssignPanel] = useState(false)
   const [activeId, setActiveId] = useState(null)
   const [overGroupId, setOverGroupId] = useState(null)
@@ -1259,13 +1342,14 @@ export default function KnowledgePage({ currentRole }) {
     ]
   }, [datasetGroups, datasets])
 
-  const handleCreate = async () => {
-    if (!newDatasetName.trim()) return
+  const handleCreate = async (name = newDatasetName, shared = newDatasetShared) => {
+    if (!name.trim()) return
     setCreating(true)
     try {
-      await createDataset(newDatasetName, newDatasetShared)
+      await createDataset(name, shared)
       setNewDatasetName('')
       setNewDatasetShared(false)
+      setShowCreateModal(false)
       loadData()
     } catch (error) {
       alert(`创建失败: ${error.message}`)
@@ -1389,6 +1473,12 @@ export default function KnowledgePage({ currentRole }) {
             <p className="mt-1 text-sm text-gray-500">创建和管理知识库</p>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
+            >
+              <Plus size={14} /> 新建
+            </button>
             {manageableDatasets.length > 0 && (
               <button onClick={() => setSelectedDatasets(selectedDatasets.length === manageableDatasets.length ? [] : manageableDatasets.map((item) => item.id))} className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50 hover:text-gray-900">
                 {selectedDatasets.length === manageableDatasets.length ? '取消全选' : '全选'}
@@ -1405,20 +1495,21 @@ export default function KnowledgePage({ currentRole }) {
                 </button>
               </>
             )}
-            <input
-              type="text"
-              placeholder="新知识库名称"
-              className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400"
-              value={newDatasetName}
-              onChange={(event) => setNewDatasetName(event.target.value)}
-              onKeyDown={(event) => event.key === 'Enter' && handleCreate()}
-            />
-            <label className="flex cursor-pointer select-none items-center gap-1.5 text-sm text-gray-600">
-              <input type="checkbox" checked={newDatasetShared} onChange={(event) => setNewDatasetShared(event.target.checked)} className="rounded" />
-              共享
-            </label>
-            <button onClick={handleCreate} disabled={creating || !newDatasetName.trim()} className="rounded-lg bg-gray-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50">
-              新建
+            <button
+              onClick={() => {
+                setGroupMode((value) => !value)
+                setActiveId(null)
+                setOverGroupId(null)
+              }}
+              className={cn(
+                'rounded-lg border p-2 transition-colors',
+                groupMode
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-700'
+              )}
+              title={groupMode ? '保存分组设置' : '分组设置'}
+            >
+              {groupMode ? <CheckSquare size={16} /> : <Settings size={16} />}
             </button>
           </div>
         </div>
@@ -1427,6 +1518,7 @@ export default function KnowledgePage({ currentRole }) {
       <GroupNavBar
         groups={navGroups}
         onGroupClick={setScrollGroupId}
+        isManageMode={groupMode}
         onCreateGroup={handleCreateGroup}
         onRenameGroup={(groupId, newName) => saveGroups(datasetGroups.map((group) => group.id === groupId ? { ...group, name: newName } : group))}
         onDeleteGroup={(groupId) => saveGroups(datasetGroups.filter((group) => group.id !== groupId))}
@@ -1435,8 +1527,12 @@ export default function KnowledgePage({ currentRole }) {
       <DndContext
         sensors={sensors}
         collisionDetection={rectIntersection}
-        onDragStart={({ active }) => setActiveId(String(active.id))}
+        onDragStart={({ active }) => {
+          if (!groupMode) return
+          setActiveId(String(active.id))
+        }}
         onDragOver={({ over }) => {
+          if (!groupMode) return
           if (!over) {
             setOverGroupId(null)
             return
@@ -1445,6 +1541,11 @@ export default function KnowledgePage({ currentRole }) {
           setOverGroupId(match ? match[1] : null)
         }}
         onDragEnd={({ active, over }) => {
+          if (!groupMode) {
+            setActiveId(null)
+            setOverGroupId(null)
+            return
+          }
           if (over && active) {
             const draggedId = String(active.id)
             const match = String(over.id).match(/^droppable-group_(.+)$/)
@@ -1484,6 +1585,7 @@ export default function KnowledgePage({ currentRole }) {
                 <DraggableDatasetCard
                   key={dataset.id}
                   dataset={dataset}
+                  manageMode={groupMode}
                   currentRole={currentRole}
                   selected={selectedDatasets.includes(dataset.id)}
                   selectionMode={selectedDatasets.length > 0}
@@ -1532,11 +1634,13 @@ export default function KnowledgePage({ currentRole }) {
                     groupName={group.name}
                     items={items}
                     overGroupId={overGroupId}
-                    isDragging={!!activeId}
+                    isDragging={groupMode && !!activeId}
+                    canManage={groupMode}
                     onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
                     renderCard={(dataset) => (
                       <DraggableDatasetCard
                         dataset={dataset}
+                        manageMode={groupMode}
                         currentRole={currentRole}
                         selected={selectedDatasets.includes(dataset.id)}
                         selectionMode={selectedDatasets.length > 0}
@@ -1608,6 +1712,23 @@ export default function KnowledgePage({ currentRole }) {
           </div>
         </div>
       )}
+
+      <CreateDatasetModal
+        isOpen={showCreateModal}
+        isSubmitting={creating}
+        initialName={newDatasetName}
+        initialShared={newDatasetShared}
+        onClose={() => {
+          setShowCreateModal(false)
+          setNewDatasetName('')
+          setNewDatasetShared(false)
+        }}
+        onConfirm={(name, shared) => {
+          setNewDatasetName(name)
+          setNewDatasetShared(shared)
+          handleCreate(name, shared)
+        }}
+      />
 
       <ShareModal
         isOpen={shareModal.isOpen}
