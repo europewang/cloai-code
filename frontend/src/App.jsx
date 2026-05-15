@@ -1,12 +1,13 @@
-import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
-import { MessageSquare, Database, Send, User, Bot, Layers, CheckSquare, Loader2, LogOut, Shield, Users, Lock, BookOpen, FileText, X, ChevronLeft, ChevronDown, ChevronUp, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, Plus, Paperclip, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench, Cpu, Server, Zap, GripVertical, Pin, PinOff, ChevronsUpDown, FolderPlus, Folder } from 'lucide-react'
+import { Fragment, useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { MessageSquare, Database, User, Bot, Layers, CheckSquare, Loader2, Shield, Users, Lock, FileText, X, ChevronLeft, ChevronDown, ZoomIn, ZoomOut, Image as ImageIcon, Upload, Trash2, Clock, Search, RefreshCw, Brain, Edit, Settings, Download, FolderOpen, TrendingUp, ChevronRight, BarChart3, Activity, Wrench, Cpu, Zap, Folder, Plus } from 'lucide-react'
 import {
-  DndContext, DragOverlay, rectIntersection, closestCenter, PointerSensor,
-  useSensor, useSensors, MouseSensor, TouchSensor,
+  DndContext, DragOverlay, rectIntersection, PointerSensor,
+  useSensor, useSensors,
   useDroppable
 } from '@dnd-kit/core'
 import {
-  SortableContext, useSortable, verticalListSortingStrategy,
+  useSortable,
   arrayMove
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -23,12 +24,134 @@ import {
 } from 'recharts'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
+import { getPathForTab, getTabFromPath } from './utils/appRouting'
+import { recordSkillUsage } from './utils/skillMentions'
+import { Sidebar, getBaseMenuItemsByRole, orderMenuItems } from './components/AppSidebar'
+import { SkillChatModal } from './components/SkillChatModal'
+import ChatPage from './pages/chat/ChatPage'
+import KnowledgePage from './pages/knowledge/KnowledgePage'
 
 // Set PDF worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
 function cn(...inputs) {
   return twMerge(clsx(inputs))
+}
+
+function normalizeConversationTitle(item) {
+  return item?.name || item?.title || item?.conversationTitle || item?.conversation_id || '未命名会话'
+}
+
+function normalizeConversationId(item) {
+  return item?.conversationId || item?.conversation_id || item?.id || ''
+}
+
+// 共享分组导航，供数据库/技能/模型等仍驻留在 App.jsx 的页面复用。
+function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
+  const handleGroupClick = (groupId) => {
+    onGroupClick?.(groupId)
+    const section = document.getElementById(`group-section-${groupId}`)
+    section?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  return (
+    <div className="sticky top-0 z-10 border-b bg-white/95 px-6 py-3 backdrop-blur">
+      <div className="flex flex-wrap items-center gap-2">
+        {groups.map((group) => (
+          <div key={group.id} className="flex items-center gap-1 rounded-full border bg-slate-50 px-1 py-1">
+            <button
+              onClick={() => handleGroupClick(group.id)}
+              className="rounded-full px-3 py-1 text-sm text-slate-700 transition-colors hover:bg-white hover:text-blue-600"
+            >
+              {group.name} ({group.count})
+            </button>
+            {group.id !== '__ungrouped__' && (
+              <>
+                <button
+                  onClick={() => {
+                    const nextName = window.prompt('输入新的分组名称：', group.name)
+                    if (nextName && nextName.trim()) {
+                      onRenameGroup?.(group.id, nextName.trim())
+                    }
+                  }}
+                  className="rounded-full p-1.5 text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+                  title="重命名分组"
+                >
+                  <Edit size={12} />
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`确定删除分组「${group.name}」吗？`)) {
+                      onDeleteGroup?.(group.id)
+                    }
+                  }}
+                  className="rounded-full p-1.5 text-slate-400 transition-colors hover:bg-white hover:text-red-600"
+                  title="删除分组"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+
+        <button
+          onClick={onCreateGroup}
+          className="ml-auto flex items-center gap-1 rounded-full border border-blue-200 px-3 py-1.5 text-sm text-blue-600 transition-colors hover:bg-blue-50"
+        >
+          <Plus size={14} />
+          新建分组
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// 共享拖拽落组区块，保持剩余页面在迁移完成前仍能共用同一套分组外壳。
+function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging, overGroupId, onRemove, renderCard }) {
+  const { setNodeRef } = useDroppable({
+    id: `droppable-group_${groupId}`,
+  })
+
+  return (
+    <section
+      id={`group-section-${groupId}`}
+      ref={setNodeRef}
+      className={cn(
+        'scroll-mt-24 rounded-2xl border p-4 transition-colors',
+        (isOver || overGroupId === groupId) && isDragging ? 'border-blue-300 bg-blue-50/60' : 'border-transparent bg-transparent'
+      )}
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <Folder size={16} className="text-blue-500" />
+        <h3 className="text-base font-semibold text-slate-800">{groupName}</h3>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{groupDs.length}</span>
+      </div>
+
+      {groupDs.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-200 bg-white/80 px-4 py-8 text-center text-sm text-slate-400">
+          拖拽内容到这里完成分组
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {groupDs.map((item) => (
+            <div key={item.id || item.name} className="group relative">
+              {groupId !== '__ungrouped__' && (
+                <button
+                  onClick={() => onRemove?.(item)}
+                  className="absolute left-3 top-3 z-10 rounded-full bg-white/90 p-1 text-slate-400 shadow opacity-0 transition-opacity transition-colors hover:text-red-500 group-hover:opacity-100 focus:opacity-100"
+                  title="移出分组"
+                >
+                  <X size={12} />
+                </button>
+              )}
+              {renderCard(item)}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
 }
 
 // --- API Helpers ---
@@ -1498,399 +1621,6 @@ function LoginScreen({ onLogin }) {
   )
 }
 
-// =============================================================================
-// 智能问答子侧边栏 — 展开对话列表，支持拖拽排序、置顶、重命名、删除
-// =============================================================================
-function ChatSidebarItem({
-  item, isActive, onMainClick,
-  conversations, activeConvId, convOrder, loading,
-  renamingId, renamingTitle,
-  hasMore, loadingMore,
-  onSelect, onNew, onTogglePin,
-  onStartRename, onSubmitRename, onCancelRename, onDelete,
-  onRenameTitleChange, onDragEnd, onLoadMore,
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const [showAll, setShowAll] = useState(false)
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } })
-  )
-
-  // 构建排序后的显示列表
-  const pinnedConvs = convOrder.pinned.map(id => conversations.find(c => c.id === id)).filter(Boolean)
-  const displayedOrder = showAll
-    ? convOrder.order.map(id => conversations.find(c => c.id === id)).filter(Boolean)
-    : convOrder.order.slice(0, 10).map(id => conversations.find(c => c.id === id)).filter(Boolean)
-
-  return (
-    <div className="space-y-0.5">
-      {/* 主菜单按钮 */}
-      <div className="flex items-center">
-        <button
-          onClick={onMainClick}
-          className={cn(
-            "flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left",
-            isActive && !expanded
-              ? "bg-gray-100 text-gray-900 font-medium"
-              : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-          )}
-        >
-          <ChevronRight size={14} className={cn("text-gray-400 shrink-0 transition-transform duration-200", expanded && isActive && "rotate-90")} />
-          <item.icon size={18} className={isActive ? "text-gray-700" : "text-gray-400"} />
-          <span className="flex-1">{item.label}</span>
-        </button>
-        {/* 展开/折叠箭头 */}
-        <button
-          onClick={() => setExpanded(v => !v)}
-          className="p-1.5 mr-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-          title={expanded ? "收起对话列表" : "展开对话列表"}
-        >
-          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
-      </div>
-
-      {/* 子侧边栏 */}
-      {expanded && (
-        <div className="ml-3 pl-3 border-l border-gray-200 space-y-1 py-1">
-          {/* 新建对话 */}
-          <button
-            onClick={onNew}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-blue-600 hover:bg-blue-50 transition-colors"
-          >
-            <Plus size={12} />
-            <span>新建对话</span>
-          </button>
-
-          {loading ? (
-            <div className="px-2 py-2 text-[10px] text-slate-400 flex items-center gap-1">
-              <Loader2 size={10} className="animate-spin" />加载中...
-            </div>
-          ) : conversations.length === 0 ? (
-            <div className="px-2 py-2 text-[10px] text-slate-400">暂无对话</div>
-          ) : (
-            <>
-              {/* 拖拽排序区 */}
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-                {/* 已置顶 */}
-                {pinnedConvs.length > 0 && (
-                  <div className="mb-1">
-                    <div className="text-[9px] text-slate-400 font-medium px-1 mb-0.5 flex items-center gap-0.5">
-                      <Pin size={8} />置顶
-                    </div>
-                    <SortableContext items={convOrder.pinned} strategy={verticalListSortingStrategy}>
-                      {pinnedConvs.map(conv => (
-                        <MiniConvItem
-                          key={conv.id}
-                          conv={conv}
-                          isPinned
-                          isRenaming={renamingId === conv.id}
-                          renamingTitle={renamingId === conv.id ? renamingTitle : ''}
-                          onSelect={() => onSelect(conv.id)}
-                          onTogglePin={() => onTogglePin(conv.id)}
-                          onStartRename={() => onStartRename(conv)}
-                          onSubmitRename={() => onSubmitRename(conv.id)}
-                          onCancelRename={onCancelRename}
-                          onDelete={() => onDelete(conv.id)}
-                          onRenameTitleChange={onRenameTitleChange}
-                        />
-                      ))}
-                    </SortableContext>
-                  </div>
-                )}
-
-                {/* 主列表 */}
-                {displayedOrder.length > 0 && (
-                  <SortableContext items={displayedOrder.map(c => c.id)} strategy={verticalListSortingStrategy}>
-                    {displayedOrder.map(conv => (
-                      <MiniConvItem
-                        key={conv.id}
-                        conv={conv}
-                        isPinned={convOrder.pinned.includes(conv.id)}
-                        isRenaming={renamingId === conv.id}
-                        renamingTitle={renamingId === conv.id ? renamingTitle : ''}
-                        onSelect={() => onSelect(conv.id)}
-                        onTogglePin={() => onTogglePin(conv.id)}
-                        onStartRename={() => onStartRename(conv)}
-                        onSubmitRename={() => onSubmitRename(conv.id)}
-                        onCancelRename={onCancelRename}
-                        onDelete={() => onDelete(conv.id)}
-                        onRenameTitleChange={onRenameTitleChange}
-                      />
-                    ))}
-                  </SortableContext>
-                )}
-              </DndContext>
-
-              {/* 展开/收起 */}
-              {conversations.length > 10 && (
-                <button
-                  onClick={() => setShowAll(v => !v)}
-                  className="w-full text-[10px] text-slate-400 hover:text-blue-500 flex items-center justify-center gap-1 py-1 transition-colors"
-                >
-                  <ChevronDown size={10} className={cn("transition-transform", showAll && "rotate-180")} />
-                  {showAll ? '收起' : `展开全部（${conversations.length}条）`}
-                </button>
-              )}
-            </>
-          )}
-
-          {/* 加载更多 */}
-          {hasMore && (
-            <button
-              onClick={onLoadMore}
-              disabled={loadingMore}
-              className="w-full text-[10px] text-slate-400 hover:text-blue-500 py-1 disabled:opacity-50"
-            >
-              {loadingMore ? '加载中...' : '加载更多'}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// 子侧边栏中的迷你对话项（支持选择/置顶/重命名/删除）
-function MiniConvItem({ conv, isPinned, isRenaming, renamingTitle, onSelect, onTogglePin, onStartRename, onSubmitRename, onCancelRename, onDelete, onRenameTitleChange }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: conv.id })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  }
-
-  return (
-    <div ref={setNodeRef} style={style} className="group flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-slate-100 transition-colors">
-      {/* 拖拽手柄 */}
-      <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 shrink-0">
-        <GripVertical size={11} />
-      </div>
-
-      {isRenaming ? (
-        /* 重命名模式 */
-        <input
-          value={renamingTitle}
-          onChange={e => onRenameTitleChange(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter') { e.preventDefault(); onSubmitRename() }
-            if (e.key === 'Escape') { e.preventDefault(); onCancelRename() }
-          }}
-          onBlur={onSubmitRename}
-          autoFocus
-          maxLength={120}
-          className="flex-1 min-w-0 px-1 py-0.5 text-[11px] rounded border border-blue-400 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
-        />
-      ) : (
-        <>
-          {/* 对话标题 */}
-          <button
-            onClick={onSelect}
-            className="flex-1 min-w-0 text-left text-[11px] text-slate-600 truncate hover:text-blue-600"
-          >
-            {conv.title || '未命名会话'}
-          </button>
-
-          {/* 置顶按钮 */}
-          <button
-            onClick={onTogglePin}
-            className={cn("p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 transition-opacity",
-              isPinned ? "text-blue-400 hover:bg-blue-100" : "text-slate-300 hover:text-blue-400 hover:bg-blue-50"
-            )}
-            title={isPinned ? "取消置顶" : "置顶"}
-          >
-            {isPinned ? <PinOff size={10} /> : <Pin size={10} />}
-          </button>
-
-          {/* 重命名按钮 */}
-          <button
-            onClick={onStartRename}
-            className="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-slate-600 hover:bg-slate-200 transition-opacity"
-            title="重命名"
-          >
-            <Edit size={10} />
-          </button>
-
-          {/* 删除按钮 */}
-          <button
-            onClick={onDelete}
-            className="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 hover:bg-rose-50 transition-opacity"
-            title="删除"
-          >
-            <Trash2 size={10} />
-          </button>
-        </>
-      )}
-    </div>
-  )
-}
-
-// =============================================================================
-// 主侧边栏菜单项
-// =============================================================================
-function SidebarItem({ item, isActive, onClick }) {
-  const {
-    attributes, listeners, setNodeRef, transform, transition, isDragging
-  } = useSortable({ id: item.id })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-    zIndex: isDragging ? 50 : 'auto',
-  }
-
-  return (
-    <div ref={setNodeRef} style={style} {...attributes}>
-      <button
-        onClick={onClick}
-        {...listeners}
-        className={cn(
-          "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all text-left group",
-          isActive
-            ? "bg-gray-100 text-gray-900 font-medium"
-            : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-        )}
-      >
-        <GripVertical size={14} className="text-gray-300 group-hover:text-gray-400 cursor-grab active:cursor-grabbing shrink-0" />
-        <item.icon size={18} className={isActive ? "text-gray-700" : "text-gray-400"} />
-        <span>{item.label}</span>
-      </button>
-    </div>
-  )
-}
-
-function Sidebar({ role, username, activeTab, setActiveTab, onLogout, menuOrder, onMenuOrderChange, onChatSelect, chatConversations, chatActiveConvId, chatConvOrder, chatLoading, chatRenamingId, chatRenamingTitle, chatHasMore, chatLoadingMore, onChatSelect: onConvSelect, onChatNew, onChatTogglePin, onChatStartRename, onChatSubmitRename, onChatCancelRename, onChatDelete, onChatRenameTitleChange, onChatDragEnd, onChatLoadMore }) {
-  const commonItems = [
-    { id: 'chat', label: '智能问答', icon: MessageSquare },
-    { id: 'knowledge', label: '知识库', icon: Database },
-    { id: 'databases', label: '数据库', icon: Server },
-    { id: 'skill_lib', label: '技能库', icon: Zap },
-    { id: 'models', label: '模型库', icon: Cpu },
-  ]
-  const adminItems = [
-    { id: 'super_overview', label: '管理员总览', icon: Users },
-    { id: 'user_management', label: '用户管理', icon: User },
-    { id: 'permissions', label: '权限分配', icon: Lock },
-    { id: 'skills', label: '技能管理', icon: Settings },
-    { id: 'memory', label: '记忆管理', icon: Brain },
-  ]
-
-  const baseMenuItems = isSuperAdminRole(role)
-    ? [...adminItems, ...commonItems]
-    : isAdminLikeRole(role)
-    ? [...adminItems, ...commonItems]
-    : commonItems
-
-  const orderedMenuItems = useMemo(() => {
-    if (!menuOrder || !Array.isArray(menuOrder)) return baseMenuItems
-    const map = new Map(baseMenuItems.map(i => [i.id, i]))
-    const ordered = menuOrder.map(id => map.get(id)).filter(Boolean)
-    const remaining = baseMenuItems.filter(i => !menuOrder.includes(i.id))
-    return [...ordered, ...remaining]
-  }, [baseMenuItems, menuOrder])
-
-  const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
-  )
-
-  const handleDragEnd = (event) => {
-    const { active, over } = event
-    if (!over || active.id === over.id) return
-    const oldIndex = orderedMenuItems.findIndex(i => i.id === active.id)
-    const newIndex = orderedMenuItems.findIndex(i => i.id === over.id)
-    if (oldIndex === -1 || newIndex === -1) return
-    const newOrder = arrayMove(orderedMenuItems, oldIndex, newIndex).map(i => i.id)
-    onMenuOrderChange(newOrder)
-  }
-
-  const otherItems = orderedMenuItems.filter(i => i.id !== 'chat')
-  const chatItem = orderedMenuItems.find(i => i.id === 'chat')
-
-  return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <SortableContext items={orderedMenuItems.map(i => i.id)} strategy={verticalListSortingStrategy}>
-        <div className="w-56 bg-white border-r border-gray-200 flex flex-col h-screen shrink-0" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif' }}>
-          <div className="p-5 border-b border-gray-100">
-            <h1 className="text-lg font-semibold text-gray-900">AI4KB</h1>
-            <p className="text-xs text-gray-400 mt-0.5">智能知识库系统</p>
-          </div>
-
-          <nav className="flex-1 p-3 space-y-0.5 scroll-container overflow-y-auto">
-            {chatItem && (
-              <ChatSidebarItem
-                item={chatItem}
-                isActive={activeTab === 'chat'}
-                onMainClick={() => {
-                  if (activeTab !== 'chat') setActiveTab('chat')
-                }}
-                conversations={chatConversations || []}
-                activeConvId={chatActiveConvId}
-                convOrder={chatConvOrder || { pinned: [], order: [] }}
-                loading={chatLoading || false}
-                renamingId={chatRenamingId}
-                renamingTitle={chatRenamingTitle}
-                hasMore={chatHasMore || false}
-                loadingMore={chatLoadingMore || false}
-                onSelect={(convId) => {
-                  if (onConvSelect) onConvSelect(convId)
-                  if (activeTab !== 'chat') setActiveTab('chat')
-                }}
-                onNew={onChatNew}
-                onTogglePin={onChatTogglePin}
-                onStartRename={onChatStartRename}
-                onSubmitRename={onChatSubmitRename}
-                onCancelRename={onChatCancelRename}
-                onDelete={onChatDelete}
-                onRenameTitleChange={onChatRenameTitleChange}
-                onDragEnd={onChatDragEnd}
-                onLoadMore={onChatLoadMore}
-              />
-            )}
-            {otherItems.map((item) => (
-              <SidebarItem
-                key={item.id}
-                item={item}
-                isActive={activeTab === item.id}
-                onClick={() => setActiveTab(item.id)}
-              />
-            ))}
-          </nav>
-
-          <div className="p-3 border-t border-gray-100">
-            <div className="flex items-center gap-3 px-3 py-2 mb-2">
-              <div className={cn(
-                "w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium",
-                isAdminLikeRole(role) ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-600"
-              )}>
-                {username?.charAt(0).toUpperCase() || 'U'}
-              </div>
-              <div className="overflow-hidden">
-                <p className="text-sm font-medium text-gray-900 truncate">{username}</p>
-                <p className="text-xs text-gray-400">
-                  {role === 'super_admin' ? '超级管理员' : role === 'admin' ? '管理员' : '用户'}
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={onLogout}
-              className="w-full flex items-center gap-2 text-gray-500 hover:text-gray-900 px-3 py-2 text-sm transition-colors rounded-lg hover:bg-gray-50"
-            >
-              <LogOut size={16} />
-              退出登录
-            </button>
-          </div>
-        </div>
-      </SortableContext>
-    </DndContext>
-  )
-}
-
 function RenameModal({ isOpen, onClose, onConfirm, initialValue, initialDescription, title, isSubmitting }) {
   const [value, setValue] = useState(initialValue)
   const [description, setDescription] = useState(initialDescription || '')
@@ -2728,25 +2458,17 @@ function DatasetManager({ currentRole }) {
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=knowledge')
-      console.log('[loadGroups/knowledge] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
-        console.log('[loadGroups/knowledge] received:', JSON.stringify(data))
-        // 必须保证 datasetGroups 为数组，防止 {} 对象导致 flatMap/map 报错
         if (Array.isArray(data)) {
-          console.log('[loadGroups/knowledge] → setDatasetGroups (array direct)')
           setDatasetGroups(data)
         } else if (Array.isArray(data?.knowledge)) {
-          console.log('[loadGroups/knowledge] → setDatasetGroups (from data.knowledge)')
           setDatasetGroups(data.knowledge)
         } else {
-          console.warn('[loadGroups/knowledge] unexpected data shape:', data)
           setDatasetGroups([])
         }
-      } else {
-        console.error('[loadGroups/knowledge] HTTP', res.status)
       }
-    } catch (e) { console.error('[loadGroups/knowledge] error:', e) }
+    } catch (e) { /* ignore */ }
   }, [])
 
   // 保存分组（到后端 API）
@@ -2758,19 +2480,13 @@ function DatasetManager({ currentRole }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ knowledge: newGroups })
       })
-      if (!res.ok) {
-        const err = await res.text()
-        console.error('[saveGroups/knowledge] HTTP', res.status, err)
-      }
-    } catch (e) { console.error('[saveGroups/knowledge] error:', e) }
+      if (!res.ok) { /* ignore save error silently */ }
+    } catch (e) { /* ignore */ }
   }, [])
 
   // 组件挂载时加载分组
   useEffect(() => { loadGroups() }, [loadGroups])
-  // 诊断：监听 datasetGroups 状态变化
-  useEffect(() => {
-    console.log('[DatasetManager] datasetGroups state changed:', JSON.stringify(datasetGroups))
-  }, [datasetGroups])
+
   const manageableDatasets = useMemo(() => datasets.filter(ds => ds?.manageable !== false), [datasets])
 
   const loadData = () => {
@@ -2803,12 +2519,9 @@ function DatasetManager({ currentRole }) {
     e.stopPropagation()
     if (!window.confirm('确定要删除这个知识库吗？此操作不可恢复。')) return
     try {
-      console.log('[delete] calling deleteDataset with id:', id)
       const res = await deleteDataset(id)
-      console.log('[delete] response:', res)
       loadData()
     } catch (e) {
-      console.error('[delete] error:', e)
       alert('删除失败: ' + e.message)
     }
   }
@@ -2960,6 +2673,73 @@ function DatasetManager({ currentRole }) {
     }
   }, [viewingDataset])
 
+  // --- 拖拽相关状态（必须在所有 return 之前声明） ---
+  const [activeId, setActiveId] = useState(null)
+  const [overGroupId, setOverGroupId] = useState(null)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
+  )
+
+  const handleDragStart = ({ active }) => setActiveId(String(active.id))
+
+  const handleDragOver = ({ over }) => {
+    if (over) {
+      const match = String(over.id).match(/^droppable-group_(.+)$/)
+      setOverGroupId(match ? match[1] : null)
+    } else {
+      setOverGroupId(null)
+    }
+  }
+
+  const handleDragEnd = ({ active, over }) => {
+    if (over && active) {
+      const draggedId = String(active.id)
+      const match = String(over.id).match(/^droppable-group_(.+)$/)
+      if (match) {
+        const targetGroupId = match[1]
+        if (targetGroupId === '__ungrouped__') {
+          saveGroups(datasetGroups.map(g => ({ ...g, items: g.items.filter(id => id !== draggedId) })))
+        } else {
+          saveGroups(datasetGroups.map(g => {
+            if (g.id === targetGroupId) return !g.items.includes(draggedId) ? { ...g, items: [...g.items, draggedId] } : g
+            return { ...g, items: g.items.filter(id => id !== draggedId) }
+          }))
+        }
+        setScrollGroupId(targetGroupId)
+      }
+    }
+    setActiveId(null)
+    setOverGroupId(null)
+  }
+
+  // 保持所有 hooks 在详情页早返回之前执行，避免点击卡片后 hook 数量变化。
+  const navGroups = useMemo(() => {
+    const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
+    const ungroupedCount = datasets.filter(ds => !groupedIds.has(ds.id)).length
+    return [
+      ...datasetGroups.map(g => ({
+        id: g.id,
+        name: g.name,
+        count: datasets.filter(ds => g.items.includes(ds.id)).length,
+      })),
+      ...(ungroupedCount > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungroupedCount }] : []),
+    ]
+  }, [datasetGroups, datasets])
+
+  const sectionGroups = useMemo(() => {
+    const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
+    const ungrouped = datasets.filter(ds => !groupedIds.has(ds.id))
+    return [
+      ...datasetGroups.map(g => ({
+        id: g.id,
+        name: g.name,
+        count: datasets.filter(ds => g.items.includes(ds.id)).length,
+      })),
+      ...(ungrouped.length > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungrouped.length }] : []),
+    ]
+  }, [datasetGroups, datasets])
+
   if (viewingDataset) {
     return (
       <div
@@ -2987,34 +2767,6 @@ function DatasetManager({ currentRole }) {
     )
   }
 
-  // 构建导航栏分组数据（含全部 + 自定义分组 + 未分组）
-  const navGroups = useMemo(() => {
-    const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
-    const ungroupedCount = datasets.filter(ds => !groupedIds.has(ds.id)).length
-    return [
-      ...datasetGroups.map(g => ({
-        id: g.id,
-        name: g.name,
-        count: datasets.filter(ds => g.items.includes(ds.id)).length,
-      })),
-      ...(ungroupedCount > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungroupedCount }] : []),
-    ]
-  }, [datasetGroups, datasets])
-
-  // 构建分组区块数据
-  const sectionGroups = useMemo(() => {
-    const groupedIds = new Set(datasetGroups.flatMap(g => g.items))
-    const ungrouped = datasets.filter(ds => !groupedIds.has(ds.id))
-    return [
-      ...datasetGroups.map(g => ({
-        id: g.id,
-        name: g.name,
-        count: datasets.filter(ds => g.items.includes(ds.id)).length,
-      })),
-      ...(ungrouped.length > 0 ? [{ id: '__ungrouped__', name: '未分组', count: ungrouped.length }] : []),
-    ]
-  }, [datasetGroups, datasets])
-
   const handleDatasetClick = (ds) => {
     if (ds?.manageable === false) {
       alert('该知识库不是你创建的，仅可查看存在')
@@ -3024,99 +2776,116 @@ function DatasetManager({ currentRole }) {
   }
 
   // 渲染知识库卡片（基础展示层）
-  const renderDatasetCard = (ds) => (
-    <DatasetCard
-      dataset={ds}
-      onClick={() => handleDatasetClick(ds)}
-      onDelete={handleDelete}
-      onRename={handleRenameDataset}
-      onShare={handleOpenShare}
-      selected={selectedDatasets.includes(ds.id)}
-      onSelect={handleSelectDataset}
-      selectionMode={selectedDatasets.length > 0}
-      currentRole={currentRole}
-    />
-  )
+  function DatasetCardInner({ ds, selectedDatasets, handleDatasetClick, handleDelete, handleRenameDataset, handleOpenShare, handleSelectDataset, currentRole }) {
+    const manageable = ds?.manageable !== false
+    const canShare = ds?.isOwner === true || currentRole === 'super_admin'
+    const canSelect = manageable
+    const selectionMode = selectedDatasets.length > 0
+    const cardClickable = selectionMode ? canSelect : manageable
+    return (
+      <div
+        onClick={selectionMode ? (e) => canSelect && handleSelectDataset(ds.id, e) : (cardClickable ? () => handleDatasetClick(ds) : undefined)}
+        className={`bg-white rounded-xl border p-6 hover:shadow-lg transition-all group relative ${cardClickable ? 'cursor-pointer' : 'cursor-not-allowed opacity-90'} ${selectedDatasets.includes(ds.id) ? 'border-blue-500 ring-1 ring-blue-500 bg-blue-50/10' : 'border-slate-100 hover:border-blue-200'}`}
+      >
+        <div className="absolute top-4 right-4 z-10 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          {!selectionMode && manageable && (
+            <>
+              {canShare && handleOpenShare && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleOpenShare(ds, e) }}
+                  className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-all"
+                  title="共享设置"
+                >
+                  <Lock size={12} />
+                </button>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); handleRenameDataset(ds, e) }}
+                className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-all"
+                title="重命名"
+              >
+                <FileText size={12} />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); handleDelete(ds.id, e) }}
+                className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
+                title="删除知识库"
+              >
+                <Trash2 size={12} />
+              </button>
+            </>
+          )}
+          <div
+            onClick={(e) => { e.stopPropagation(); canSelect && handleSelectDataset(ds.id, e) }}
+            className={`w-5 h-5 rounded border flex items-center justify-center transition-all ${canSelect ? '' : 'opacity-40 cursor-not-allowed'} ${selectedDatasets.includes(ds.id) ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white border-slate-300 hover:border-blue-400'}`}
+          >
+            {selectedDatasets.includes(ds.id) && <CheckSquare size={14} />}
+          </div>
+        </div>
 
-  // --- 拖拽相关状态 ---
-  const [activeId, setActiveId] = useState(null)         // 当前正在拖拽的卡片 id
-  const [overGroupId, setOverGroupId] = useState(null)   // 拖拽经过的分组 id
+        <div className="flex items-start justify-between mb-4">
+          <div className="p-3 bg-blue-50 rounded-lg group-hover:bg-blue-100 transition-colors">
+            <Database className="w-6 h-6 text-blue-500" />
+          </div>
+        </div>
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
-  )
+        <h3 className="font-bold text-slate-800 mb-1 group-hover:text-blue-600 transition-colors line-clamp-1 pr-14">{ds.name}</h3>
+        <p className="text-sm text-slate-400 mb-4 line-clamp-2">{ds.description || '暂无描述'}</p>
+        <div className="text-xs text-slate-500 mb-3">
+          创建人：{ds.creatorUsername || ds.creator_username || ds.creatorUserName || ds.owner_username || ds.ownerUsername || ds.created_by || '未知'}
+          {ds.created_at && ( <> · {new Date(ds.created_at).toLocaleDateString()}</> )}
+        </div>
 
-  const handleDragStart = ({ active }) => {
-    setActiveId(String(active.id))
+        {ds.isOwner ? (
+          <div className="text-[11px] text-blue-600 mb-3 flex items-center gap-1">
+            <User size={10} /> 我创建的 · {ds.isShared ? '已共享' : '私有'}
+          </div>
+        ) : ds.isShared ? (
+          <div className="text-[11px] text-green-600 mb-3 flex items-center gap-1">
+            <Lock size={10} /> 他人共享
+          </div>
+        ) : (
+          <div className="text-[11px] text-orange-600 mb-3 flex items-center gap-1">
+            <Lock size={10} /> 他人私有
+          </div>
+        )}
+
+        <div className="flex items-center justify-between text-xs text-slate-500 border-t pt-4">
+          <span className="flex items-center gap-1">
+            <FileText size={14} />
+            全部文件: {ds.document_count || 0}
+          </span>
+          {ds.isShared && (
+            <span className="flex items-center gap-0.5 text-green-600">
+              <Lock size={10} /> 已共享
+            </span>
+          )}
+        </div>
+      </div>
+    )
   }
 
-  const handleDragOver = ({ over }) => {
-    if (over) {
-      const match = String(over.id).match(/^droppable-group_(.+)$/)
-      setOverGroupId(match ? match[1] : null)
-    } else {
-      setOverGroupId(null)
-    }
-  }
-
-  const handleDragEnd = ({ active, over }) => {
-    if (over && active) {
-      const draggedId = String(active.id)
-      const match = String(over.id).match(/^droppable-group_(.+)$/)
-      if (match) {
-        const targetGroupId = match[1]
-        if (targetGroupId === '__ungrouped__') {
-          // 从所有分组移除 -> 变为未分组
-          const next = datasetGroups.map(g => ({
-            ...g,
-            items: g.items.filter(id => id !== draggedId)
-          }))
-          saveGroups(next)
-        } else {
-          // 从其他分组移除，加入目标分组
-          const next = datasetGroups.map(g => {
-            if (g.id === targetGroupId) {
-              if (!g.items.includes(draggedId)) {
-                return { ...g, items: [...g.items, draggedId] }
-              }
-              return g
-            }
-            return { ...g, items: g.items.filter(id => id !== draggedId) }
-          })
-          saveGroups(next)
-        }
-        setScrollGroupId(targetGroupId)
-      }
-    }
-    setActiveId(null)
-    setOverGroupId(null)
-  }
-
-  // 可拖拽的卡片包装器（按住拖拽，把卡片放进分组）
-  const SortableDatasetCard = ({ ds }) => {
-    const {
-      attributes, listeners, setNodeRef,
-      transform, transition, isDragging
-    } = useSortable({ id: String(ds.id) })
-
-    const style = {
-      transform: CSS.Transform.toString(transform),
-      transition,
-      opacity: isDragging ? 0.35 : 1,
-      cursor: 'grab',
-      scale: isDragging ? 1.02 : 1,
-      boxShadow: isDragging ? '0 8px 24px rgba(0,0,0,0.15)' : 'none',
-    }
-
+  // 可拖拽的卡片包装器（模块级别，避免 hooks 不稳定）
+  function SortableDatasetCardInner({ ds, selectedDatasets, handleDatasetClick, handleDelete, handleRenameDataset, handleOpenShare, handleSelectDataset, currentRole }) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: String(ds.id) })
     return (
       <div
         ref={setNodeRef}
-        style={style}
+        style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1, cursor: 'grab', scale: isDragging ? 1.02 : 1, boxShadow: isDragging ? '0 8px 24px rgba(0,0,0,0.15)' : 'none' }}
         {...attributes}
         {...listeners}
         className="relative transition-shadow duration-200"
       >
-        {renderDatasetCard(ds)}
+        <DatasetCardInner
+          ds={ds}
+          selectedDatasets={selectedDatasets}
+          handleDatasetClick={handleDatasetClick}
+          handleDelete={handleDelete}
+          handleRenameDataset={handleRenameDataset}
+          handleOpenShare={handleOpenShare}
+          handleSelectDataset={handleSelectDataset}
+          currentRole={currentRole}
+        />
       </div>
     )
   }
@@ -3209,7 +2978,20 @@ function DatasetManager({ currentRole }) {
             /* 无分组时，直接显示全部网格 */
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {datasets.map(ds => (
-                <SortableDatasetCard key={ds.id} ds={ds} />
+                <SortableDatasetCardInner
+                  key={ds.id}
+                  ds={ds}
+                  selectedDatasets={selectedDatasets}
+                  handleDatasetClick={(d) => {
+                    if (d?.manageable === false) { alert('该知识库不是你创建的，仅可查看存在'); return }
+                    setViewingDataset(d)
+                  }}
+                  handleDelete={handleDelete}
+                  handleRenameDataset={handleRenameDataset}
+                  handleOpenShare={handleOpenShare}
+                  handleSelectDataset={handleSelectDataset}
+                  currentRole={currentRole}
+                />
               ))}
             </div>
           ) : (
@@ -3235,7 +3017,22 @@ function DatasetManager({ currentRole }) {
                     isDragging={!!activeId}
                     overGroupId={overGroupId}
                     onRemove={(item) => handleRemoveFromGroup(group.id, item.id)}
-                    renderCard={(ds) => <SortableDatasetCard key={ds.id} ds={ds} />}
+                    renderCard={(item) => (
+                      <SortableDatasetCardInner
+                        key={item.id}
+                        ds={item}
+                        selectedDatasets={selectedDatasets}
+                        handleDatasetClick={(ds) => {
+                          if (ds?.manageable === false) { alert('该知识库不是你创建的，仅可查看存在'); return }
+                          setViewingDataset(ds)
+                        }}
+                        handleDelete={handleDelete}
+                        handleRenameDataset={handleRenameDataset}
+                        handleOpenShare={handleOpenShare}
+                        handleSelectDataset={handleSelectDataset}
+                        currentRole={currentRole}
+                      />
+                    )}
                   />
                 )
               })}
@@ -5634,6 +5431,7 @@ function SuperAdminOverview({ role }) {
             <div className="space-y-1.5">
               {allUsers.map((user, index) => {
                 const isSelected = String(selectedUserId) === String(user.userId)
+                const userKey = `${user.role || 'user'}-${user.userId || user.username || index}`
                 const roleColor =
                   user.role === 'super_admin' ? 'bg-amber-50 text-amber-700 border-amber-100' :
                   user.role === 'admin' ? 'bg-blue-50 text-blue-700 border-blue-100' :
@@ -5644,7 +5442,7 @@ function SuperAdminOverview({ role }) {
                   'bg-gray-100 text-gray-500'
                 return (
                   <button
-                    key={user.userId || index}
+                    key={userKey}
                     onClick={() => loadUserConversations(user.userId)}
                     className={`w-full text-left p-3 rounded-xl border transition-all duration-200 group ` +
                       (isSelected ? 'border-blue-300 bg-blue-50/50 shadow-sm' : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50')
@@ -5874,13 +5672,13 @@ function SuperAdminOverview({ role }) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {skillUsageAll.map((row) => {
-                        const key = row.toolName
+                      {skillUsageAll.map((row, index) => {
+                        const key = row.toolName || row.toolCode || `skill-all-${index}`
                         const exp = skillExpandedRows[key]
                         const isExp = !!exp
                         return (
-                          <>
-                            <tr key={key} className="hover:bg-gray-50/50 transition-colors cursor-pointer" onClick={() => toggleSkillRow(key, false)}>
+                          <Fragment key={key}>
+                            <tr className="hover:bg-gray-50/50 transition-colors cursor-pointer" onClick={() => toggleSkillRow(key, false)}>
                               <td className="px-4 py-3 text-center text-gray-300">
                                 <ChevronRight size={14} className={cn('transition-transform duration-200', isExp && 'rotate-90 text-blue-400')} />
                               </td>
@@ -5891,7 +5689,7 @@ function SuperAdminOverview({ role }) {
                               <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
                             </tr>
                             {isExp && (
-                              <tr key={`${key}-exp`}>
+                              <tr>
                                 <td colSpan={6} className="px-0 py-0">
                                   {exp.loading && exp.records.length === 0 ? (
                                     <div className="py-6 text-center text-sm text-gray-300">
@@ -5977,7 +5775,7 @@ function SuperAdminOverview({ role }) {
                                 </td>
                               </tr>
                             )}
-                          </>
+                          </Fragment>
                         )
                       })}
                     </tbody>
@@ -6134,13 +5932,14 @@ function SuperAdminOverview({ role }) {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {skillUsageUser.map((row) => {
-                          const key = `u_${row.toolName}`
+                        {skillUsageUser.map((row, index) => {
+                          const rowKey = row.toolName || row.toolCode || `skill-user-${index}`
+                          const key = `u_${rowKey}`
                           const exp = skillExpandedRows[key]
                           const isExp = !!exp
                           return (
-                            <>
-                              <tr key={key} className="hover:bg-gray-50/50 transition-colors cursor-pointer" onClick={() => toggleSkillRow(row.toolName, true)}>
+                            <Fragment key={key}>
+                              <tr className="hover:bg-gray-50/50 transition-colors cursor-pointer" onClick={() => toggleSkillRow(rowKey, true)}>
                                 <td className="px-4 py-3 text-center text-gray-300">
                                   <ChevronRight size={14} className={cn('transition-transform duration-200', isExp && 'rotate-90 text-blue-400')} />
                                 </td>
@@ -6151,7 +5950,7 @@ function SuperAdminOverview({ role }) {
                                 <td className="px-4 py-3 text-center font-semibold text-gray-900">{row.total}</td>
                               </tr>
                               {isExp && (
-                                <tr key={`${key}-exp`}>
+                                <tr>
                                   <td colSpan={6} className="px-0 py-0">
                                     {exp.loading && exp.records.length === 0 ? (
                                       <div className="py-6 text-center text-sm text-gray-300">
@@ -6224,7 +6023,7 @@ function SuperAdminOverview({ role }) {
                                   </td>
                                 </tr>
                               )}
-                            </>
+                            </Fragment>
                           )
                         })}
                       </tbody>
@@ -6290,3510 +6089,6 @@ function SuperAdminOverview({ role }) {
   )
 }
 
-function SourceViewer({ reference, onClose }) {
-  const [activeTab, setActiveTab] = useState('summary') // 'summary' | 'pdf'
-  const [numPages, setNumPages] = useState(null)
-  const [scale, setScale] = useState(1.0)
-  const [imageError, setImageError] = useState(false)
-  const [pdfUrl, setPdfUrl] = useState('')
-  const [pdfLoading, setPdfLoading] = useState(false)
-  const [pdfLoadError, setPdfLoadError] = useState('')
-  const pdfUrlRef = useRef('')
-
-  useEffect(() => {
-    setActiveTab('summary')
-    setImageError(false)
-    setScale(1.0)
-    setNumPages(null)
-    setPdfLoadError('')
-    if (pdfUrlRef.current) {
-      URL.revokeObjectURL(pdfUrlRef.current)
-      pdfUrlRef.current = ''
-    }
-    setPdfUrl('')
-  }, [reference])
-
-  useEffect(() => {
-    if (activeTab !== 'pdf' || !reference?.document_id) {
-      return
-    }
-    let disposed = false
-    let nextPdfUrl = ''
-    setPdfLoading(true)
-    setPdfLoadError('')
-    ;(async () => {
-      try {
-        const res = await apiFetch(`/document/get/${encodeURIComponent(reference.document_id)}`)
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`)
-        }
-        const blob = await res.blob()
-        if (!blob || blob.size === 0) {
-          throw new Error('EMPTY_BLOB')
-        }
-        nextPdfUrl = URL.createObjectURL(blob)
-        if (disposed) {
-          URL.revokeObjectURL(nextPdfUrl)
-          return
-        }
-        if (pdfUrlRef.current) {
-          URL.revokeObjectURL(pdfUrlRef.current)
-        }
-        pdfUrlRef.current = nextPdfUrl
-        setPdfUrl(nextPdfUrl)
-      } catch {
-        if (!disposed) {
-          setPdfLoadError('Failed to load PDF. Please check permissions.')
-          if (pdfUrlRef.current) {
-            URL.revokeObjectURL(pdfUrlRef.current)
-            pdfUrlRef.current = ''
-          }
-          setPdfUrl('')
-        }
-      } finally {
-        if (!disposed) {
-          setPdfLoading(false)
-        }
-      }
-    })()
-    return () => {
-      disposed = true
-      if (nextPdfUrl) {
-        URL.revokeObjectURL(nextPdfUrl)
-      }
-    }
-  }, [activeTab, reference?.document_id])
-
-  useEffect(() => {
-    if (activeTab === 'pdf' && numPages && reference?.positions?.[0]) {
-        // Delay slightly to allow rendering
-        setTimeout(() => {
-            const pageNum = reference.positions[0][0];
-            const pageElement = document.getElementById(`pdf-page-${pageNum}`);
-            if (pageElement) {
-                pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-        }, 100);
-    }
-  }, [activeTab, numPages, reference])
-
-  if (!reference) return null
-
-  const imageId = reference.image_id || reference.img_id
-  const hasImage = !!imageId
-  const hasPdf = !!reference.document_id
-
-  const onDocumentLoadSuccess = ({ numPages }) => {
-    setNumPages(numPages)
-  }
-
-  return (
-    <div 
-      className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200"
-      onClick={onClose}
-    >
-      <div 
-        className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="p-3 border-b flex items-center justify-between bg-slate-50 shrink-0">
-          <div className="flex items-center gap-4 overflow-hidden">
-            <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm truncate pr-4 max-w-[300px]">
-              <FileText size={18} className="text-blue-600 flex-shrink-0" />
-              <span className="truncate" title={reference.document_name}>{reference.document_name}</span>
-            </h3>
-            
-            <div className="flex bg-slate-200 p-1 rounded-lg shrink-0">
-              <button
-                onClick={() => setActiveTab('summary')}
-                className={cn(
-                  "px-3 py-1 rounded-md text-xs font-medium transition-all",
-                  activeTab === 'summary' ? "bg-white shadow text-slate-900" : "text-slate-500 hover:text-slate-700"
-                )}
-              >
-                Summary
-              </button>
-              {hasPdf && (
-                <button
-                  onClick={() => setActiveTab('pdf')}
-                  className={cn(
-                    "px-3 py-1 rounded-md text-xs font-medium transition-all",
-                    activeTab === 'pdf' ? "bg-white shadow text-slate-900" : "text-slate-500 hover:text-slate-700"
-                  )}
-                >
-                  Full PDF
-                </button>
-              )}
-            </div>
-          </div>
-
-          <button 
-            onClick={onClose}
-            className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 transition-colors"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-hidden relative bg-slate-100/50">
-          {activeTab === 'summary' && (
-            <div className="h-full scroll-container p-6">
-              <div className="max-w-3xl mx-auto space-y-6">
-                {/* Meta Info */}
-                <div className="flex items-center gap-4 text-xs text-slate-500 uppercase tracking-wider font-semibold">
-                  <span>Matched Content</span>
-                  {reference.similarity && (
-                    <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
-                      Score: {(reference.similarity * 100).toFixed(1)}%
-                    </span>
-                  )}
-                </div>
-
-                {/* Text Content */}
-                <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-sm text-slate-700 whitespace-pre-wrap leading-relaxed text-sm font-mono">
-                  {reference.content_with_weight ? (
-                     <div dangerouslySetInnerHTML={{ __html: reference.content_with_weight }} />
-                  ) : (
-                     reference.content || "No content preview available."
-                  )}
-                </div>
-
-                {/* Image Preview */}
-                {hasImage && !imageError && (
-                  <div className="space-y-2">
-                    <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold flex items-center gap-2">
-                      <ImageIcon size={14} />
-                      <span>Page Snapshot</span>
-                    </div>
-                    <div className="rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-white group relative">
-                      <img 
-                        src={`/api/document/image/${imageId}`}
-                        alt="Document Snapshot"
-                        className="w-full h-auto object-contain max-h-[500px]"
-                        onError={() => setImageError(true)}
-                      />
-                      {hasPdf && (
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                           <button 
-                             onClick={() => setActiveTab('pdf')}
-                             className="px-4 py-2 bg-white text-slate-900 rounded-lg shadow-lg font-medium text-sm transform translate-y-2 group-hover:translate-y-0 transition-all"
-                           >
-                             View in PDF
-                           </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'pdf' && (
-            <div className="h-full flex flex-col">
-               {/* PDF Toolbar */}
-               <div className="p-2 border-b bg-white flex items-center justify-between shrink-0 z-10 shadow-sm">
-                 <div className="flex items-center gap-2">
-                   <span className="text-xs font-mono text-slate-500 px-2">
-                     Total {numPages || '--'} Pages
-                   </span>
-                 </div>
-                 <div className="flex items-center gap-2">
-                    <button onClick={() => setScale(s => Math.max(0.5, s - 0.1))} className="p-1.5 hover:bg-slate-100 rounded"><ZoomOut size={16} /></button>
-                    <span className="text-xs font-mono w-12 text-center select-none">{(scale * 100).toFixed(0)}%</span>
-                    <button onClick={() => setScale(s => Math.min(2.0, s + 0.1))} className="p-1.5 hover:bg-slate-100 rounded"><ZoomIn size={16} /></button>
-                 </div>
-               </div>
-               
-               {/* PDF View */}
-               <div className="flex-1 overflow-auto bg-slate-500/10 flex justify-center p-8">
-                 <Document
-                   file={pdfUrl || undefined}
-                   onLoadSuccess={onDocumentLoadSuccess}
-                   className="shadow-xl flex flex-col gap-4"
-                   loading={<div className="flex items-center gap-2 text-slate-500"><Loader2 className="animate-spin" /> Loading PDF...</div>}
-                   error={<div className="text-red-500 text-sm p-4 bg-red-50 rounded">{pdfLoadError || 'Failed to load PDF. Please check permissions.'}</div>}
-                 >
-                   {numPages && Array.from(new Array(numPages), (el, index) => {
-                        const pageNum = index + 1;
-                        return (
-                            <div key={`page_${pageNum}`} id={`pdf-page-${pageNum}`} className="relative">
-                                <Page 
-                                    pageNumber={pageNum} 
-                                    scale={scale}
-                                    renderTextLayer={false}
-                                    renderAnnotationLayer={false}
-                                    className="shadow-md"
-                                >
-                                    {/* Highlight Overlay */}
-                                    {reference.positions && reference.positions
-                                        .filter((pos) => pos[0] === pageNum)
-                                        .map((pos, idx) => {
-                                        const [p, x_min, x_max, y_min, y_max] = pos;
-                                        return (
-                                            <div
-                                                key={`${pageNum}-${idx}`}
-                                                style={{
-                                                    position: 'absolute',
-                                                    left: x_min * scale,
-                                                    top: y_min * scale,
-                                                    width: (x_max - x_min) * scale,
-                                                    height: (y_max - y_min) * scale,
-                                                    backgroundColor: 'rgba(255, 255, 0, 0.2)',
-                                                    border: '1px solid rgba(255, 200, 0, 0.4)',
-                                                    pointerEvents: 'none'
-                                                }}
-                                            />
-                                        )
-                                    })}
-                                </Page>
-                            </div>
-                        );
-                   })}
-                 </Document>
-                 {pdfLoading && (
-                   <div className="absolute top-4 right-4 px-3 py-1.5 rounded bg-white text-xs text-slate-500 border border-slate-200 shadow-sm">
-                     PDF 加载中...
-                   </div>
-                 )}
-               </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function MarkdownWithCitations({ content, references, onViewReference }) {
-  if (!content) return null;
-
-  const formattedContent = content
-    // [ID:0] / [0] (0-based legacy)
-    .replace(/\[(?:ID:\s*)?(\d+)\]/gi, (match, id) => ` [${parseInt(id, 10) + 1}](#citation-${id})`)
-    // [引用来源1] / [引用来源 1] / [来源1] / [来源 1] (1-based common output)
-    .replace(/\[(?:引用来源|来源)\s*(\d+)\]/gi, (match, id) => {
-      const oneBased = Number.parseInt(id, 10)
-      if (!Number.isFinite(oneBased) || oneBased <= 0) return match
-      const zeroBased = oneBased - 1
-      return ` [${oneBased}](#citation-${zeroBased})`
-    });
-
-  return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        pre: ({_node, ...props}) => <div className="overflow-auto w-full my-2 bg-slate-800 text-slate-100 p-2 rounded" {...props} />,
-        code: ({_node, ...props}) => <code className="bg-slate-100 text-slate-800 px-1 py-0.5 rounded text-xs" {...props} />,
-        table: ({_node, ...props}) => (
-          <div className="overflow-x-auto my-4">
-            <table className="min-w-full border-collapse border border-slate-300 text-sm" {...props} />
-          </div>
-        ),
-        thead: ({_node, ...props}) => <thead className="bg-slate-100" {...props} />,
-        th: ({_node, ...props}) => <th className="border border-slate-300 px-3 py-2 text-left font-semibold" {...props} />,
-        td: ({_node, ...props}) => <td className="border border-slate-300 px-3 py-2" {...props} />,
-        a: ({_node, href, children, ...props}) => {
-          if (href?.startsWith('#citation-')) {
-            const index = parseInt(href.replace('#citation-', ''));
-            const ref = references?.[index];
-            if (ref) {
-              return (
-                <button 
-                  onClick={(e) => { e.preventDefault(); onViewReference(ref); }}
-                  className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 ml-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full border border-blue-200 hover:bg-blue-100 align-top transition-colors transform -translate-y-0.5 cursor-pointer select-none"
-                  title={ref.document_name}
-                >
-                  {index + 1}
-                </button>
-              );
-            }
-            return <span className="text-gray-400 text-[10px] ml-0.5">[{index + 1}]</span>;
-          }
-          return <a href={href} className="text-blue-600 hover:underline" {...props}>{children}</a>
-        }
-      }}
-    >
-      {formattedContent}
-    </Markdown>
-  );
-}
-
-function ThoughtBlock({ content, references, onViewReference, isStreaming }) {
-  const [expanded, setExpanded] = useState(true);
-
-  // Auto-collapse when streaming finishes, expand when streaming starts
-  useEffect(() => {
-    if (isStreaming) {
-      setExpanded(true)
-    } else {
-      setExpanded(false)
-    }
-  }, [isStreaming])
-  
-  return (
-    <div className="mb-4 rounded-lg overflow-hidden border border-amber-200 bg-amber-50">
-        <button 
-            onClick={() => setExpanded(!expanded)}
-            className="w-full flex items-center gap-2 px-3 py-2 bg-amber-100/50 hover:bg-amber-100 transition-colors text-xs font-semibold text-amber-700 uppercase tracking-wide select-none"
-        >
-            <Brain size={14} className="text-amber-600" />
-            <span>深度思考过程 (Deep Thinking)</span>
-            <span className="ml-auto text-amber-500 text-[10px]">
-                {expanded ? '收起' : '展开'}
-            </span>
-        </button>
-        
-        {expanded && (
-            <div className="p-3 text-sm text-slate-600 italic leading-relaxed border-t border-amber-100 bg-white/50">
-                <MarkdownWithCitations 
-                    content={content} 
-                    references={references} 
-                    onViewReference={onViewReference} 
-                />
-            </div>
-        )}
-    </div>
-  )
-}
-
-// 模块级 normalize 函数，供 App 层和 ChatInterface 共同使用
-function normalizeConversationTitle(item) {
-  return item?.name || item?.title || item?.conversationTitle || item?.conversation_id || '未命名会话'
-}
-
-function normalizeConversationId(item) {
-  return item?.conversationId || item?.conversation_id || item?.id || ''
-}
-
-// =============================================================================
-// 通用分组导航组件
-// - 吸顶横向分组卡片导航栏（sticky）
-// - 支持分组数量统计（括号内显示总数）
-// - 点击分组 → 滚动到对应区块 + 高亮分组卡片
-// - 页面滚动 → 当前可视分组卡片自动高亮（IntersectionObserver）
-// =============================================================================
-// 可拖拽分组区块组件（拖拽目标区域）
-// =============================================================================
-function DroppableGroupSection({ groupId, groupName, groupDs, isOver, isDragging, overGroupId, onRemove, renderCard }) {
-  const { setNodeRef, isOver: droppableIsOver } = useDroppable({
-    id: `droppable-group_${groupId}`
-  })
-
-  const highlighted = isOver || droppableIsOver
-
-  return (
-    <div
-      ref={setNodeRef}
-      id={`group-section-${groupId}`}
-      className={cn(
-        "flex flex-col rounded-xl transition-all duration-200 mb-4",
-        highlighted ? "ring-2 ring-blue-400 bg-blue-50/60 shadow-md" : "bg-white/60"
-      )}
-    >
-      {/* 区块标题栏（随内容一起移动，不悬浮） */}
-      <div className="bg-slate-50/95 backdrop-blur-sm border-b border-gray-200/70 px-4 py-2 flex items-center gap-2">
-        <Folder size={14} className={highlighted ? "text-blue-500 animate-pulse" : "text-blue-500"} />
-        <span className="text-sm font-semibold text-gray-700">{groupName}</span>
-        <span className={cn("text-xs transition-colors", highlighted ? "text-blue-500 font-bold" : "text-gray-400")}>
-          ({groupDs.length})
-        </span>
-        {highlighted && isDragging && (
-          <span className="ml-auto text-xs text-blue-500 font-medium animate-pulse">
-            松开鼠标加入该分组
-          </span>
-        )}
-      </div>
-      {/* 卡片列表 */}
-      <div className="px-4 pt-3 pb-4">
-        {groupDs.length === 0 ? (
-          <div className={cn(
-            "py-8 text-center text-xs border-2 border-dashed rounded-lg transition-colors",
-            highlighted ? "border-blue-300 text-blue-400 bg-blue-50/30" : "border-gray-200 text-gray-400"
-          )}>
-            {highlighted ? "拖拽到这里" : "暂无内容"}
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {groupDs.map((item, index) => (
-              <div key={item.id || item.name || index} className="relative group/card">
-                {renderCard(item)}
-                {groupId !== '__ungrouped__' && (
-                  <button
-                    onClick={() => onRemove(item)}
-                    title="从分组移除"
-                    className="absolute top-2 left-2 opacity-0 group-hover/card:opacity-100 transition-opacity px-1.5 py-0.5 bg-red-100 text-red-600 text-[10px] rounded border border-red-200 hover:bg-red-200 z-10"
-                  >
-                    移除
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// =============================================================================
-function GroupNavBar({ groups, onGroupClick, onCreateGroup, onRenameGroup, onDeleteGroup }) {
-  const navRef = useRef(null)
-
-  const handleCardClick = (groupId) => {
-    onGroupClick(groupId)
-    const el = document.getElementById(`group-section-${groupId}`)
-    if (!el) return
-
-    // 运行时测量导航栏实际高度（用于 fallback window 滚动场景）
-    const navEl = document.querySelector('.sticky.top-0.z-20.bg-white\\/95')
-    const navHeight = navEl ? navEl.getBoundingClientRect().height : 50
-    const GAP = 6
-    // 找到最近的滚动容器（内容区使用内层 overflow-auto div）
-    const scrollable = el.closest('.overflow-auto')
-    if (scrollable) {
-      // GroupNavBar 在滚动容器外部（sticky top-0），offsetTop 不包含它的高度
-      // scrollTop = offsetTop - 导航栏高度，让 section 顶部对齐导航栏底部
-      const targetTop = el.offsetTop - navHeight - GAP
-      scrollable.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
-    } else {
-      // window 滚动场景
-      const offset = el.getBoundingClientRect().top + window.scrollY - navHeight - GAP
-      window.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' })
-    }
-  }
-
-  return (
-    <div
-      ref={navRef}
-      className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b border-gray-200 shadow-sm"
-    >
-      <div
-        className="flex items-center gap-2 px-4 py-2 overflow-x-auto scroll-container"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: '#e5e7eb transparent' }}
-      >
-        {groups.map(group => (
-          <div
-            key={group.id}
-            className="group/card shrink-0 flex items-center gap-0.5 pl-2 pr-1 py-1 rounded-lg text-xs font-medium border border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-all whitespace-nowrap"
-          >
-            <button
-              onClick={() => handleCardClick(group.id)}
-              className="flex items-center gap-1"
-            >
-              <span>{group.name}</span>
-              <span className="text-[10px] opacity-70">({group.count})</span>
-            </button>
-            <div className="flex items-center gap-0.5 ml-0.5 opacity-0 group-hover/card:opacity-100 transition-opacity">
-              {onRenameGroup && (
-                <button
-                  title="重命名分组"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    const newName = window.prompt('输入分组名称：', group.name)
-                    if (newName && newName.trim()) onRenameGroup(group.id, newName.trim())
-                  }}
-                  className="p-0.5 rounded hover:bg-blue-400/40 text-gray-400 hover:text-blue-600"
-                >
-                  <Edit size={10} />
-                </button>
-              )}
-              {onDeleteGroup && (
-                <button
-                  title="删除分组"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (window.confirm(`确定删除分组「${group.name}」？分组内的内容将移至未分组。`)) {
-                      onDeleteGroup(group.id)
-                    }
-                  }}
-                  className="p-0.5 rounded hover:bg-red-400/40 text-gray-400 hover:text-red-500"
-                >
-                  <X size={10} />
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {onCreateGroup && (
-          <button
-            onClick={onCreateGroup}
-            className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 border border-dashed border-gray-300 hover:border-blue-300 transition-all whitespace-nowrap"
-          >
-            <Plus size={11} />
-            新建分组
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// =============================================================================
-// 通用分组区块组件
-// - 每个分组对应一个区块，含标题栏 + 分割线
-// - 区块内容由 children 决定（传入卡片列表）
-// =============================================================================
-function GroupSection({ groupId, groupName, count, showCount = true, children }) {
-  return (
-    <div id={`group-section-${groupId}`} className="group-section">
-      {/* 分组区块标题栏 */}
-      <div className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur-sm">
-        <div className="flex items-center gap-2 px-4 pt-4 pb-2">
-          <Folder size={14} className="text-blue-500 shrink-0" />
-          <span className="text-sm font-semibold text-gray-700">{groupName}</span>
-          {showCount && (
-            <span className="text-xs text-gray-400">({count})</span>
-          )}
-        </div>
-        {/* 1px 半透明灰色分割线 */}
-        <div className="h-px bg-gray-200/70 mx-4" />
-      </div>
-      {/* 卡片列表 */}
-      <div className="px-4 pb-4">
-        {children}
-      </div>
-    </div>
-  )
-}
-
-// =============================================================================
-// 通用卡片网格包装器
-// - 显示卡片列表（单组或多组统一网格）
-// - 用于普通视图或全部分组视图
-// =============================================================================
-function CardGrid({ items, renderCard, emptyText = '暂无内容', emptyIcon: EmptyIcon = FolderOpen }) {
-  if (items.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white rounded-xl border border-gray-200">
-        <EmptyIcon size={48} className="mb-4 text-gray-300" />
-        <p className="text-sm">{emptyText}</p>
-      </div>
-    )
-  }
-  return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-      {items.map(item => renderCard(item))}
-    </div>
-  )
-}
-
-// 可排序对话项组件
-function SortableConvItem({
-  item, isActive, renamingId, renamingTitle, setRenamingTitle,
-  onSwitch, onStartRename, onSubmitRename, onCancelRename, onDelete,
-  isPinned, onTogglePin, conversationActionLoading
-}) {
-  const {
-    attributes, listeners, setNodeRef, transform, transition, isDragging
-  } = useSortable({ id: item.id })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  }
-
-  const renaming = renamingId === item.id
-
-  return (
-    <div ref={setNodeRef} style={style} className={cn("mb-1 rounded-lg border", isActive ? "border-blue-200 bg-blue-50" : "border-transparent hover:border-slate-200 hover:bg-slate-50")}>
-      {renaming ? (
-        <div className="p-2 space-y-2">
-          <input
-            value={renamingTitle}
-            onChange={e => setRenamingTitle(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') { e.preventDefault(); onSubmitRename(item.id) }
-              if (e.key === 'Escape') { e.preventDefault(); onCancelRename() }
-            }}
-            maxLength={120}
-            className="w-full px-2 py-1.5 text-sm rounded border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <div className="flex items-center justify-end gap-1">
-            <button onClick={onCancelRename} className="px-2 py-1 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-100">取消</button>
-            <button onClick={() => onSubmitRename(item.id)} disabled={conversationActionLoading} className="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">保存</button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center gap-0.5 p-1.5">
-          {/* 拖拽手柄 */}
-          <div
-            {...attributes} {...listeners}
-            className="p-1 rounded cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 shrink-0"
-            title="拖拽排序"
-          >
-            <GripVertical size={14} />
-          </div>
-          {/* 切换对话 */}
-          <button
-            onClick={onSwitch}
-            className={cn("flex-1 min-w-0 text-left text-sm truncate py-1", isActive ? "text-blue-700 font-medium" : "text-slate-700")}
-          >
-            {item.title || '未命名会话'}
-          </button>
-          {/* 置顶按钮 */}
-          {onTogglePin && (
-            <button
-              onClick={onTogglePin}
-              className={cn("p-1 rounded shrink-0", isPinned ? "text-blue-500 hover:bg-blue-100" : "text-slate-300 hover:text-blue-500 hover:bg-blue-50")}
-              title={isPinned ? "取消置顶" : "置顶"}
-            >
-              {isPinned ? <PinOff size={13} /> : <Pin size={13} />}
-
-            </button>
-          )}
-          {/* 重命名 */}
-          <button
-            onClick={() => onStartRename(item)}
-            disabled={conversationActionLoading}
-            className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-            title="重命名"
-          >
-            <Edit size={13} />
-          </button>
-          {/* 删除 */}
-          <button
-            onClick={() => onDelete(item.id)}
-            disabled={conversationActionLoading}
-            className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-50"
-            title="删除"
-          >
-            <Trash2 size={13} />
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-const ChatInterface = forwardRef(function ChatInterface({ role, onConversationsChanged }, ref) {
-  const createDefaultAssistantMessage = useCallback(() => ({
-    role: 'assistant',
-    content: '你好！我是 AI 助手，请问有什么可以帮你？'
-  }), [])
-  const [messages, setMessages] = useState(() => [
-    createDefaultAssistantMessage()
-  ])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [conversationLoading, setConversationLoading] = useState(false)
-  const [conversationError, setConversationError] = useState('')
-  const [conversations, setConversations] = useState([])
-  const [conversationPage, setConversationPage] = useState(1)
-  const [conversationHasMore, setConversationHasMore] = useState(false)
-  const [conversationRetentionDays, setConversationRetentionDays] = useState(90)
-  const [conversationListLoadingMore, setConversationListLoadingMore] = useState(false)
-  const [messageHasMore, setMessageHasMore] = useState(false)
-  const [messageBeforeId, setMessageBeforeId] = useState(null)
-  const [messageLoadingMore, setMessageLoadingMore] = useState(false)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-  const [activeConversationTitle, setActiveConversationTitle] = useState('')
-  const [conversationActionLoading, setConversationActionLoading] = useState(false)
-  const [viewingRef, setViewingRef] = useState(null)
-  const [toolForms, setToolForms] = useState({})
-  const [toolPending, setToolPending] = useState({})
-  const [toolResults, setToolResults] = useState({})
-  const [toolCatalog, setToolCatalog] = useState([])
-  const [toolCatalogLoading, setToolCatalogLoading] = useState(false)
-  const [toolCatalogError, setToolCatalogError] = useState('')
-  const [planDrafts, setPlanDrafts] = useState({})
-  const [planUiStates, setPlanUiStates] = useState({})
-  const [selectedMemoryProfileId, setSelectedMemoryProfileId] = useState('')
-  const [uploadedFiles, setUploadedFiles] = useState([])
-  const [uploadProgress, setUploadProgress] = useState({})
-  // --- 对话排序状态（由子侧边栏管理，ChatInterface 内部不再使用，保留以兼容部分逻辑） ---
-  const [convOrder, setConvOrder] = useState({ pinned: [], order: [] })
-  const [activeConvId, setActiveConvId] = useState(null)
-  const messagesEndRef = useRef(null)
-  const inputRef = useRef(null)
-  const abortControllerRef = useRef(null)
-  const currentRequestIdRef = useRef(0)
-  // 上滑加载历史消息时关闭自动滚动到底部，避免视图被强制跳回最新消息。
-  const suppressAutoScrollRef = useRef(false)
-  const conversationIdRef = useRef('')
-  const messagesContainerRef = useRef(null)
-  const [mentionOpen, setMentionOpen] = useState(false)
-  const [mentionQuery, setMentionQuery] = useState('')
-  const [mentionStart, setMentionStart] = useState(-1)
-  const [mentionEnd, setMentionEnd] = useState(-1)
-  const [mentionIndex, setMentionIndex] = useState(0)
-  const quickRouteExamples = [
-    '什么是指标校核',
-    '请使用指标校核',
-    '请帮我指标校核',
-    '什么是大模型',
-    '如何进行半面积计算'
-  ]
-
-  // 外部传入的对话ID（来自子侧边栏）
-  // 外部触发新建对话
-  const handleCreateConversationFromExternal = async () => {
-    try {
-      setConversationLoading(true)
-      setConversationError('')
-      const created = await createConversation('新对话')
-      const newId = created?.id || created?.conversationId || created?.conversation_id || ''
-      if (newId) {
-        await handleSwitchConversation(newId)
-        setConversations(prev => [{
-          id: newId,
-          title: '新对话',
-          createTime: new Date().toISOString(),
-          remainingDays: conversationRetentionDays
-        }, ...prev])
-      }
-    } catch (err) {
-      setConversationError(err?.message || '创建会话失败')
-    } finally {
-      setConversationLoading(false)
-    }
-  }
-
-  const handleSwitchConversation = async (targetConversationId) => {
-    if (!targetConversationId || targetConversationId === conversationIdRef.current) return
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-    setLoading(false)
-    await loadConversationListAndMessages(targetConversationId)
-  }
-
-  useImperativeHandle(ref, () => ({
-    triggerNewConversation: () => handleCreateConversationFromExternal(),
-    switchToConversation: (convId) => handleSwitchConversation(convId),
-    refreshTitle: (convId, title) => {
-      setConversations(prev => prev.map(c => c.id === convId ? { ...c, title } : c))
-      if (activeConvId === convId) setActiveConversationTitle(title)
-    },
-    syncConversationsFromApp: (appConvs) => {
-      setConversations(appConvs)
-    },
-  }), [handleCreateConversationFromExternal, handleSwitchConversation])
-
-  useEffect(() => {
-    if (suppressAutoScrollRef.current) {
-      suppressAutoScrollRef.current = false
-      return
-    }
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-    setShowScrollToBottom(false)
-  }, [messages])
-
-  const updateScrollToBottomVisibility = useCallback((node) => {
-    if (!node) {
-      setShowScrollToBottom(false)
-      return
-    }
-    const distanceToBottom = node.scrollHeight - node.scrollTop - node.clientHeight
-    setShowScrollToBottom(distanceToBottom > 140)
-  }, [])
-
-  const handleScrollToBottom = useCallback(() => {
-    const node = messagesContainerRef.current
-    if (!node) return
-    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
-    setShowScrollToBottom(false)
-  }, [])
-
-  const normalizeMessageRole = useCallback((item) => {
-    const rawRole = String(item?.role || item?.message_role || item?.sender || '').toLowerCase()
-    if (rawRole === 'user') return 'user'
-    if (rawRole === 'assistant') return 'assistant'
-    return 'assistant'
-  }, [])
-
-  const normalizeMessageContent = useCallback((item) => {
-    return item?.content || item?.message || item?.text || ''
-  }, [])
-
-  const normalizeStoredMessagePayload = useCallback((item) => {
-    const rawPayload = item?.metadata?.payload ?? item?.messagePayload ?? item?.message_payload ?? ''
-    if (!rawPayload) return {}
-    if (typeof rawPayload === 'object') return rawPayload
-    if (typeof rawPayload !== 'string') return {}
-    try {
-      return JSON.parse(rawPayload)
-    } catch {
-      return {}
-    }
-  }, [])
-
-    const normalizeMessageFromHistory = useCallback((item) => {
-    const payload = normalizeStoredMessagePayload(item)
-    const fallbackContent = typeof payload?.content === 'string' ? payload.content : ''
-    const refs = Array.isArray(payload?.references)
-      ? payload.references
-      : (Array.isArray(item?.references) ? item.references : [])
-    const sourceTag = typeof payload?.sourceTag === 'string'
-      ? payload.sourceTag
-      : (typeof item?.sourceTag === 'string' ? item.sourceTag : '')
-    const logicFlow = typeof payload?.logicFlow === 'string'
-      ? payload.logicFlow
-      : (typeof item?.logicFlow === 'string' ? item.logicFlow : '')
-    const skillHint = typeof payload?.skillHint === 'string'
-      ? payload.skillHint
-      : (typeof item?.skillHint === 'string' ? item.skillHint : '')
-    const analysisPlan = payload?.analysisPlan && typeof payload.analysisPlan === 'object'
-      ? payload.analysisPlan
-      : (item?.analysisPlan && typeof item.analysisPlan === 'object' ? item.analysisPlan : null)
-    const analysisSteps = Array.isArray(payload?.analysisSteps)
-      ? payload.analysisSteps
-      : (Array.isArray(item?.analysisSteps) ? item.analysisSteps : [])
-    const analysisSummary = payload?.analysisSummary && typeof payload.analysisSummary === 'object'
-      ? payload.analysisSummary
-      : (item?.analysisSummary && typeof item.analysisSummary === 'object' ? item.analysisSummary : null)
-    const toolDraft = payload?.toolDraft && typeof payload.toolDraft === 'object'
-      ? payload.toolDraft
-      : (item?.toolDraft && typeof item.toolDraft === 'object' ? item.toolDraft : null)
-    const clarify = payload?.clarify && typeof payload.clarify === 'object'
-      ? payload.clarify
-      : (item?.clarify && typeof item.clarify === 'object' ? item.clarify : null)
-    const ragContent = typeof payload?.ragContent === 'string'
-      ? payload.ragContent
-      : (typeof item?.ragContent === 'string' ? item.ragContent : '')
-    const outputFiles = Array.isArray(payload?.outputFiles)
-      ? payload.outputFiles
-      : (Array.isArray(item?.outputFiles) ? item.outputFiles : [])
-    // 解析消息中的附件信息
-    const attachments = Array.isArray(payload?.attachments)
-      ? payload.attachments
-      : (Array.isArray(item?.attachments) ? item.attachments : [])
-    const messageId = item?.id ?? item?.messageId ?? item?.message_id ?? item?.recordId ?? item?.record_id ?? null
-    return {
-      id: messageId,
-      role: normalizeMessageRole(item),
-      content: normalizeMessageContent(item) || fallbackContent,
-      references: refs,
-      sourceTag,
-      logicFlow,
-      skillHint,
-      ragContent,
-      outputFiles,
-      analysisPlan,
-      analysisSteps,
-      analysisSummary,
-      toolDraft,
-      clarify,
-      attachments
-    }
-  }, [normalizeMessageContent, normalizeMessageRole, normalizeStoredMessagePayload])
-
-  const buildMessagePayloadForSave = (msg) => {
-    if (!msg || typeof msg !== 'object') return ''
-    const payload = {
-      content: String(msg.content || ''),
-      references: Array.isArray(msg.references) ? msg.references : [],
-      sourceTag: String(msg.sourceTag || ''),
-      logicFlow: String(msg.logicFlow || ''),
-      skillHint: String(msg.skillHint || ''),
-      ragContent: typeof msg.ragContent === 'string' ? msg.ragContent : '',
-      outputFiles: Array.isArray(msg.outputFiles) ? msg.outputFiles : [],
-      analysisPlan: msg.analysisPlan && typeof msg.analysisPlan === 'object' ? msg.analysisPlan : null,
-      analysisSteps: Array.isArray(msg.analysisSteps) ? msg.analysisSteps : [],
-      analysisSummary: msg.analysisSummary && typeof msg.analysisSummary === 'object' ? msg.analysisSummary : null,
-      toolDraft: msg.toolDraft && typeof msg.toolDraft === 'object' ? msg.toolDraft : null,
-      clarify: msg.clarify && typeof msg.clarify === 'object' ? msg.clarify : null
-    }
-    const attachments = Array.isArray(msg.attachments)
-      ? msg.attachments
-      : (Array.isArray(msg.files) ? msg.files.map(f => ({ name: f.name || f.fileName || '', size: f.size || 0, type: f.type || 'application/octet-stream' })) : [])
-    const hasExtra = payload.references.length > 0
-      || payload.sourceTag
-      || payload.logicFlow
-      || payload.skillHint
-      || payload.ragContent
-      || payload.outputFiles.length > 0
-      || payload.analysisPlan
-      || payload.analysisSteps.length > 0
-      || payload.analysisSummary
-      || payload.toolDraft
-      || payload.clarify
-      || attachments.length > 0
-    if (!hasExtra) return ''
-    if (attachments.length > 0) {
-      payload.attachments = attachments
-    }
-    return JSON.stringify(payload)
-  }
-
-  const buildMessagesAndDraftsFromHistory = useCallback((history, conversationId) => {
-    const mappedMessages = (Array.isArray(history) ? history : [])
-      .map(item => normalizeMessageFromHistory(item))
-      .filter(item => item.content || item.toolDraft)
-    const recoveredPlanDrafts = {}
-    mappedMessages.forEach((msg, index) => {
-      if (!msg.analysisPlan || typeof msg.analysisPlan !== 'object') return
-      const messageId = msg.id ?? `${conversationId}-history-${index}`
-      msg.id = messageId
-      const steps = Array.isArray(msg.analysisPlan.steps) ? msg.analysisPlan.steps.map(normalizePlanStep) : []
-      const historyAnalysisSteps = Array.isArray(msg.analysisSteps) ? msg.analysisSteps : []
-      recoveredPlanDrafts[messageId] = {
-        planId: msg.analysisPlan.planId || msg.analysisPlan.plan_id || '',
-        version: msg.analysisPlan.version || 1,
-        query: msg.analysisPlan.query || '',
-        deepThinking: msg.analysisPlan.deepThinking || msg.analysisPlan.deep_thinking || '',
-        questionType: msg.analysisPlan.questionType || msg.analysisPlan.question_type || '',
-        summary: msg.analysisPlan.summary || '',
-        rerunMode: msg.analysisPlan.rerunMode || msg.analysisPlan.rerun_mode || 'AUTO',
-        restartFromStep: Number(msg.analysisPlan.restartFromStep || msg.analysisPlan.restart_from_step || 1),
-        adjustmentInstruction: msg.analysisPlan.adjustmentInstruction || '',
-        editedSteps: steps,
-        analysisSteps: historyAnalysisSteps,
-        analysisSummary: msg.analysisSummary || null
-      }
-    })
-    return { mappedMessages, recoveredPlanDrafts }
-  }, [normalizeMessageFromHistory])
-
-  const loadConversationMessages = useCallback(async (targetConversationId, beforeId = null) => {
-    if (!targetConversationId) {
-      return { items: [], hasMore: false, nextBeforeId: null }
-    }
-    return fetchConversationMessages(targetConversationId, { beforeId, limit: 50 })
-  }, [])
-
-  const loadConversationListAndMessages = useCallback(async (preferConversationId = '') => {
-    setConversationLoading(true)
-    setConversationError('')
-    try {
-      let result = await fetchConversations({ page: 1, pageSize: 50 })
-      if (!Array.isArray(result.items) || result.items.length === 0) {
-        const created = await createConversation('新对话')
-        if (created) {
-          result = await fetchConversations({ page: 1, pageSize: 50 })
-        }
-      }
-      const normalizedList = (Array.isArray(result.items) ? result.items : [])
-        .map(item => ({
-          id: normalizeConversationId(item),
-          title: normalizeConversationTitle(item),
-          createTime: item?.createTime || item?.create_time || '',
-          remainingDays: Number(item?.remainingDays ?? item?.remaining_days ?? 0)
-        }))
-        .filter(item => item.id)
-      setConversations(normalizedList)
-      setConversationPage(1)
-      setConversationHasMore(Boolean(result?.hasMore))
-      setConversationRetentionDays(Number(result?.retentionDays || 90))
-      // 初始化排序状态（从服务器返回顺序）
-      setConvOrder(prev => ({
-        pinned: prev.pinned || [],
-        order: normalizedList.map(c => c.id)
-      }))
-      const preferred = normalizedList.find(item => item.id === preferConversationId)
-      const current = preferred || normalizedList[0]
-      if (!current) {
-        conversationIdRef.current = ''
-        setActiveConversationTitle('')
-        setMessages([createDefaultAssistantMessage()])
-        setMessageHasMore(false)
-        setMessageBeforeId(null)
-        return
-      }
-      conversationIdRef.current = current.id
-      setActiveConvId(current.id)
-      setActiveConversationTitle(current.title || '')
-      const historyPage = await loadConversationMessages(current.id, null)
-      const { mappedMessages, recoveredPlanDrafts } = buildMessagesAndDraftsFromHistory(historyPage?.items || [], current.id)
-      setPlanDrafts(recoveredPlanDrafts)
-      setPlanUiStates({})
-      setMessages(mappedMessages.length > 0 ? mappedMessages : [createDefaultAssistantMessage()])
-      setMessageHasMore(Boolean(historyPage?.hasMore))
-      setMessageBeforeId(historyPage?.nextBeforeId ?? null)
-    } catch (err) {
-      setConversationError(err?.message || '会话加载失败')
-      setMessages([createDefaultAssistantMessage()])
-      setMessageHasMore(false)
-      setMessageBeforeId(null)
-    } finally {
-      setConversationLoading(false)
-    }
-  }, [buildMessagesAndDraftsFromHistory, createDefaultAssistantMessage, loadConversationMessages, normalizeConversationId, normalizeConversationTitle])
-
-  useEffect(() => {
-    loadConversationListAndMessages()
-  }, [loadConversationListAndMessages])
-
-  const loadMoreConversations = useCallback(async () => {
-    if (conversationListLoadingMore || !conversationHasMore) return
-    setConversationListLoadingMore(true)
-    try {
-      const nextPage = conversationPage + 1
-      const result = await fetchConversations({ page: nextPage, pageSize: 50 })
-      const normalized = (Array.isArray(result.items) ? result.items : [])
-        .map(item => ({
-          id: normalizeConversationId(item),
-          title: normalizeConversationTitle(item),
-          createTime: item?.createTime || item?.create_time || '',
-          remainingDays: Number(item?.remainingDays ?? item?.remaining_days ?? 0)
-        }))
-        .filter(item => item.id)
-      if (normalized.length > 0) {
-        setConversations(prev => {
-          const idSet = new Set(prev.map(item => item.id))
-          const merged = [...prev]
-          normalized.forEach(item => {
-            if (idSet.has(item.id)) return
-            merged.push(item)
-          })
-          return merged
-        })
-      }
-      setConversationPage(nextPage)
-      setConversationHasMore(Boolean(result?.hasMore))
-    } catch (err) {
-      setConversationError(err?.message || '加载更多会话失败')
-    } finally {
-      setConversationListLoadingMore(false)
-    }
-  }, [conversationHasMore, conversationListLoadingMore, conversationPage, normalizeConversationId, normalizeConversationTitle])
-
-  const loadMoreMessages = useCallback(async () => {
-    const activeId = conversationIdRef.current
-    if (!activeId || messageLoadingMore || !messageHasMore || !messageBeforeId) return
-    const container = messagesContainerRef.current
-    const previousHeight = container?.scrollHeight || 0
-    setMessageLoadingMore(true)
-    try {
-      const historyPage = await loadConversationMessages(activeId, messageBeforeId)
-      const { mappedMessages, recoveredPlanDrafts } = buildMessagesAndDraftsFromHistory(historyPage?.items || [], activeId)
-      if (mappedMessages.length > 0) {
-        suppressAutoScrollRef.current = true
-        setMessages(prev => [...mappedMessages, ...prev])
-      }
-      if (Object.keys(recoveredPlanDrafts).length > 0) {
-        setPlanDrafts(prev => ({ ...recoveredPlanDrafts, ...prev }))
-      }
-      setMessageHasMore(Boolean(historyPage?.hasMore))
-      setMessageBeforeId(historyPage?.nextBeforeId ?? null)
-      requestAnimationFrame(() => {
-        const node = messagesContainerRef.current
-        if (!node) return
-        const nextHeight = node.scrollHeight
-        node.scrollTop = nextHeight - previousHeight + node.scrollTop
-        updateScrollToBottomVisibility(node)
-      })
-    } catch (err) {
-      setConversationError(err?.message || '加载更多消息失败')
-    } finally {
-      setMessageLoadingMore(false)
-    }
-  }, [buildMessagesAndDraftsFromHistory, loadConversationMessages, messageBeforeId, messageHasMore, messageLoadingMore, updateScrollToBottomVisibility])
-
-  const handleMessagesScroll = useCallback((event) => {
-    const target = event?.currentTarget
-    if (!target) return
-    updateScrollToBottomVisibility(target)
-    if (!messageHasMore || messageLoadingMore) return
-    if (target.scrollTop <= 48) {
-      loadMoreMessages()
-    }
-  }, [loadMoreMessages, messageHasMore, messageLoadingMore, updateScrollToBottomVisibility])
-
-  const loadToolCatalog = useCallback(async () => {
-    setToolCatalogLoading(true)
-    setToolCatalogError('')
-    try {
-      const list = await fetchToolCatalog()
-      setToolCatalog(list)
-    } catch (err) {
-      setToolCatalog([])
-      setToolCatalogError(err?.message || '加载技能目录失败')
-    } finally {
-      setToolCatalogLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    loadToolCatalog()
-  }, [loadToolCatalog])
-
-  const getToolDisplayLabel = (tool) => String(tool?.tool_name || tool?.toolName || tool?.displayName || tool?.name || '').trim()
-  const normalizeToolToken = (text) => String(text || '').trim().toLowerCase()
-
-  // 解析输入框中的 @mention 上下文，仅用于辅助输入，不会强制触发技能调用。
-  const resolveMentionContext = (text, caretPosition) => {
-    const safeText = String(text || '')
-    const safeCaret = Number.isFinite(caretPosition) ? caretPosition : safeText.length
-    const head = safeText.slice(0, safeCaret)
-    // 支持在任意位置输入 @（句首/句中/句尾），只要光标前最后一段是未闭合的 @token 即触发候选。
-    const match = head.match(/@([^\s@]*)$/)
-    if (!match) return null
-    const atIndex = head.lastIndexOf('@')
-    if (atIndex < 0) return null
-    const query = match[1] || ''
-    return {
-      start: atIndex,
-      end: safeCaret,
-      query: query.trim()
-    }
-  }
-
-  const getMentionCandidates = () => {
-    if (!mentionOpen) return []
-    const keyword = String(mentionQuery || '').toLowerCase()
-    const scored = toolCatalog
-      .map((tool) => {
-        const name = String(tool?.name || '')
-        const displayName = String(tool?.displayName || '')
-        const toolName = String(tool?.tool_name || tool?.toolName || '')
-        const desc = String(tool?.description || '')
-        const corpus = `${name} ${displayName} ${toolName} ${desc}`.toLowerCase()
-        if (!keyword) return { tool, score: 1 }
-        if (name.toLowerCase().startsWith(keyword) || displayName.toLowerCase().startsWith(keyword) || toolName.toLowerCase().startsWith(keyword)) return { tool, score: 3 }
-        if (corpus.includes(keyword)) return { tool, score: 2 }
-        return null
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8)
-    return scored.map(item => item.tool)
-  }
-
-  const mentionCandidates = getMentionCandidates()
-
-  const closeMention = () => {
-    setMentionOpen(false)
-    setMentionQuery('')
-    setMentionStart(-1)
-    setMentionEnd(-1)
-    setMentionIndex(0)
-  }
-
-  const applyMentionTool = (tool) => {
-    if (!tool || mentionStart < 0 || mentionEnd < mentionStart) return
-    const mentionText = `@${getToolDisplayLabel(tool) || tool.name}`
-    const nextInput = `${input.slice(0, mentionStart)}${mentionText} ${input.slice(mentionEnd)}`
-    setInput(nextInput)
-    closeMention()
-    requestAnimationFrame(() => {
-      const cursorPos = mentionStart + mentionText.length + 1
-      if (inputRef.current) {
-        inputRef.current.focus()
-        inputRef.current.selectionStart = cursorPos
-        inputRef.current.selectionEnd = cursorPos
-      }
-    })
-  }
-
-  // 仅当输入整体是“@技能名”时，触发直连技能调用；句中 @ 仍走语义判断。
-  const resolveStandaloneMentionTool = (text) => {
-    const raw = String(text || '').trim()
-    const match = raw.match(/^@\s*(.+?)\s*$/)
-    if (!match) return null
-    const mentionText = String(match[1] || '').trim()
-    if (!mentionText) return null
-    const target = normalizeToolToken(mentionText)
-    const exact = toolCatalog.find((tool) => {
-      const candidates = [
-        tool?.tool_name,
-        tool?.toolName,
-        tool?.displayName,
-        tool?.name,
-        tool?.tool_code,
-        tool?.toolCode
-      ]
-      return candidates
-        .map(item => normalizeToolToken(item))
-        .filter(Boolean)
-        .includes(target)
-    })
-    return exact || null
-  }
-
-  const parseJsonSafe = (text, fallback = null) => {
-    try {
-      return JSON.parse(text)
-    } catch {
-      return fallback
-    }
-  }
-
-  const normalizeRefs = (payload) => {
-    const rawRefs =
-      payload?.reference
-      || payload?.data?.reference
-      || payload?.references
-      || payload?.data?.references
-      || payload?.raw?.reference
-      || payload?.raw?.data?.reference
-      || payload?.raw?.references
-      || payload?.raw?.data?.references
-      || payload?.raw?.choices?.[0]?.message?.reference
-      || payload?.raw?.data?.choices?.[0]?.message?.reference
-    if (Array.isArray(rawRefs)) return rawRefs
-    if (rawRefs && Array.isArray(rawRefs.chunks)) return rawRefs.chunks
-    return []
-  }
-
-  const buildReferenceOnlyNotice = (refs) => {
-    if (!Array.isArray(refs) || refs.length === 0) return ''
-    const docNames = Array.from(new Set(
-      refs
-        .map((ref, idx) => ref?.document_name || ref?.doc_name || `文档${idx + 1}`)
-        .filter(Boolean)
-    )).slice(0, 3)
-    if (docNames.length === 0) {
-      return '已检索到相关资料，请查看下方引用原文。'
-    }
-    return `已检索到相关资料（${docNames.join('、')}），请查看下方引用原文。`
-  }
-
-  const normalizeClarifySuggestions = (payload) => {
-    if (!payload || !Array.isArray(payload.suggestions)) return []
-    return payload.suggestions
-      .map(item => typeof item === 'string' ? item.trim() : '')
-      .filter(Boolean)
-      .slice(0, 3)
-  }
-
-  const normalizeLogicFlow = (payload) => {
-    const flow = payload?.logicFlow || payload?.data?.logicFlow || ''
-    return typeof flow === 'string' ? flow.trim() : ''
-  }
-
-  const consumeSse = async (response, onEvent) => {
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let currentEvent = 'message'
-    let dataLines = []
-    const flushEvent = async () => {
-      if (dataLines.length === 0) {
-        currentEvent = 'message'
-        return
-      }
-      const data = dataLines.join('\n')
-      dataLines = []
-      await onEvent(currentEvent || 'message', data)
-      currentEvent = 'message'
-    }
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const rawLine of lines) {
-        const line = rawLine.trimEnd()
-        if (!line) {
-          await flushEvent()
-          continue
-        }
-        if (line.startsWith('event:')) {
-          await flushEvent()
-          currentEvent = line.slice(6).trim()
-          continue
-        }
-        if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).replace(/^\s/, ''))
-        }
-      }
-    }
-    if (buffer.trim()) {
-      if (buffer.trimStart().startsWith('data:')) {
-        dataLines.push(buffer.trimStart().slice(5).replace(/^\s/, ''))
-      }
-    }
-    await flushEvent()
-  }
-
-  const updateStreamingMessage = (messageId, updater) => {
-    setMessages(prev => prev.map(msg => {
-      if (msg.id !== messageId) return msg
-      return { ...msg, ...updater(msg) }
-    }))
-  }
-
-  const normalizePlanStep = (step, index) => {
-    const stepNo = Number(step?.stepNo ?? step?.step_no ?? index + 1)
-    const route = String(step?.route || '').trim().toUpperCase()
-    const label = String(step?.label || '').trim() || `步骤${stepNo}`
-    return {
-      stepNo,
-      route,
-      label,
-      goal: String(step?.goal || '').trim(),
-      query: String(step?.query || '').trim(),
-      toolName: String(step?.toolName || step?.tool_name || '').trim(),
-      continueWhen: String(step?.continueWhen || step?.continue_when || '').trim(),
-      stopWhen: String(step?.stopWhen || step?.stop_when || '').trim()
-    }
-  }
-
-  const reindexPlanSteps = (steps) => {
-    return (steps || []).map((step, index) => ({
-      ...step,
-      stepNo: index + 1
-    }))
-  }
-
-  const initializePlanDraft = (messageId, payload) => {
-    if (!payload) return
-    const steps = Array.isArray(payload.steps) ? payload.steps.map(normalizePlanStep) : []
-    setPlanDrafts(prev => ({
-      ...prev,
-      [messageId]: {
-        planId: payload.planId || payload.plan_id || '',
-        version: payload.version || 1,
-        query: payload.query || '',
-        deepThinking: payload.deepThinking || payload.deep_thinking || '',
-        questionType: payload.questionType || payload.question_type || '',
-        summary: payload.summary || '',
-        rerunMode: payload.rerunMode || payload.rerun_mode || 'AUTO',
-        restartFromStep: Number(payload.restartFromStep || payload.restart_from_step || 1),
-        adjustmentInstruction: payload.adjustmentInstruction || '',
-        editedSteps: steps,
-        analysisSteps: [],
-        analysisSummary: null
-      }
-    }))
-    updateStreamingMessage(messageId, old => ({
-      analysisPlan: payload,
-      content: old.content || ''
-    }))
-  }
-
-  const updatePlanDraft = (messageId, updater) => {
-    setPlanDrafts(prev => {
-      const current = prev[messageId]
-      if (!current) return prev
-      const next = updater(current)
-      return { ...prev, [messageId]: next }
-    })
-  }
-
-  const updatePlanUiState = (messageId, updater) => {
-    setPlanUiStates(prev => {
-      const current = prev[messageId] || {
-        manualExpanded: false,
-        manualCollapsed: false,
-        editMode: false
-      }
-      const next = updater(current)
-      return { ...prev, [messageId]: next }
-    })
-  }
-
-  const togglePlanExpanded = (messageId, msg) => {
-    updatePlanUiState(messageId, current => {
-      const currentlyExpanded = current.manualExpanded
-        ? true
-        : current.manualCollapsed
-          ? false
-          : !!msg?.isStreaming
-      if (currentlyExpanded) {
-        return { ...current, manualExpanded: false, manualCollapsed: true }
-      }
-      return { ...current, manualExpanded: true, manualCollapsed: false }
-    })
-  }
-
-  const togglePlanEditMode = (messageId, enabled) => {
-    updatePlanUiState(messageId, current => ({
-      ...current,
-      editMode: enabled,
-      manualExpanded: true,
-      manualCollapsed: false
-    }))
-  }
-
-  const handlePlanStepFieldChange = (messageId, index, key, value) => {
-    updatePlanDraft(messageId, current => {
-      const nextSteps = (current.editedSteps || []).map((step, i) => {
-        if (i !== index) return step
-        return { ...step, [key]: value }
-      })
-      return { ...current, editedSteps: nextSteps }
-    })
-  }
-
-  const handlePlanConfigChange = (messageId, key, value) => {
-    updatePlanDraft(messageId, current => ({ ...current, [key]: value }))
-  }
-
-  const handlePlanStepMove = (messageId, index, direction) => {
-    updatePlanDraft(messageId, current => {
-      const steps = [...(current.editedSteps || [])]
-      const targetIndex = index + direction
-      if (targetIndex < 0 || targetIndex >= steps.length) return current
-      const temp = steps[index]
-      steps[index] = steps[targetIndex]
-      steps[targetIndex] = temp
-      return { ...current, editedSteps: reindexPlanSteps(steps) }
-    })
-  }
-
-  const handlePlanStepAdd = (messageId) => {
-    updatePlanDraft(messageId, current => {
-      const nextSteps = [...(current.editedSteps || [])]
-      nextSteps.push(normalizePlanStep({
-        route: 'AUTO',
-        label: '新步骤',
-        goal: '',
-        query: current.query || '',
-        toolName: '',
-        continueWhen: '',
-        stopWhen: ''
-      }, nextSteps.length))
-      return { ...current, editedSteps: reindexPlanSteps(nextSteps) }
-    })
-  }
-
-  const handlePlanStepRemove = (messageId, index) => {
-    updatePlanDraft(messageId, current => {
-      const steps = [...(current.editedSteps || [])]
-      if (steps.length <= 1) return current
-      steps.splice(index, 1)
-      return { ...current, editedSteps: reindexPlanSteps(steps) }
-    })
-  }
-
-  const buildPlanStreamState = (draft, msg) => {
-    const executed = Array.isArray(draft?.analysisSteps) ? draft.analysisSteps : []
-    const planned = Array.isArray(draft?.editedSteps) ? draft.editedSteps.length : 0
-    const finishedRaw = executed.filter(step => {
-      const status = String(step?.status || '').toLowerCase()
-      return status === 'completed' || status === 'done'
-    }).length
-    const finished = planned > 0 ? Math.min(finishedRaw, planned) : finishedRaw
-    const latest = executed.length > 0 ? executed[executed.length - 1] : null
-    const waitingApproval = executed.some(step => String(step?.status || '').toLowerCase() === 'waiting_approval')
-    if (draft?.analysisSummary || msg?.analysisSummary) {
-      const total = planned || Math.max(finished, 1)
-      if (waitingApproval || (planned > 0 && finished < planned)) {
-        const percent = total > 0 ? Math.round((finished / total) * 100) : 20
-        return {
-          text: `已执行：${finished}/${total} 步（${waitingApproval ? '等待审批' : '未全部完成'}）`,
-          progress: Math.max(12, Math.min(99, percent))
-        }
-      }
-      return {
-        text: `已完成：${finished}/${total} 步`,
-        progress: 100
-      }
-    }
-    if (msg?.isStreaming) {
-      if (!latest) {
-        return {
-          text: `进行中：0/${planned || 1} 步（正在生成链路）`,
-          progress: 10
-        }
-      }
-      const latestNoRaw = Number(latest.step_no || executed.length)
-      const latestNo = planned > 0 ? Math.min(Math.max(1, latestNoRaw), planned) : Math.max(1, latestNoRaw)
-      const latestLabel = latest.label || latest.type || '执行步骤'
-      const latestStatus = latest.status || 'streaming'
-      const percentBase = planned > 0 ? Math.min(100, Math.round((latestNo / planned) * 100)) : 30
-      return {
-        text: `进行中：第 ${latestNo} 步 ${latestLabel}（${latestStatus}）`,
-        progress: Math.max(12, percentBase)
-      }
-    }
-    return {
-      text: `待执行：0/${planned || 1} 步`,
-      progress: 0
-    }
-  }
-
-  const buildStepSectionHeader = (stepPayload) => {
-    const stepNoRaw = Number(stepPayload?.step_no || 0)
-    const stepNo = Number.isFinite(stepNoRaw) && stepNoRaw > 0 ? stepNoRaw : null
-    const label = String(stepPayload?.label || stepPayload?.type || '执行步骤').trim()
-    const route = String(stepPayload?.route || stepPayload?.type || '').trim()
-    const query = String(stepPayload?.query || '').trim()
-    const title = stepNo ? `### 第 ${stepNo} 步：${label}` : `### ${label}`
-    const meta = [route ? `路由：${route}` : '', query ? `任务：${query}` : ''].filter(Boolean).join('｜')
-    return meta ? `${title}\n${meta}\n\n` : `${title}\n\n`
-  }
-
-  const runWithPlanDraft = async (messageId, replanOnly) => {
-    const draft = planDrafts[messageId]
-    if (!draft) return
-    const nextMsgId = Date.now() + Math.floor(Math.random() * 1000)
-    setMessages(prev => [...prev, { role: 'assistant', content: '', id: nextMsgId, isStreaming: true }])
-    setLoading(true)
-    let finalAssistantContent = ''
-    let pendingStepPayload = null
-    const insertedStepNoSet = new Set()
-    let insertedFallbackHeader = false
-    const assistantPayloadState = {
-      references: [],
-      sourceTag: '',
-      logicFlow: '',
-      hasSkillEndResult: false,
-      skillHint: '',
-      analysisPlan: null,
-      analysisSteps: [],
-      analysisSummary: null,
-      toolDraft: null,
-      clarify: null
-    }
-    try {
-      const response = await startAgentStream(conversationIdRef.current, draft.query || '', {
-        adjustmentInstruction: draft.adjustmentInstruction || '',
-        editedSteps: draft.editedSteps || [],
-        rerunMode: draft.rerunMode || 'AUTO',
-        restartFromStep: draft.restartFromStep || 1,
-        replanOnly,
-        memoryProfileId: selectedMemoryProfileId
-      })
-      let aiContent = ''
-      let hasRenderableOutput = false
-      await consumeSse(response, async (eventName, dataStr) => {
-        if (dataStr === '[DONE]') return
-        if (eventName === 'analysis_plan') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          assistantPayloadState.analysisPlan = payload
-          initializePlanDraft(nextMsgId, payload)
-          return
-        }
-        if (eventName === 'analysis_step') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          pendingStepPayload = payload
-          assistantPayloadState.analysisSteps = [...assistantPayloadState.analysisSteps, payload]
-          updatePlanDraft(nextMsgId, current => ({
-            ...current,
-            analysisSteps: [...(current.analysisSteps || []), payload]
-          }))
-          updateStreamingMessage(nextMsgId, old => ({
-            analysisSteps: [...(old.analysisSteps || []), payload]
-          }))
-          return
-        }
-        if (eventName === 'analysis_summary') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          assistantPayloadState.analysisSummary = payload
-          updatePlanDraft(nextMsgId, current => ({ ...current, analysisSummary: payload }))
-          updateStreamingMessage(nextMsgId, () => ({ analysisSummary: payload }))
-          return
-        }
-        if (eventName === 'tool_draft') {
-          hasRenderableOutput = true
-          const draftPayload = parseJsonSafe(dataStr)
-          if (!draftPayload) return
-          assistantPayloadState.toolDraft = draftPayload
-          const draftArgs = parseJsonSafe(draftPayload.draftArgs, {}) || {}
-          setToolForms(prev => ({
-            ...prev,
-            [draftPayload.toolCallId]: {
-              args: draftArgs,
-              files: []
-            }
-          }))
-          const tip = '已识别到可执行技能，请填写参数并上传文件后执行。'
-          updateStreamingMessage(nextMsgId, old => {
-            const base = String(old.content || aiContent || '').trim()
-            const content = base.includes(tip) ? base : `${base ? `${base}\n\n` : ''}${tip}`
-            finalAssistantContent = content
-            return {
-              content,
-              toolDraft: draftPayload
-            }
-          })
-          return
-        }
-        if (eventName === 'clarify') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          const question = (payload.question || '我需要你补充一下意图，才能继续。').trim()
-          assistantPayloadState.clarify = {
-            ...payload,
-            suggestions: normalizeClarifySuggestions(payload)
-          }
-          finalAssistantContent = question
-          updateStreamingMessage(nextMsgId, () => ({
-            content: question,
-            clarify: assistantPayloadState.clarify
-          }))
-          return
-        }
-        if (eventName === 'rag_content') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const answer = payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          // Store RAG content separately for dedicated block display
-          if (answer) {
-            assistantPayloadState.hasSkillEndResult = true
-            assistantPayloadState.ragContent = answer
-            assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
-            updateStreamingMessage(nextMsgId, old => ({
-              content: old.content,
-              ragContent: answer,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
-            }))
-          } else {
-            // No answer text but still preserve outputFiles
-            updateStreamingMessage(nextMsgId, old => ({
-              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
-            }))
-          }
-          return
-        }
-        if (eventName === 'skill_end') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const result = payload.result || payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          const outputFiles = payload.outputFiles || []
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          // Store RAG content separately
-          if (result) {
-            assistantPayloadState.hasSkillEndResult = true
-            assistantPayloadState.ragContent = result
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(nextMsgId, old => ({
-              content: old.content,
-              ragContent: result,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: outputFiles
-            }))
-          } else if (outputFiles.length > 0) {
-            // No result text but has output files
-            assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(nextMsgId, old => ({
-              ragContent: assistantPayloadState.ragContent,
-              outputFiles: outputFiles,
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              hasRagContent: true
-            }))
-          } else {
-            updateStreamingMessage(nextMsgId, old => ({
-              outputFiles: outputFiles.length > 0 ? outputFiles : old.outputFiles
-            }))
-          }
-          return
-        }
-        if (eventName === 'skill_start') {
-          // Mark rag start - save current content as preRagContent
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const skillName = payload.skillName || ''
-          if (skillName && (skillName === 'rag-query' || skillName.includes('rag'))) {
-            assistantPayloadState.isRagPending = true
-            assistantPayloadState.preRagContent = aiContent
-            assistantPayloadState.ragContent = ''
-            assistantPayloadState.postRagContent = ''
-          }
-          return
-        }
-        if (eventName === 'token') {
-          hasRenderableOutput = true
-          if (pendingStepPayload) {
-            const stepNo = Number(pendingStepPayload?.step_no || 0)
-            if (stepNo > 0 && !insertedStepNoSet.has(stepNo)) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedStepNoSet.add(stepNo)
-            } else if (stepNo <= 0 && !insertedFallbackHeader) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedFallbackHeader = true
-            }
-            pendingStepPayload = null
-          }
-          aiContent += dataStr
-          finalAssistantContent = aiContent
-          updateStreamingMessage(nextMsgId, () => ({ content: aiContent }))
-          return
-        }
-        if (eventName === 'error') {
-          hasRenderableOutput = true
-          updateStreamingMessage(nextMsgId, () => ({ content: `**Error**: ${dataStr}` }))
-          return
-        }
-        if (eventName === 'message') {
-          const payload = parseJsonSafe(dataStr)
-          // Skip if this is a rag_content or skill_end message (already handled by dedicated events)
-          if (payload && (payload.type === 'rag_content' || payload.type === 'skill_end')) {
-            return
-          }
-          // Skip RAG skill summarization - these are already sent via skill_end/rag_content
-          // brain-server sends a final 'message' event with source='RAG检索' after skill completes
-          if (payload && payload.source === 'RAG检索') {
-            return
-          }
-          if (!payload) {
-            const plainText = (dataStr || '').trim()
-            if (!plainText) return
-            hasRenderableOutput = true
-            if (pendingStepPayload) {
-              const stepNo = Number(pendingStepPayload?.step_no || 0)
-              if (stepNo > 0 && !insertedStepNoSet.has(stepNo)) {
-                aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-                insertedStepNoSet.add(stepNo)
-              } else if (stepNo <= 0 && !insertedFallbackHeader) {
-                aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-                insertedFallbackHeader = true
-              }
-              pendingStepPayload = null
-            }
-            // Check if rag is pending - add to postRagContent
-            if (assistantPayloadState.isRagPending) {
-              const currentPostRag = assistantPayloadState.postRagContent || ''
-              assistantPayloadState.postRagContent = currentPostRag + plainText
-            }
-            aiContent += plainText
-            finalAssistantContent = aiContent
-            updateStreamingMessage(nextMsgId, () => ({ 
-              content: aiContent,
-              preRagContent: assistantPayloadState.preRagContent,
-              postRagContent: assistantPayloadState.postRagContent
-            }))
-            return
-          }
-          const delta = payload.answer || payload.data?.answer || ''
-          const refs = normalizeRefs(payload)
-          const logicFlow = normalizeLogicFlow(payload)
-          const sourceTag = payload.sourceLabel || payload.source || (refs.length > 0 ? 'RAG检索' : '')
-          const skillHint = String(payload.skillHint || payload.skill_hint || '').trim()
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (logicFlow) {
-            assistantPayloadState.logicFlow = logicFlow
-          }
-          if (sourceTag) {
-            assistantPayloadState.sourceTag = sourceTag
-          }
-          if (skillHint) {
-            assistantPayloadState.skillHint = skillHint
-          }
-          if (!delta && refs.length > 0 && !aiContent.trim()) {
-            aiContent += buildReferenceOnlyNotice(refs)
-          }
-          if (pendingStepPayload && delta) {
-            const stepNo = Number(pendingStepPayload?.step_no || 0)
-            if (stepNo > 0 && !insertedStepNoSet.has(stepNo)) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedStepNoSet.add(stepNo)
-            } else if (stepNo <= 0 && !insertedFallbackHeader) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedFallbackHeader = true
-            }
-            pendingStepPayload = null
-          }
-          // Check if rag is pending - add to postRagContent
-          if (assistantPayloadState.isRagPending && delta) {
-            const currentPostRag = assistantPayloadState.postRagContent || ''
-            assistantPayloadState.postRagContent = currentPostRag + delta
-          }
-          aiContent += delta
-          finalAssistantContent = aiContent
-          updateStreamingMessage(nextMsgId, old => ({
-            content: aiContent,
-            preRagContent: assistantPayloadState.preRagContent,
-            postRagContent: assistantPayloadState.postRagContent,
-            references: refs.length > 0 ? refs : old.references,
-            sourceTag: sourceTag || old.sourceTag,
-            logicFlow: logicFlow || old.logicFlow,
-            skillHint: skillHint || old.skillHint
-          }))
-          hasRenderableOutput = true
-        }
-      })
-      if (!hasRenderableOutput) {
-        finalAssistantContent = '请求已完成，暂未返回可展示内容。'
-        updateStreamingMessage(nextMsgId, () => ({ content: finalAssistantContent }))
-      }
-    } catch (err) {
-      finalAssistantContent = `**Error**: ${err.message}`
-      updateStreamingMessage(nextMsgId, () => ({ content: `**Error**: ${err.message}` }))
-    } finally {
-      setLoading(false)
-      updateStreamingMessage(nextMsgId, () => ({ isStreaming: false }))
-      if (conversationIdRef.current && finalAssistantContent.trim()) {
-        try {
-          const payloadText = buildMessagePayloadForSave({
-            content: finalAssistantContent,
-            ...assistantPayloadState
-          })
-          await saveConversationMessage(conversationIdRef.current, 'assistant', finalAssistantContent, activeConversationTitle, payloadText)
-        } catch (persistErr) {
-          console.error('保存助手消息失败:', persistErr)
-        }
-      }
-    }
-  }
-
-  const handleClarifySuggestionClick = (text) => {
-    if (!text) return
-    setInput(text)
-  }
-
-  const handleManualSkillInvoke = async (tool) => {
-    if (!tool?.name) return
-    if (loading) return
-    setConversationError('')
-    setManualDraftPending(tool.name)
-    try {
-      if (!conversationIdRef.current) {
-        await loadConversationListAndMessages()
-      }
-      if (!conversationIdRef.current) {
-        setConversationError('当前无可用会话，请先新建会话')
-        return
-      }
-      const conversationTitle = activeConversationTitle || String(getToolDisplayLabel(tool) || tool?.name || '').slice(0, 20)
-      const draft = await createToolDraft(
-        conversationIdRef.current,
-        tool.name,
-        tool.description || getToolDisplayLabel(tool) || tool.name
-      )
-      const draftArgs = parseJsonSafe(draft?.draftArgs, {}) || {}
-      if (draft?.toolCallId) {
-        setToolForms(prev => ({
-          ...prev,
-          [draft.toolCallId]: {
-            args: draftArgs,
-            files: []
-          }
-        }))
-      }
-      const assistantContent = `已选择技能：${getToolDisplayLabel(tool) || tool.name}\n请填写参数并上传文件后执行。`
-      const assistantMsg = {
-        role: 'assistant',
-        content: assistantContent,
-        id: Date.now() + Math.floor(Math.random() * 1000),
-        toolDraft: draft
-      }
-      setMessages(prev => [...prev, assistantMsg])
-      const payloadText = buildMessagePayloadForSave({
-        content: assistantContent,
-        toolDraft: draft
-      })
-      await saveConversationMessage(conversationIdRef.current, 'assistant', assistantContent, conversationTitle, payloadText)
-    } catch (err) {
-      setConversationError(err?.message || '创建技能草稿失败')
-    } finally {
-      setManualDraftPending('')
-    }
-  }
-
-  const handleSend = async (presetInput) => {
-    const mergedInput = typeof presetInput === 'string' ? presetInput : input
-    const finalInput = String(mergedInput || '').trim()
-    if (!finalInput) return
-    closeMention()
-
-    if (loading && abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-
-    const requestId = ++currentRequestIdRef.current
-    if (!conversationIdRef.current) {
-      await loadConversationListAndMessages()
-    }
-    if (!conversationIdRef.current) {
-      setConversationError('当前无可用会话，请先新建会话')
-      return
-    }
-
-    const standaloneTool = resolveStandaloneMentionTool(finalInput)
-    if (standaloneTool?.name) {
-      const conversationTitle = activeConversationTitle || String(getToolDisplayLabel(standaloneTool) || standaloneTool.name).slice(0, 20)
-      const userMsg = { role: 'user', content: finalInput }
-      setMessages(prev => [...prev, userMsg])
-      setInput('')
-      try {
-        await saveConversationMessage(conversationIdRef.current, 'user', finalInput, conversationTitle)
-      } catch (persistErr) {
-        console.error('保存用户消息失败:', persistErr)
-      }
-      try {
-        const draft = await createToolDraft(
-          conversationIdRef.current,
-          standaloneTool.name,
-          `direct_mention:${getToolDisplayLabel(standaloneTool) || standaloneTool.name}`
-        )
-        const draftArgs = parseJsonSafe(draft?.draftArgs, {}) || {}
-        const presetForm = { args: draftArgs, files: [] }
-        if (draft?.toolCallId) {
-          setToolForms(prev => ({
-            ...prev,
-            [draft.toolCallId]: presetForm
-          }))
-        }
-        // 单独 @技能名：固定走直接调用；若技能要求文件则降级为“已选择技能，等待上传”。
-        if (draft?.toolSpec?.upload_required) {
-          const assistantContent = `已直接匹配技能：${getToolDisplayLabel(standaloneTool) || standaloneTool.name}\n该技能需要上传文件，请补充文件后点击“执行技能”。`
-          const assistantMsg = {
-            role: 'assistant',
-            content: assistantContent,
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            toolDraft: draft
-          }
-          setMessages(prev => [...prev, assistantMsg])
-          const payloadText = buildMessagePayloadForSave({
-            content: assistantContent,
-            toolDraft: draft
-          })
-          await saveConversationMessage(conversationIdRef.current, 'assistant', assistantContent, conversationTitle, payloadText)
-        } else {
-          await handleApproveTool(draft, presetForm)
-        }
-      } catch (err) {
-        setConversationError(err?.message || '直接调用技能失败')
-      }
-      return
-    }
-
-    const conversationTitle = activeConversationTitle || finalInput.slice(0, 20)
-    const filesToUpload = [...uploadedFiles]
-    setUploadedFiles([])
-    
-    // 创建用户消息，包含文件信息用于UI显示
-    const userMsg = { 
-      role: 'user', 
-      content: finalInput,
-      isFile: filesToUpload.length > 0,
-      fileNames: filesToUpload.map(f => f.name)
-    }
-    setMessages(prev => [...prev, userMsg])
-    setInput('')
-    setLoading(true)
-    try {
-      // 保存用户消息时包含文件信息，以便大脑在读取历史消息时能看到文件关联
-      const payloadText = filesToUpload.length > 0
-        ? JSON.stringify({
-            content: finalInput,
-            attachments: filesToUpload.map(f => ({
-              name: f.name,
-              size: f.size,
-              type: f.type || 'application/octet-stream'
-            }))
-          })
-        : ''
-      await saveConversationMessage(conversationIdRef.current, 'user', finalInput, conversationTitle, payloadText)
-    } catch (persistErr) {
-      console.error('保存用户消息失败:', persistErr)
-    }
-
-    const aiMsgId = Date.now()
-    setMessages(prev => [...prev, { role: 'assistant', content: '', id: aiMsgId, isStreaming: true }])
-    abortControllerRef.current = new AbortController()
-    let finalAssistantContent = ''
-    let pendingStepPayload = null
-    const insertedStepNoSet = new Set()
-    let insertedFallbackHeader = false
-    const assistantPayloadState = {
-      references: [],
-      sourceTag: '',
-      logicFlow: '',
-      hasSkillEndResult: false,
-      skillHint: '',
-      analysisPlan: null,
-      analysisSteps: [],
-      analysisSummary: null,
-      toolDraft: null,
-      clarify: null
-    }
-
-    try {
-      const { response, uploaded: uploadedFromStream } = await startAgentStream(conversationIdRef.current, userMsg.content, {
-        memoryProfileId: selectedMemoryProfileId,
-        files: filesToUpload
-      })
-
-      // 如果有上传的文件，显示在消息中
-      if (uploadedFromStream && uploadedFromStream.length > 0) {
-        const fileMsg = {
-          role: 'user',
-          content: `[已上传文件]`,
-          id: `upload-${Date.now()}`,
-          isFile: true,
-          fileNames: uploadedFromStream.map(f => f.fileName)
-        }
-        setMessages(prev => [...prev, fileMsg])
-      }
-      let aiContent = ''
-      let hasRenderableOutput = false
-
-      await consumeSse(response, async (eventName, dataStr) => {
-        if (dataStr === '[DONE]') return
-        if (eventName === 'analysis_plan') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          assistantPayloadState.analysisPlan = payload
-          initializePlanDraft(aiMsgId, payload)
-          return
-        }
-        if (eventName === 'analysis_step') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          pendingStepPayload = payload
-          assistantPayloadState.analysisSteps = [...assistantPayloadState.analysisSteps, payload]
-          updatePlanDraft(aiMsgId, current => ({
-            ...current,
-            analysisSteps: [...(current.analysisSteps || []), payload]
-          }))
-          updateStreamingMessage(aiMsgId, old => ({
-            analysisSteps: [...(old.analysisSteps || []), payload]
-          }))
-          return
-        }
-        if (eventName === 'analysis_summary') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          assistantPayloadState.analysisSummary = payload
-          updatePlanDraft(aiMsgId, current => ({ ...current, analysisSummary: payload }))
-          updateStreamingMessage(aiMsgId, () => ({ analysisSummary: payload }))
-          return
-        }
-        if (eventName === 'token') {
-          hasRenderableOutput = true
-          if (pendingStepPayload) {
-            const stepNo = Number(pendingStepPayload?.step_no || 0)
-            if (stepNo > 0 && !insertedStepNoSet.has(stepNo)) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedStepNoSet.add(stepNo)
-            } else if (stepNo <= 0 && !insertedFallbackHeader) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedFallbackHeader = true
-            }
-            pendingStepPayload = null
-          }
-          aiContent += dataStr
-          finalAssistantContent = aiContent
-          updateStreamingMessage(aiMsgId, () => ({ content: aiContent }))
-          return
-        }
-        if (eventName === 'tool_draft') {
-          hasRenderableOutput = true
-          const draft = parseJsonSafe(dataStr)
-          if (!draft) return
-          assistantPayloadState.toolDraft = draft
-          const draftArgs = parseJsonSafe(draft.draftArgs, {}) || {}
-          setToolForms(prev => ({
-            ...prev,
-            [draft.toolCallId]: {
-              args: draftArgs,
-              files: []
-            }
-          }))
-          const tip = '已识别到可执行技能，请填写参数并上传文件后执行。'
-          updateStreamingMessage(aiMsgId, old => {
-            const base = String(old.content || aiContent || '').trim()
-            const content = base.includes(tip) ? base : `${base ? `${base}\n\n` : ''}${tip}`
-            finalAssistantContent = content
-            return {
-              content,
-              toolDraft: draft
-            }
-          })
-          return
-        }
-        if (eventName === 'clarify') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr, {}) || {}
-          const question = (payload.question || '我需要你补充一下意图，才能继续。').trim()
-          assistantPayloadState.clarify = {
-            ...payload,
-            suggestions: normalizeClarifySuggestions(payload)
-          }
-          updateStreamingMessage(aiMsgId, () => ({
-            content: question,
-            clarify: assistantPayloadState.clarify
-          }))
-          return
-        }
-        if (eventName === 'rag_content') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const answer = payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          if (answer) {
-            assistantPayloadState.ragContent = answer
-            assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
-            updateStreamingMessage(aiMsgId, old => ({
-              content: old.content,
-              ragContent: answer,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
-            }))
-          } else {
-            // No answer text but still preserve outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
-            }))
-          }
-          return
-        }
-        if (eventName === 'skill_end') {
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const result = payload.result || payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          const outputFiles = payload.outputFiles || []
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          if (result) {
-            assistantPayloadState.ragContent = result
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              content: old.content,
-              ragContent: result,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: outputFiles
-            }))
-          } else if (outputFiles.length > 0) {
-            // No result text but has output files
-            assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              ragContent: assistantPayloadState.ragContent,
-              outputFiles: outputFiles,
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              hasRagContent: true
-            }))
-          } else {
-            updateStreamingMessage(aiMsgId, old => ({
-              outputFiles: outputFiles.length > 0 ? outputFiles : old.outputFiles
-            }))
-          }
-          return
-        }
-        if (eventName === 'skill_start') {
-          // Mark rag start - save current content as preRagContent
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const skillName = payload.skillName || ''
-          if (skillName && (skillName === 'rag-query' || skillName.includes('rag'))) {
-            assistantPayloadState.isRagPending = true
-            assistantPayloadState.preRagContent = aiContent
-            assistantPayloadState.ragContent = ''
-            assistantPayloadState.postRagContent = ''
-          }
-          return
-        }
-        if (eventName === 'skill_end') {
-          // Handle skill_end event - stream RAG results directly to frontend
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const result = payload.result || payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          const outputFiles = payload.outputFiles || []
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          if (result) {
-            aiContent = `> **📚 ${skillName || 'Skill'} 执行结果**\n\n${result}`
-            if (outputFiles.length > 0) {
-              aiContent += '\n\n---\n\n**📥 下载文件:**\n\n'
-              outputFiles.forEach(f => {
-                aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
-              })
-            }
-            finalAssistantContent = aiContent
-            assistantPayloadState.ragContent = result
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              ragContent: result,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: assistantPayloadState.skillHint || old.skillHint,
-              hasRagContent: true,
-              outputFiles: outputFiles
-            }))
-          } else if (outputFiles.length > 0) {
-            aiContent = `> **📚 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。\n\n---\n\n**📥 下载文件:**\n\n`
-            outputFiles.forEach(f => {
-              aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
-            })
-            finalAssistantContent = aiContent
-            assistantPayloadState.ragContent = `**📥 ${skillName || 'Skill'} 执行完成**\n\n文件已生成，请点击下方下载链接获取结果。`
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              ragContent: assistantPayloadState.ragContent,
-              outputFiles: outputFiles,
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              hasRagContent: true
-            }))
-          }
-          return
-        }
-        if (eventName === 'error') {
-          hasRenderableOutput = true
-          updateStreamingMessage(aiMsgId, () => ({ content: `**Error**: ${dataStr}` }))
-          return
-        }
-        if (eventName === 'message') {
-          const payload = parseJsonSafe(dataStr)
-          // Skip if this is a rag_content or skill_end message (already handled by dedicated events)
-          if (payload && (payload.type === 'rag_content' || payload.type === 'skill_end')) {
-            return
-          }
-          // Skip RAG skill summarization - these are already sent via skill_end/rag_content
-          // brain-server sends a final 'message' event with source='RAG检索' after skill completes
-          if (payload && payload.source === 'RAG检索') {
-            return
-          }
-          if (!payload) {
-            const plainText = (dataStr || '').trim()
-            if (!plainText) return
-            hasRenderableOutput = true
-            if (pendingStepPayload) {
-              const stepNo = Number(pendingStepPayload?.step_no || 0)
-              if (stepNo > 0 && !insertedStepNoSet.has(stepNo)) {
-                aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-                insertedStepNoSet.add(stepNo)
-              } else if (stepNo <= 0 && !insertedFallbackHeader) {
-                aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-                insertedFallbackHeader = true
-              }
-              pendingStepPayload = null
-            }
-            aiContent += plainText
-            finalAssistantContent = aiContent
-            updateStreamingMessage(aiMsgId, () => ({ content: aiContent }))
-            return
-          }
-          const delta = payload.answer || payload.data?.answer || ''
-          const refs = normalizeRefs(payload)
-          const logicFlow = normalizeLogicFlow(payload)
-          const sourceTag = payload.sourceLabel || payload.source || (refs.length > 0 ? 'RAG检索' : '')
-          const skillHint = String(payload.skillHint || payload.skill_hint || '').trim()
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (logicFlow) {
-            assistantPayloadState.logicFlow = logicFlow
-          }
-          if (sourceTag) {
-            assistantPayloadState.sourceTag = sourceTag
-          }
-          if (skillHint) {
-            assistantPayloadState.skillHint = skillHint
-          }
-          if (delta || refs.length > 0 || logicFlow || skillHint) {
-            hasRenderableOutput = true
-          }
-          if (!delta && refs.length > 0 && !aiContent.trim()) {
-            aiContent += buildReferenceOnlyNotice(refs)
-          }
-          if (pendingStepPayload && delta) {
-            const stepNo = Number(pendingStepPayload?.step_no || 0)
-            if (stepNo > 0 && !insertedStepNoSet.has(stepNo)) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedStepNoSet.add(stepNo)
-            } else if (stepNo <= 0 && !insertedFallbackHeader) {
-              aiContent += `${aiContent.trim() ? '\n\n' : ''}${buildStepSectionHeader(pendingStepPayload)}`
-              insertedFallbackHeader = true
-            }
-            pendingStepPayload = null
-          }
-          // Add LLM marker header if this is the first LLM output after RAG content
-          if (delta && assistantPayloadState.references?.length > 0 && !aiContent.includes('🤖 AI回答')) {
-            aiContent += '\n\n---\n\n> **🤖 AI回答**\n\n'
-          }
-          // If skill result was already shown via skill_end, skip appending duplicate LLM summary
-          if (assistantPayloadState.hasSkillEndResult && delta.trim()) {
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              references: refs.length > 0 ? refs : old.references,
-              sourceTag: sourceTag || old.sourceTag,
-              logicFlow: logicFlow || old.logicFlow,
-              skillHint: skillHint || old.skillHint
-            }))
-            return
-          }
-          aiContent += delta
-          finalAssistantContent = aiContent
-          updateStreamingMessage(aiMsgId, old => ({
-            content: aiContent,
-            references: refs.length > 0 ? refs : old.references,
-            sourceTag: sourceTag || old.sourceTag,
-            logicFlow: logicFlow || old.logicFlow,
-            skillHint: skillHint || old.skillHint
-          }))
-        }
-      })
-      if (!hasRenderableOutput) {
-        finalAssistantContent = '请求已完成，暂未返回可展示内容。'
-        updateStreamingMessage(aiMsgId, () => ({ content: '请求已完成，暂未返回可展示内容。' }))
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        return
-      }
-      finalAssistantContent = `**Error**: ${err.message}`
-      updateStreamingMessage(aiMsgId, () => ({ content: `**Error**: ${err.message}` }))
-    } finally {
-      if (currentRequestIdRef.current === requestId) {
-        setLoading(false)
-      }
-      updateStreamingMessage(aiMsgId, () => ({ isStreaming: false }))
-      if (conversationIdRef.current && finalAssistantContent.trim()) {
-        try {
-          const payloadText = buildMessagePayloadForSave({
-            content: finalAssistantContent,
-            ...assistantPayloadState
-          })
-          await saveConversationMessage(conversationIdRef.current, 'assistant', finalAssistantContent, conversationTitle, payloadText)
-        } catch (persistErr) {
-          console.error('保存助手消息失败:', persistErr)
-        }
-      }
-    }
-  }
-
-  // 文件选择处理
-  const handleFileSelect = (e) => {
-    const files = Array.from(e.target.files || [])
-    if (files.length > 0) {
-      addFiles(files)
-    }
-    e.target.value = ''
-  }
-
-  // 拖拽文件处理（支持文件夹）
-  const handleFileDrop = async (e) => {
-    e.preventDefault()
-    const allFiles = []
-
-    // 尝试使用 File System Access API 读取目录
-    const items = e.dataTransfer.items
-    if (items) {
-      for (const item of items) {
-        if (item.kind === 'file') {
-          const entry = item.webkitGetAsEntry?.()
-          if (entry) {
-            await readDirectoryEntry(entry, allFiles)
-          } else {
-            const file = item.getAsFile()
-            if (file) allFiles.push(file)
-          }
-        }
-      }
-    }
-
-    // 如果没有读取到文件，尝试直接使用 files
-    if (allFiles.length === 0 && e.dataTransfer.files.length > 0) {
-      allFiles.push(...Array.from(e.dataTransfer.files))
-    }
-
-    if (allFiles.length > 0) {
-      addFiles(allFiles)
-    }
-  }
-
-  // 递归读取目录中的所有文件
-  const readDirectoryEntry = (entry, fileList, basePath = '') => {
-    return new Promise((resolve) => {
-      if (entry.isFile) {
-        entry.file((file) => {
-          const fileWithPath = new File([file], basePath + file.name, { type: file.type })
-          fileList.push(fileWithPath)
-          resolve()
-        })
-      } else if (entry.isDirectory) {
-        const dirReader = entry.createReader()
-        dirReader.readEntries((entries) => {
-          if (entries.length === 0) {
-            resolve()
-            return
-          }
-          const promises = entries.map((e) =>
-            readDirectoryEntry(e, fileList, basePath + entry.name + '/')
-          )
-          Promise.all(promises).then(resolve)
-        })
-      } else {
-        resolve()
-      }
-    })
-  }
-
-  // 添加文件
-  const addFiles = (newFiles) => {
-    setUploadedFiles(prev => {
-      const existingNames = new Set(prev.map(f => f.name))
-      const unique = newFiles.filter(f => !existingNames.has(f.name))
-      return [...prev, ...unique.map(f => ({ name: f.name, size: f.size, file: f }))]
-    })
-  }
-
-  // 移除文件
-  const removeUploadedFile = (index) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index))
-  }
-
-  // 处理文件夹选择
-  const handleFolderSelect = (e) => {
-    const files = Array.from(e.target.files || [])
-    if (files.length > 0) {
-      addFiles(files)
-    }
-    e.target.value = ''
-  }
-
-  const handleSendButtonClick = () => {
-    // 点击转圈按钮时，真正中断当前流式输出；若输入框有新内容则立即发起新问题。
-    if (loading) {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort()
-      }
-      setLoading(false)
-      const nextPrompt = String(input || '').trim()
-      if (nextPrompt) {
-        handleSend(nextPrompt)
-      }
-      return
-    }
-    handleSend()
-  }
-
-  const handleToolArgChange = (toolCallId, key, value) => {
-    setToolForms(prev => ({
-      ...prev,
-      [toolCallId]: {
-        ...(prev[toolCallId] || { args: {}, files: [] }),
-        args: {
-          ...((prev[toolCallId] && prev[toolCallId].args) || {}),
-          [key]: value
-        }
-      }
-    }))
-  }
-
-  const handleToolFileChange = (toolCallId, files) => {
-    setToolForms(prev => ({
-      ...prev,
-      [toolCallId]: {
-        ...(prev[toolCallId] || { args: {}, files: [] }),
-        files: Array.from(files || [])
-      }
-    }))
-  }
-
-  const handleApproveTool = async (toolDraft, formOverride = null) => {
-    const toolCallId = toolDraft.toolCallId
-    const form = formOverride || toolForms[toolCallId] || { args: {}, files: [] }
-    const files = form.files || []
-    const args = form.args || {}
-    if (toolDraft.toolSpec?.upload_required && files.length === 0) {
-      alert('该技能需要先上传文件')
-      return
-    }
-    setToolPending(prev => ({ ...prev, [toolCallId]: true }))
-    const aiMsgId = Date.now() + Math.floor(Math.random() * 1000)
-    setMessages(prev => [...prev, { role: 'assistant', content: '', id: aiMsgId, isStreaming: true }])
-    let finalAssistantContent = ''
-    const assistantPayloadState = {
-      references: [],
-      sourceTag: '',
-      logicFlow: '',
-      hasSkillEndResult: false,
-      skillHint: '',
-      outputFiles: []
-    }
-    try {
-      for (const file of files) {
-        await uploadToolInputFile(toolCallId, file)
-      }
-      const response = await approveToolCall(
-        conversationIdRef.current,
-        toolCallId,
-        JSON.stringify(args)
-      )
-      let aiContent = ''
-      let latestToolResult = null
-      let hasRenderableOutput = false
-      await consumeSse(response, async (eventName, dataStr) => {
-        if (dataStr === '[DONE]') return
-        if (eventName === 'tool_result') {
-          const result = parseJsonSafe(dataStr)
-          if (result) {
-            latestToolResult = result
-            setToolResults(prev => ({ ...prev, [toolCallId]: result }))
-          }
-          return
-        }
-        if (eventName === 'rag_content') {
-          // Handle rag_content event - stream RAG results directly
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const answer = payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          if (answer) {
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            const blockTitle = assistantPayloadState.sourceTag || skillName || 'RAG检索结果'
-            aiContent += `> **📚 ${blockTitle}**\n\n`
-            aiContent += answer
-            finalAssistantContent = aiContent
-            assistantPayloadState.outputFiles = Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : []
-            }))
-          } else {
-            // No answer text but still preserve outputFiles (from skill_end)
-            updateStreamingMessage(aiMsgId, old => ({
-              outputFiles: Array.isArray(assistantPayloadState.outputFiles) ? assistantPayloadState.outputFiles : (Array.isArray(old.outputFiles) ? old.outputFiles : [])
-            }))
-          }
-          return
-        }
-        if (eventName === 'skill_end') {
-          // Handle skill_end event - stream RAG results directly to frontend
-          hasRenderableOutput = true
-          const payload = parseJsonSafe(dataStr)
-          if (!payload) return
-          const result = payload.result || payload.answer || ''
-          const refs = normalizeRefs(payload)
-          const skillName = payload.skillName || ''
-          const outputFiles = payload.outputFiles || []
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (skillName) {
-            assistantPayloadState.sourceTag = skillName === 'rag-query' ? 'RAG检索' : skillName
-          }
-          if (result) {
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            aiContent += `> **📚 ${skillName || 'Skill'} 执行结果**\n\n`
-            aiContent += result
-            // Add download links if available
-            if (outputFiles.length > 0) {
-              aiContent += '\n\n---\n\n**📥 下载文件:**\n\n'
-              outputFiles.forEach(f => {
-                aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
-              })
-            }
-            finalAssistantContent = aiContent
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: outputFiles
-            }))
-          } else if (outputFiles.length > 0) {
-            // No result text but has output files - still show download section
-            if (aiContent.trim()) {
-              aiContent += '\n\n'
-            }
-            aiContent += `> **📚 ${skillName || 'Skill'} 执行完成**\n\n`
-            aiContent += '文件已生成，请点击下方下载链接获取结果。\n\n---\n\n**📥 下载文件:**\n\n'
-            outputFiles.forEach(f => {
-              aiContent += `- [${f.file_name}](${appendAuthToken(f.download_url)})\n`
-            })
-            finalAssistantContent = aiContent
-            assistantPayloadState.outputFiles = outputFiles
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              references: refs.length > 0 ? refs : (old.references || []),
-              sourceTag: assistantPayloadState.sourceTag || old.sourceTag,
-              logicFlow: old.logicFlow,
-              skillHint: old.skillHint,
-              hasRagContent: true,
-              outputFiles: outputFiles
-            }))
-          } else {
-            // Neither result nor output files - just update outputFiles if any
-            updateStreamingMessage(aiMsgId, old => ({
-              outputFiles: outputFiles.length > 0 ? outputFiles : old.outputFiles
-            }))
-          }
-          return
-        }
-        if (eventName === 'token') {
-          aiContent += dataStr
-          finalAssistantContent = aiContent
-          updateStreamingMessage(aiMsgId, () => ({ content: aiContent }))
-          return
-        }
-        if (eventName === 'error') {
-          finalAssistantContent = `**Error**: ${dataStr}`
-          updateStreamingMessage(aiMsgId, () => ({ content: `**Error**: ${dataStr}` }))
-          return
-        }
-        if (eventName === 'message') {
-          const payload = parseJsonSafe(dataStr)
-          // Skip if this is a rag_content or skill_end message (already handled by dedicated events)
-          if (payload && (payload.type === 'rag_content' || payload.type === 'skill_end')) {
-            return
-          }
-          // Skip RAG skill summarization - these are already sent via skill_end/rag_content
-          // brain-server sends a final 'message' event with source='RAG检索' after skill completes
-          if (payload && payload.source === 'RAG检索') {
-            return
-          }
-          if (!payload) {
-            const plainText = (dataStr || '').trim()
-            if (!plainText) return
-            aiContent += plainText
-            finalAssistantContent = aiContent
-            updateStreamingMessage(aiMsgId, () => ({ content: aiContent }))
-            return
-          }
-          const delta = payload.answer || payload.data?.answer || ''
-          const refs = normalizeRefs(payload)
-          const logicFlow = normalizeLogicFlow(payload)
-          const sourceTag = payload.sourceLabel || payload.source || (refs.length > 0 ? 'RAG检索' : '')
-          const skillHint = String(payload.skillHint || payload.skill_hint || '').trim()
-          if (refs.length > 0) {
-            assistantPayloadState.references = refs
-          }
-          if (logicFlow) {
-            assistantPayloadState.logicFlow = logicFlow
-          }
-          if (sourceTag) {
-            assistantPayloadState.sourceTag = sourceTag
-          }
-          if (skillHint) {
-            assistantPayloadState.skillHint = skillHint
-          }
-          if (!delta && refs.length > 0 && !aiContent.trim()) {
-            aiContent += buildReferenceOnlyNotice(refs)
-          }
-          // If skill result was already shown via skill_end, skip appending duplicate LLM summary
-          if (assistantPayloadState.hasSkillEndResult && delta.trim()) {
-            updateStreamingMessage(aiMsgId, old => ({
-              content: aiContent,
-              references: refs.length > 0 ? refs : old.references,
-              sourceTag: sourceTag || old.sourceTag,
-              logicFlow: logicFlow || old.logicFlow,
-              skillHint: skillHint || old.skillHint
-            }))
-            return
-          }
-          aiContent += delta
-          finalAssistantContent = aiContent
-          updateStreamingMessage(aiMsgId, old => ({
-            content: aiContent,
-            references: refs.length > 0 ? refs : old.references,
-            sourceTag: sourceTag || old.sourceTag,
-            logicFlow: logicFlow || old.logicFlow,
-            skillHint: skillHint || old.skillHint
-          }))
-        }
-      })
-      // Fallback: if aiContent is empty but we had renderable output (skill_end with empty result)
-      if (!aiContent.trim() && hasRenderableOutput) {
-        finalAssistantContent = latestToolResult?.summary || '技能执行完成。'
-        updateStreamingMessage(aiMsgId, () => ({ content: finalAssistantContent }))
-      }
-    } catch (err) {
-      finalAssistantContent = `**Error**: ${err.message}`
-      updateStreamingMessage(aiMsgId, () => ({ content: `**Error**: ${err.message}` }))
-    } finally {
-      setToolPending(prev => ({ ...prev, [toolCallId]: false }))
-      updateStreamingMessage(aiMsgId, () => ({ isStreaming: false }))
-      if (conversationIdRef.current && finalAssistantContent.trim()) {
-        try {
-          const payloadText = buildMessagePayloadForSave({
-            content: finalAssistantContent,
-            ...assistantPayloadState
-          })
-          await saveConversationMessage(conversationIdRef.current, 'assistant', finalAssistantContent, activeConversationTitle, payloadText)
-        } catch (persistErr) {
-          console.error('保存助手消息失败:', persistErr)
-        }
-      }
-    }
-  }
-
-  return (
-    <div className="flex flex-1 h-full overflow-hidden bg-slate-50 relative">
-      {/* 主聊天区域 */}
-      <div className="relative flex-1 flex flex-col h-full shadow-sm bg-white">
-        <div className="p-4 border-b bg-white/80 backdrop-blur z-10 sticky top-0">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-semibold text-slate-800 flex items-center gap-2">
-              <Bot size={20} className="text-blue-500" />
-              智能问答助手
-            </h2>
-            <div className="text-xs text-slate-500 flex items-center gap-2">
-              <span>{activeConversationTitle || '未选择对话'}</span>
-            </div>
-          </div>
-          {conversationError && (
-            <div className="mt-2 text-xs text-rose-600">{conversationError}</div>
-          )}
-        </div>
-
-        <div
-          ref={messagesContainerRef}
-          onScroll={handleMessagesScroll}
-          className="flex-1 scroll-container p-4 space-y-6 scroll-smooth"
-        >
-          {messageLoadingMore && (
-            <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1">
-              <Loader2 size={12} className="animate-spin" />
-              加载更早消息...
-            </div>
-          )}
-          {messages.map((msg, idx) => (
-            <div key={idx} className={cn(
-              "flex gap-4",
-              msg.role === 'user' ? "flex-row-reverse" : ""
-            )}>
-              <div className={cn(
-                "w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-sm",
-                msg.role === 'user' ? "bg-blue-600 text-white" : "bg-emerald-500 text-white"
-              )}>
-                {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
-              </div>
-              <div className={cn(
-                "px-5 py-3 rounded-2xl max-w-[85%] text-sm leading-relaxed shadow-sm",
-                msg.role === 'user' 
-                  ? "bg-blue-600 text-white rounded-tr-sm" 
-                  : "bg-white border border-slate-100 text-slate-700 rounded-tl-sm"
-              )}>
-                {msg.isFile && (
-                  <div className="mb-2 flex items-center gap-2 text-xs text-slate-600">
-                    <Paperclip size={14} className="text-blue-500" />
-                    <span>已上传文件:</span>
-                    <span className="font-medium">{msg.fileNames?.join(', ')}</span>
-                  </div>
-                )}
-                {/* 显示从历史消息加载的附件 */}
-                {msg.attachments && msg.attachments.length > 0 && !msg.isFile && (
-                  <div className="mb-2 flex items-center gap-2 text-xs text-slate-600">
-                    <Paperclip size={14} className="text-blue-500" />
-                    <span>附件:</span>
-                    <span className="font-medium">{msg.attachments.map(a => a.name).join(', ')}</span>
-                  </div>
-                )}
-                {msg.toolDraft && (
-                  <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
-                    <div className="text-xs text-blue-700 font-semibold mb-2">
-                      已识别技能：{msg.toolDraft.toolName}
-                    </div>
-                    <div className="text-xs text-slate-600 mb-3">
-                      {msg.toolDraft.toolSpec?.description || '请填写参数并执行'}
-                    </div>
-                    {msg.toolDraft.toolSpec?.parameters_schema?.properties && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-                        {Object.keys(msg.toolDraft.toolSpec.parameters_schema.properties).map((key) => (
-                          <input
-                            key={key}
-                            value={toolForms[msg.toolDraft.toolCallId]?.args?.[key] || ''}
-                            onChange={(e) => handleToolArgChange(msg.toolDraft.toolCallId, key, e.target.value)}
-                            placeholder={key}
-                            className="px-2 py-1.5 rounded border border-slate-300 text-xs bg-white"
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {msg.toolDraft.toolSpec?.upload_required && (
-                      <div className="mb-3">
-                        <div className="text-[11px] text-slate-500 mb-1">
-                          支持文件：{(msg.toolDraft.toolSpec.accepted_file_types || []).join(', ') || '不限'}
-                        </div>
-                        <input
-                          type="file"
-                          multiple
-                          onChange={(e) => handleToolFileChange(msg.toolDraft.toolCallId, e.target.files)}
-                          className="text-xs"
-                        />
-                        {toolForms[msg.toolDraft.toolCallId]?.files?.length > 0 && (
-                          <div className="mt-1 text-[11px] text-slate-600">
-                            已选择 {toolForms[msg.toolDraft.toolCallId].files.length} 个文件
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <button
-                      onClick={() => handleApproveTool(msg.toolDraft)}
-                      disabled={!!toolPending[msg.toolDraft.toolCallId]}
-                      className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50"
-                    >
-                      {toolPending[msg.toolDraft.toolCallId] ? '执行中...' : '执行技能'}
-                    </button>
-                    {toolResults[msg.toolDraft.toolCallId] && (
-                      <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-2">
-                        <div className="text-xs font-semibold text-emerald-700">
-                          {toolResults[msg.toolDraft.toolCallId].summary || '执行完成'}
-                        </div>
-                        {toolResults[msg.toolDraft.toolCallId].error_message && (
-                          <div className="text-xs text-rose-600 mt-1">
-                            {toolResults[msg.toolDraft.toolCallId].error_message}
-                          </div>
-                        )}
-                        {toolResults[msg.toolDraft.toolCallId].files && toolResults[msg.toolDraft.toolCallId].files.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            {toolResults[msg.toolDraft.toolCallId].files.map((f) => (
-                              <a
-                                key={f.file_id}
-                                href={appendAuthToken(f.download_url)}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="flex items-center gap-1 text-xs text-blue-700 hover:underline"
-                              >
-                                <Download size={12} />
-                                <span>{f.file_name}</span>
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {msg.clarify && (
-                  <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
-                    <div className="text-xs text-amber-700 font-semibold mb-2">
-                      需要补充意图
-                    </div>
-                    <div className="text-xs text-slate-700 mb-2">
-                      {msg.clarify.question || '请补充你的目标，我再继续执行。'}
-                    </div>
-                    {Array.isArray(msg.clarify.suggestions) && msg.clarify.suggestions.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {msg.clarify.suggestions.map((item, i) => (
-                          <button
-                            key={`${item}-${i}`}
-                            onClick={() => handleClarifySuggestionClick(item)}
-                            className="px-2.5 py-1 rounded-full bg-white border border-amber-300 text-[11px] text-amber-800 hover:bg-amber-100"
-                          >
-                            {item}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {planDrafts[msg.id] && (
-                  <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
-                    {(() => {
-                      const draft = planDrafts[msg.id]
-                      const uiState = planUiStates[msg.id] || {}
-                      const expanded = uiState.manualExpanded
-                        ? true
-                        : uiState.manualCollapsed
-                          ? false
-                          : !!msg.isStreaming
-                      const editMode = !!uiState.editMode
-                      const streamState = buildPlanStreamState(draft, msg)
-                      const analysisStatusByNo = (draft.analysisSteps || []).reduce((acc, step) => {
-                        const no = Number(step?.step_no || 0)
-                        if (no > 0) acc[no] = step?.status || 'streaming'
-                        return acc
-                      }, {})
-                      const plannedSteps = Array.isArray(draft.editedSteps) ? draft.editedSteps : []
-                      const normalizedStatuses = plannedSteps.map((step, sIdx) => String(analysisStatusByNo[step.stepNo || sIdx + 1] || 'pending').toLowerCase())
-                      const plannedCount = plannedSteps.length
-                      const executedCount = normalizedStatuses.filter(status => status !== 'pending').length
-                      const completedCount = normalizedStatuses.filter(status => status === 'completed' || status === 'done').length
-                      const hasWaitingApproval = normalizedStatuses.includes('waiting_approval')
-                      const hasHardPending = normalizedStatuses.some(status => status === 'pending' || status === 'streaming')
-                      const summaryFallbackText = plannedCount <= 0
-                        ? '已输出阶段汇总'
-                        : hasHardPending
-                          ? `已按顺序执行 ${executedCount}/${plannedCount} 步，正在继续执行后续步骤。`
-                          : hasWaitingApproval
-                            ? `已按顺序执行 ${executedCount}/${plannedCount} 步，工具步骤待审批，阶段汇总已生成。`
-                            : completedCount >= plannedCount
-                              ? `已按顺序执行 ${completedCount}/${plannedCount} 步，最终汇总已生成。`
-                              : `已按顺序执行 ${executedCount}/${plannedCount} 步，阶段汇总已生成。`
-                      return (
-                        <>
-                          <div className="flex items-center justify-between">
-                            <div className="text-xs font-semibold text-slate-700">分析链路总览</div>
-                            <button
-                              onClick={() => togglePlanExpanded(msg.id, msg)}
-                              className="text-[11px] text-slate-600 hover:text-slate-800"
-                            >
-                              {expanded ? '收起' : '展开'}
-                            </button>
-                          </div>
-                          {expanded && (
-                            <>
-                              <div className="space-y-1">
-                                <div className="text-xs text-slate-700">{streamState.text}</div>
-                                <div className="h-1.5 w-full rounded bg-slate-200 overflow-hidden">
-                                  <div
-                                    className="h-full rounded bg-blue-500 transition-all duration-300"
-                                    style={{ width: `${streamState.progress}%` }}
-                                  />
-                                </div>
-                              </div>
-                              <div className="text-xs text-slate-600 whitespace-pre-wrap">
-                                深度思考：{draft.deepThinking || '暂无'}
-                              </div>
-                              {!editMode && (
-                                <div className="space-y-1">
-                                  {(draft.editedSteps || []).map((step, sIdx) => (
-                                    <div key={`${msg.id}-step-text-${sIdx}`} className="text-xs text-slate-700">
-                                      {`${step.stepNo || sIdx + 1}. [${step.route || 'AUTO'}] ${step.label || '步骤'}：${step.goal || '无目标'}${step.query ? `（查询：${step.query}）` : ''}${step.toolName ? `（工具：${step.toolName}）` : ''}（状态：${analysisStatusByNo[step.stepNo || sIdx + 1] || 'pending'}）`}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                              {editMode && (
-                                <>
-                                  <div>
-                                    <button
-                                      onClick={() => handlePlanStepAdd(msg.id)}
-                                      className="px-2.5 py-1 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700"
-                                    >
-                                      新增步骤
-                                    </button>
-                                  </div>
-                                  <div className="space-y-2">
-                                    {(draft.editedSteps || []).map((step, sIdx) => (
-                                      <div key={`${msg.id}-step-${sIdx}`} className="rounded-lg border border-slate-200 bg-white p-2">
-                                        <div className="flex items-center justify-between mb-1">
-                                          <div className="text-xs font-semibold text-slate-700">步骤 {step.stepNo}</div>
-                                          <div className="text-[10px] px-2 py-0.5 rounded-full border border-blue-200 bg-blue-50 text-blue-700">
-                                            {step.route || 'AUTO'}
-                                          </div>
-                                        </div>
-                                        <input
-                                          value={step.label}
-                                          onChange={(e) => handlePlanStepFieldChange(msg.id, sIdx, 'label', e.target.value)}
-                                          className="w-full mb-1 px-2 py-1 rounded border border-slate-300 text-xs"
-                                          placeholder="步骤标签"
-                                        />
-                                        <textarea
-                                          value={step.goal}
-                                          onChange={(e) => handlePlanStepFieldChange(msg.id, sIdx, 'goal', e.target.value)}
-                                          className="w-full mb-1 px-2 py-1 rounded border border-slate-300 text-xs h-14 resize-none"
-                                          placeholder="步骤目标"
-                                        />
-                                        <input
-                                          value={step.query}
-                                          onChange={(e) => handlePlanStepFieldChange(msg.id, sIdx, 'query', e.target.value)}
-                                          className="w-full mb-1 px-2 py-1 rounded border border-slate-300 text-xs"
-                                          placeholder="步骤查询词"
-                                        />
-                                        <input
-                                          value={step.toolName}
-                                          onChange={(e) => handlePlanStepFieldChange(msg.id, sIdx, 'toolName', e.target.value)}
-                                          className="w-full px-2 py-1 rounded border border-slate-300 text-xs"
-                                          placeholder="工具名（可选）"
-                                        />
-                                        <div className="mt-2 flex gap-2 flex-wrap">
-                                          <button
-                                            onClick={() => handlePlanStepMove(msg.id, sIdx, -1)}
-                                            disabled={sIdx === 0}
-                                            className="px-2 py-1 rounded bg-slate-100 text-slate-700 text-xs hover:bg-slate-200 disabled:opacity-40"
-                                          >
-                                            上移
-                                          </button>
-                                          <button
-                                            onClick={() => handlePlanStepMove(msg.id, sIdx, 1)}
-                                            disabled={sIdx === (draft.editedSteps || []).length - 1}
-                                            className="px-2 py-1 rounded bg-slate-100 text-slate-700 text-xs hover:bg-slate-200 disabled:opacity-40"
-                                          >
-                                            下移
-                                          </button>
-                                          <button
-                                            onClick={() => handlePlanStepRemove(msg.id, sIdx)}
-                                            disabled={(draft.editedSteps || []).length <= 1}
-                                            className="px-2 py-1 rounded bg-rose-100 text-rose-700 text-xs hover:bg-rose-200 disabled:opacity-40"
-                                          >
-                                            删除
-                                          </button>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                                    <select
-                                      value={draft.rerunMode || 'AUTO'}
-                                      onChange={(e) => handlePlanConfigChange(msg.id, 'rerunMode', e.target.value)}
-                                      className="px-2 py-1 rounded border border-slate-300 text-xs bg-white"
-                                    >
-                                      <option value="AUTO">AUTO</option>
-                                      <option value="PARTIAL_RERUN">PARTIAL_RERUN</option>
-                                      <option value="FULL_RERUN">FULL_RERUN</option>
-                                    </select>
-                                    <input
-                                      type="number"
-                                      min="1"
-                                      value={draft.restartFromStep || 1}
-                                      onChange={(e) => handlePlanConfigChange(msg.id, 'restartFromStep', Number(e.target.value) || 1)}
-                                      className="px-2 py-1 rounded border border-slate-300 text-xs"
-                                      placeholder="从第几步开始"
-                                    />
-                                    <input
-                                      value={draft.adjustmentInstruction || ''}
-                                      onChange={(e) => handlePlanConfigChange(msg.id, 'adjustmentInstruction', e.target.value)}
-                                      className="px-2 py-1 rounded border border-slate-300 text-xs"
-                                      placeholder="人工修改说明"
-                                    />
-                                  </div>
-                                </>
-                              )}
-                              <div className="flex gap-2 flex-wrap">
-                                {!editMode ? (
-                                  <button
-                                    onClick={() => togglePlanEditMode(msg.id, true)}
-                                    className="px-3 py-1.5 rounded bg-slate-700 text-white text-xs hover:bg-slate-800"
-                                  >
-                                    我要修改计划
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => togglePlanEditMode(msg.id, false)}
-                                    className="px-3 py-1.5 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300"
-                                  >
-                                    退出编辑
-                                  </button>
-                                )}
-                                <button
-                                  onClick={() => runWithPlanDraft(msg.id, true)}
-                                  disabled={loading}
-                                  className="px-3 py-1.5 rounded bg-slate-700 text-white text-xs hover:bg-slate-800 disabled:opacity-50"
-                                >
-                                  仅重规划
-                                </button>
-                                <button
-                                  onClick={() => runWithPlanDraft(msg.id, false)}
-                                  disabled={loading}
-                                  className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50"
-                                >
-                                  按新计划执行
-                                </button>
-                              </div>
-                              {msg.analysisSummary && (
-                                <div className="text-xs text-emerald-800 whitespace-pre-wrap">
-                                  总结：{msg.analysisSummary.final_answer || summaryFallbackText}
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </>
-                      )
-                    })()}
-                  </div>
-                )}
-                {(() => {
-                  let rawContent = msg.content || '';
-                  rawContent = rawContent.replace(/[\r\n]+(?=\s*\[(?:ID:\s*)?\d+\])/g, ' ');
-
-                  let answer = rawContent;
-                  const thoughtParts = []
-                  answer = answer.replace(/<think>([\s\S]*?)<\/think>/g, (_, part) => {
-                    const text = String(part || '').trim()
-                    if (text) {
-                      thoughtParts.push(text)
-                    }
-                    return ''
-                  })
-                  const start = answer.indexOf('<think>')
-                  const end = answer.indexOf('</think>')
-                  if (thoughtParts.length === 0 && start !== -1 && msg.isStreaming) {
-                    const streamingThought = answer.substring(start + 7).trim()
-                    if (streamingThought) {
-                      thoughtParts.push(streamingThought)
-                    }
-                    answer = answer.substring(0, start)
-                  } else if (thoughtParts.length === 0 && start === -1 && end > 0) {
-                    // 兼容只有 </think> 没有 <think> 的返回，避免思考内容丢失。
-                    const inferredThought = answer.substring(0, end).trim()
-                    if (inferredThought) {
-                      thoughtParts.push(inferredThought)
-                    }
-                    answer = answer.substring(end + 8)
-                  }
-                  answer = answer.replace(/<\/?think>/g, '')
-                  const thought = thoughtParts.length > 0 ? thoughtParts.join('\n\n') : null
-
-                  return (
-                    <>
-                      {msg.sourceTag && (
-                        <div className="mb-2 inline-flex px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-700">
-                          来源：{msg.sourceTag}
-                        </div>
-                      )}
-                      {msg.skillHint && (
-                        <div className="mb-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2">
-                          <div className="text-[11px] font-semibold text-indigo-700 mb-1">相关技能</div>
-                          <div className="text-xs text-indigo-800 whitespace-pre-wrap">{msg.skillHint}</div>
-                        </div>
-                      )}
-                      {msg.logicFlow && (
-                        <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                          <div className="text-[11px] font-semibold text-slate-600 mb-1">分析链路</div>
-                          <div className="space-y-1">
-                            {msg.logicFlow.split('\n').map((line, i) => {
-                              const text = (line || '').trim()
-                              if (!text) return null
-                              return (
-                                <div key={`${text}-${i}`} className="text-xs text-slate-600">
-                                  {text}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-                      {thought && (
-                        <ThoughtBlock 
-                          content={thought} 
-                          references={msg.references} 
-                          onViewReference={setViewingRef}
-                          isStreaming={msg.isStreaming} 
-                        />
-                      )}
-                      {/* 大脑内容 - RAG 之前的部分 */}
-                      {msg.preRagContent && (
-                        <div className="whitespace-pre-wrap">
-                          {msg.preRagContent}
-                          {msg.isStreaming && <span className="inline-block w-1 h-3 bg-emerald-400 animate-pulse ml-0.5"/>}
-                        </div>
-                      )}
-                      {/* 技能执行结果 / RAG检索结果 */}
-                      {msg.ragContent && (
-                        <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Wrench size={14} className="text-amber-600" />
-                            <span className="text-xs font-semibold text-amber-700">{msg.sourceTag || 'RAG检索结果'}</span>
-                          </div>
-                          <div className="text-sm text-amber-900 whitespace-pre-wrap">
-                            {msg.ragContent}
-                            {msg.isStreaming && <span className="inline-block w-1 h-3 bg-amber-400 animate-pulse ml-0.5"/>}
-                          </div>
-                        </div>
-                      )}
-                      {/* 大脑内容 - RAG 之后的部分 */}
-                      {msg.postRagContent && (
-                        <div className="whitespace-pre-wrap">
-                          {msg.postRagContent}
-                          {msg.isStreaming && <span className="inline-block w-1 h-3 bg-emerald-400 animate-pulse ml-0.5"/>}
-                        </div>
-                      )}
-                      {/* 没有任何分割内容时，显示原始 content */}
-                      {!msg.preRagContent && !msg.postRagContent && (
-                        <MarkdownWithCitations 
-                          content={answer} 
-                          references={msg.references} 
-                          onViewReference={setViewingRef} 
-                        />
-                      )}
-                      {msg.isStreaming && <span className="inline-block w-1.5 h-4 bg-emerald-400 animate-pulse ml-1 align-middle"/>}
-                    </>
-                  )
-                })()}
-                {msg.outputFiles && msg.outputFiles.length > 0 && !msg.isStreaming && (
-                  <div className="mt-4 pt-3 border-t border-slate-100">
-                    <div className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1">
-                      <Download size={14} />
-                      下载文件
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      {msg.outputFiles.map((f, i) => (
-                        <a
-                          key={i}
-                          href={appendAuthToken(f.download_url)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center gap-2 p-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-left transition-colors"
-                        >
-                          <Download size={14} className="text-blue-600" />
-                          <span className="text-xs text-blue-700 flex-1 truncate">{f.file_name}</span>
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {msg.references && msg.references.length > 0 && !msg.isStreaming && (
-                  <div className="mt-4 pt-3 border-t border-slate-100">
-                    <div className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1">
-                      <BookOpen size={14} />
-                      参考资料
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      {msg.references.map((ref, i) => (
-                        <button 
-                          key={i}
-                          onClick={() => setViewingRef(ref)}
-                          className="flex items-start gap-2 p-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-left transition-colors group"
-                        >
-                          <FileText size={16} className="text-blue-500 mt-0.5 shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium text-slate-700 group-hover:text-blue-700 truncate">
-                              {ref.document_name}
-                            </div>
-                            <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
-                              <span className="bg-slate-200 px-1.5 rounded text-slate-600">
-                                {(ref.similarity * 100).toFixed(0)}%
-                              </span>
-                              <span className="truncate max-w-[200px]">
-                                {ref.content ? ref.content.slice(0, 50) + "..." : "No preview"}
-                              </span>
-                            </div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {showScrollToBottom && (
-          <button
-            onClick={handleScrollToBottom}
-            className="absolute left-1/2 -translate-x-1/2 bottom-28 z-20 inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-200 bg-white/95 shadow hover:bg-slate-50 text-xs text-slate-700"
-            title="回到底部"
-          >
-            <ChevronDown size={14} />
-            回到底部
-          </button>
-        )}
-        
-        {viewingRef && (
-          <SourceViewer 
-            reference={viewingRef} 
-            onClose={() => setViewingRef(null)} 
-          />
-        )}
-
-        <div className="p-4 bg-white border-t">
-          <div className="mb-3 flex items-center gap-2">
-            <input
-              value={selectedMemoryProfileId}
-              onChange={(e) => setSelectedMemoryProfileId(e.target.value)}
-              placeholder="当前记忆 profile（可选）"
-              className="h-9 rounded-lg border border-slate-300 px-3 text-xs w-72"
-            />
-            <span className="text-[11px] text-slate-500">留空则使用当前用户默认 profile</span>
-          </div>
-          <div className="mb-3 flex flex-wrap gap-2">
-            {quickRouteExamples.map((item) => (
-              <button
-                key={item}
-                onClick={() => handleSend(item)}
-                disabled={conversationLoading}
-                className="px-2.5 py-1 text-xs rounded-full border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-700 disabled:opacity-50"
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-          <div className="relative">
-            {/* 已上传文件显示区域 */}
-            {uploadedFiles.length > 0 && (
-              <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
-                <div className="flex flex-wrap gap-2">
-                  {uploadedFiles.map((file, idx) => (
-                    <div key={idx} className="flex items-center gap-1 bg-white px-2 py-1 rounded border text-xs">
-                      <span className="text-slate-600 max-w-[120px] truncate">{file.name}</span>
-                      <span className="text-slate-400">({(file.size / 1024).toFixed(1)}KB)</span>
-                      <button
-                        onClick={() => removeUploadedFile(idx)}
-                        className="text-red-500 hover:text-red-700 ml-1"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => {
-                const nextValue = e.target.value
-                setInput(nextValue)
-                const ctx = resolveMentionContext(nextValue, e.target.selectionStart ?? nextValue.length)
-                if (!ctx) {
-                  closeMention()
-                  return
-                }
-                setMentionOpen(true)
-                setMentionQuery(ctx.query)
-                setMentionStart(ctx.start)
-                setMentionEnd(ctx.end)
-                setMentionIndex(0)
-              }}
-              onKeyDown={(e) => {
-                if (mentionOpen && mentionCandidates.length > 0) {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    setMentionIndex(prev => (prev + 1) % mentionCandidates.length)
-                    return
-                  }
-                  if (e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setMentionIndex(prev => (prev - 1 + mentionCandidates.length) % mentionCandidates.length)
-                    return
-                  }
-                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                    e.preventDefault()
-                    applyMentionTool(mentionCandidates[mentionIndex] || mentionCandidates[0])
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    closeMention()
-                    return
-                  }
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  handleSend()
-                }
-              }}
-              onBlur={() => {
-                setTimeout(() => closeMention(), 120)
-              }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.add('border-blue-400', 'bg-blue-50')
-              }}
-              onDragLeave={(e) => {
-                e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50')
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50')
-                handleFileDrop(e)
-              }}
-              placeholder="请输入您的问题...（可拖拽文件到此处上传）"
-              className="w-full pl-4 pr-24 py-3 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none h-[80px] text-sm transition-colors"
-              disabled={conversationLoading}
-            />
-            {mentionOpen && mentionCandidates.length > 0 && (
-              <div className="absolute left-0 right-14 bottom-[88px] rounded-lg border border-slate-200 bg-white shadow-lg z-20 max-h-56 scroll-container">
-                {mentionCandidates.map((tool, idx) => (
-                  <button
-                    key={tool.name || `${tool.displayName}-${idx}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      applyMentionTool(tool)
-                    }}
-                    className={cn(
-                      'w-full text-left px-3 py-2 border-b last:border-b-0',
-                      idx === mentionIndex ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'
-                    )}
-                  >
-                    <div className="text-xs font-medium">{getToolDisplayLabel(tool) || tool.name}</div>
-                    <div className="text-[11px] text-slate-500 truncate">{tool.description || tool.name}</div>
-                  </button>
-                ))}
-              </div>
-            )}
-            {/* 文件上传按钮 - 支持文件和文件夹 */}
-            <div className="absolute right-12 top-2 flex items-center gap-1">
-              <label className="p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors" title="上传文件">
-                <input
-                  type="file"
-                  multiple
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
-                <Paperclip size={18} />
-              </label>
-              <label className="p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors" title="上传文件夹">
-                <input
-                  type="file"
-                  multiple
-                  webkitdirectory=""
-                  onChange={handleFolderSelect}
-                  className="hidden"
-                />
-                <FolderOpen size={18} />
-              </label>
-            </div>
-            <button
-              onClick={handleSendButtonClick}
-              disabled={conversationLoading || (!loading && !input.trim() && uploadedFiles.length === 0)}
-              className="absolute right-2 top-2 p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
-            >
-              {(loading || conversationLoading) ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-            </button>
-          </div>
-          <p className="text-[11px] text-slate-400 mt-1">输入 `@` 可选择技能名称，支持拖拽上传文件。</p>
-          <p className="text-center text-xs text-slate-400 mt-2">
-            AI 生成内容仅供参考，请以原始文档为准。
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-})
-
 // =============================================================================
 // 数据库连接管理组件
 // =============================================================================
@@ -9815,24 +6110,17 @@ function DatabaseLibrary() {
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=databases')
-      console.log('[loadGroups/databases] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
-        console.log('[loadGroups/databases] received:', JSON.stringify(data))
         if (Array.isArray(data)) {
-          console.log('[loadGroups/databases] → setGroups (array direct)')
-          setGroups(data)  // flat array: [{ id, label, order }]
+          setGroups(data)
         } else if (Array.isArray(data?.groups)) {
-          console.log('[loadGroups/databases] → setGroups (from data.groups)')
           setGroups(data.groups)
         } else {
-          console.warn('[loadGroups/databases] unexpected data shape:', data)
           setGroups([])
         }
-      } else {
-        console.error('[loadGroups/databases] HTTP', res.status)
       }
-    } catch (e) { console.error('[loadGroups/databases] error:', e) }
+    } catch (e) { /* ignore */ }
   }, [])
 
   const saveGroups = useCallback(async (newGroups) => {
@@ -9843,11 +6131,8 @@ function DatabaseLibrary() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ databases: newGroups })
       })
-      if (!res.ok) {
-        const err = await res.text()
-        console.error('[saveGroups/databases] HTTP', res.status, err)
-      }
-    } catch (e) { console.error('[saveGroups/databases] error:', e) }
+      if (!res.ok) { /* ignore */ }
+    } catch (e) { /* ignore */ }
   }, [])
 
   const handleDeleteGroup = async (gid) => {
@@ -9895,8 +6180,7 @@ function DatabaseLibrary() {
   useEffect(() => { loadGroups() }, [loadGroups])
   // 诊断：监听 groups 状态变化
   useEffect(() => {
-    console.log('[DatabaseLibrary] groups state changed:', JSON.stringify(groups))
-  }, [groups])
+    }, [groups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -10211,24 +6495,17 @@ function SkillLibrary({ role }) {
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=skills')
-      console.log('[loadGroups/skills] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
-        console.log('[loadGroups/skills] received:', JSON.stringify(data))
         if (Array.isArray(data)) {
-          console.log('[loadGroups/skills] → setGroups (array direct)')
           setGroups(data)
         } else if (Array.isArray(data?.groups)) {
-          console.log('[loadGroups/skills] → setGroups (from data.groups)')
           setGroups(data.groups)
         } else {
-          console.warn('[loadGroups/skills] unexpected data shape:', data)
           setGroups([])
         }
-      } else {
-        console.error('[loadGroups/skills] HTTP', res.status)
       }
-    } catch (e) { console.error('[loadGroups/skills] error:', e) }
+    } catch (e) { /* ignore */ }
   }, [])
 
   const saveGroups = useCallback(async (newGroups) => {
@@ -10239,18 +6516,14 @@ function SkillLibrary({ role }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skills: newGroups })
       })
-      if (!res.ok) {
-        const err = await res.text()
-        console.error('[saveGroups/skills] HTTP', res.status, err)
-      }
-    } catch (e) { console.error('[saveGroups/skills] error:', e) }
+      if (!res.ok) { /* ignore */ }
+    } catch (e) { /* ignore */ }
   }, [])
 
   useEffect(() => { loadGroups() }, [loadGroups])
   // 诊断：监听 groups 状态变化
   useEffect(() => {
-    console.log('[SkillLibrary] groups state changed:', JSON.stringify(groups))
-  }, [groups])
+    }, [groups])
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return
@@ -10487,126 +6760,14 @@ function SkillLibrary({ role }) {
       )}
 
       {chatOpen && chatSkill && (
-        <SkillChatModal skill={chatSkill} onClose={() => setChatOpen(false)} />
+        <SkillChatModal
+          skill={chatSkill}
+          onClose={() => setChatOpen(false)}
+          apiFetch={apiFetch}
+          authSession={loadAuthSession()}
+          onRecordSkillUsage={(toolLabel) => recordSkillUsage(loadAuthSession()?.user?.username || '', toolLabel)}
+        />
       )}
-    </div>
-  )
-}
-
-// 技能聊天弹窗
-function SkillChatModal({ skill, onClose }) {
-  const [input, setInput] = useState('')
-  const [messages, setMessages] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [conversationId, setConversationId] = useState(null)
-  const [conversationCreated, setConversationCreated] = useState(false)
-  const bottomRef = useRef(null)
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
-
-  const ensureConversation = async () => {
-    if (conversationId) return
-    const res = await apiFetch('/v1/conversations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: `技能:${skill.displayName || skill.name}` }),
-    })
-    const data = await res.json()
-    setConversationId(data.id)
-  }
-
-  const handleSend = async () => {
-    if (!input.trim() || loading) return
-    const text = input.trim()
-    setInput('')
-    setMessages(prev => [...prev, { role: 'user', content: text }])
-    setLoading(true)
-    setError('')
-    try {
-      await ensureConversation()
-      const msgRes = await apiFetch(`/v1/conversations/${conversationId}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'user', content: text }),
-      })
-      await msgRes.json()
-      const body = JSON.stringify({
-        query: `@${skill.name} ${text}`,
-        conversationId,
-      })
-      const res = await apiFetch('/v1/brain/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${loadAuthSession()?.token}` },
-        body,
-      })
-      if (!res.ok) throw new Error(`请求失败: ${res.status}`)
-      const data = await res.json()
-      setMessages(prev => [...prev, { role: 'assistant', content: data.answer || data.message || '处理完成' }])
-    } catch (e) {
-      setError(e.message)
-      setMessages(prev => [...prev, { role: 'assistant', content: `错误: ${e.message}` }])
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl h-[80vh] flex flex-col overflow-hidden">
-        <div className="px-5 py-3 border-b flex items-center justify-between bg-slate-50 shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-amber-50 flex items-center justify-center text-amber-500">
-              <Zap size={14} />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-slate-800">{skill.displayName || skill.name}</h3>
-              <p className="text-[10px] text-slate-400">技能对话 · @技能名开头自动调用</p>
-            </div>
-          </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-slate-200 rounded-lg"><X size={16} className="text-slate-400" /></button>
-        </div>
-        <div className="flex-1 overflow-auto p-4 space-y-3">
-          <div className="text-center text-xs text-slate-400 py-2">
-            发送消息将以 <span className="font-mono bg-slate-100 px-1 rounded">@{skill.name}</span> 开头调用该技能
-          </div>
-          {messages.map((msg, i) => (
-            <div key={i} className={cn('flex gap-2', msg.role === 'user' ? 'flex-row-reverse' : '')}>
-              <div className={cn('w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs font-medium',
-                msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-emerald-500 text-white')}>
-                {msg.role === 'user' ? <User size={12} /> : <Bot size={12} />}
-              </div>
-              <div className={cn('max-w-[80%] px-3 py-2 rounded-xl text-sm',
-                msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-sm' : 'bg-slate-100 text-slate-700 rounded-tl-sm')}>
-                {msg.content}
-              </div>
-            </div>
-          ))}
-          {loading && (
-            <div className="flex gap-2">
-              <div className="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0"><Bot size={12} /></div>
-              <div className="bg-slate-100 rounded-xl rounded-tl-sm px-3 py-2">
-                <Loader2 size={14} className="animate-spin text-slate-400" />
-              </div>
-            </div>
-          )}
-          {error && <p className="text-red-500 text-xs text-center">{error}</p>}
-          <div ref={bottomRef} />
-        </div>
-        <div className="p-3 border-t flex gap-2 shrink-0">
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
-            placeholder={`发送 @${skill.name} 技能请求...`}
-            className="flex-1 px-3 py-2 border rounded-lg text-sm"
-          />
-          <button onClick={handleSend} disabled={loading || !input.trim()}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
-            <Send size={14} /> 发送
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -10631,27 +6792,19 @@ function ModelLibrary({ role }) {
   const loadGroups = useCallback(async () => {
     try {
       const res = await apiFetch('/v1/user/settings?type=models')
-      console.log('[loadGroups/models] HTTP status:', res.status)
       if (res.ok) {
         const data = await res.json()
-        console.log('[loadGroups/models] received:', JSON.stringify(data))
         if (Array.isArray(data)) {
-          console.log('[loadGroups/models] → setGroups (array direct)')
           setGroups(data)
         } else if (Array.isArray(data?.groups)) {
-          console.log('[loadGroups/models] → setGroups (from data.groups)')
           setGroups(data.groups)
         } else if (Array.isArray(data?.models)) {
-          console.log('[loadGroups/models] → setGroups (from data.models)')
           setGroups(data.models)
         } else {
-          console.warn('[loadGroups/models] unexpected data shape:', data)
           setGroups([])
         }
-      } else {
-        console.error('[loadGroups/models] HTTP', res.status)
       }
-    } catch (e) { console.error('[loadGroups/models] error:', e) }
+    } catch (e) { /* ignore */ }
   }, [])
 
   const saveGroups = useCallback(async (newGroups) => {
@@ -10662,19 +6815,15 @@ function ModelLibrary({ role }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ models: newGroups })
       })
-      if (!res.ok) {
-        const err = await res.text()
-        console.error('[saveGroups/models] HTTP', res.status, err)
-      }
-    } catch (e) { console.error('[saveGroups/models] error:', e) }
+      if (!res.ok) { /* ignore */ }
+    } catch (e) { /* ignore */ }
   }, [])
 
   useEffect(() => { loadGroups() }, [loadGroups])
 
   // 诊断：监听 groups 状态变化
   useEffect(() => {
-    console.log('[ModelLibrary] groups state changed:', JSON.stringify(groups))
-  }, [groups])
+    }, [groups])
 
   // --- 拖拽相关状态 ---
   const [activeId, setActiveId] = useState(null)
@@ -11120,12 +7269,28 @@ function MemoryManager() {
 }
 
 function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [authSession, setAuthSession] = useState(() => loadAuthSession())
-  const [activeTab, setActiveTab] = useState('chat')
   const chatInterfaceRef = useRef(null)
   const role = authSession?.user?.role || null
   const username = authSession?.user?.username || ''
   const userId = authSession?.user?.id || null
+  const [sidebarMenuOrder, setSidebarMenuOrder] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`ai4kb_sidebar_order_${username}`)
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const baseMenuItems = useMemo(() => getBaseMenuItemsByRole(role), [role])
+  const orderedMenuItems = useMemo(() => orderMenuItems(baseMenuItems, sidebarMenuOrder), [baseMenuItems, sidebarMenuOrder])
+  const defaultHomeTab = orderedMenuItems[0]?.id || 'chat'
+  const activeTab = getTabFromPath(location.pathname) || defaultHomeTab
+  const navigateToTab = useCallback((tabId, replace = false) => {
+    navigate(getPathForTab(tabId), { replace })
+  }, [navigate])
 
   // App 层统一管理对话相关状态
   const [appConversations, setAppConversations] = useState([])
@@ -11160,7 +7325,9 @@ function App() {
       if (chatInterfaceRef.current?.syncConversationsFromApp) {
         chatInterfaceRef.current.syncConversationsFromApp(normalized)
       }
-    } catch {} finally {
+    } catch (error) {
+      console.error('Failed to load app conversations:', error)
+    } finally {
       setAppConvLoading(false)
     }
   }, [])
@@ -11250,7 +7417,9 @@ function App() {
       setAppConversations(prev => [...prev, ...normalized])
       setAppConvPage(nextPage)
       setAppConvHasMore(Boolean(result.hasMore))
-    } catch {} finally {
+    } catch (error) {
+      console.error('Failed to load more app conversations:', error)
+    } finally {
       setAppConvLoadingMore(false)
     }
   }, [appConvLoadingMore, appConvHasMore, appConvPage, appConversations])
@@ -11291,12 +7460,18 @@ function App() {
   }, [role, loadAppConversations])
 
   // Sidebar menu order — persisted in localStorage per user
-  const [sidebarMenuOrder, setSidebarMenuOrder] = useState(() => {
+  useEffect(() => {
+    if (!username) {
+      setSidebarMenuOrder(null)
+      return
+    }
     try {
       const saved = localStorage.getItem(`ai4kb_sidebar_order_${username}`)
-      return saved ? JSON.parse(saved) : null
-    } catch { return null }
-  })
+      setSidebarMenuOrder(saved ? JSON.parse(saved) : null)
+    } catch {
+      setSidebarMenuOrder(null)
+    }
+  }, [username])
 
   const handleMenuOrderChange = useCallback((newOrder) => {
     setSidebarMenuOrder(newOrder)
@@ -11307,11 +7482,12 @@ function App() {
     const syncAuthExpired = () => {
       clearAuthSession()
       setAuthSession(null)
-      setActiveTab('chat')
+      setSidebarMenuOrder(null)
+      navigateToTab('chat', true)
     }
     window.addEventListener('ai4kb-auth-expired', syncAuthExpired)
     return () => window.removeEventListener('ai4kb-auth-expired', syncAuthExpired)
-  }, [])
+  }, [navigateToTab])
 
   const handleLogin = async ({ username: loginUsername, password }) => {
     const data = await loginByPassword(loginUsername, password)
@@ -11324,13 +7500,23 @@ function App() {
     }
     saveAuthSession(nextSession)
     setAuthSession(nextSession)
-    setActiveTab(isSuperAdminRole(nextSession.user.role) ? 'super_overview' : (isAdminLikeRole(nextSession.user.role) ? 'datasets' : 'chat'))
+    let nextMenuOrder = null
+    try {
+      const saved = localStorage.getItem(`ai4kb_sidebar_order_${nextSession.user.username || ''}`)
+      nextMenuOrder = saved ? JSON.parse(saved) : null
+    } catch {
+      nextMenuOrder = null
+    }
+    setSidebarMenuOrder(nextMenuOrder)
+    const nextHomeTab = orderMenuItems(getBaseMenuItemsByRole(nextSession.user.role), nextMenuOrder)[0]?.id || 'chat'
+    navigateToTab(nextHomeTab, true)
   }
 
   const handleLogout = () => {
     clearAuthSession()
     setAuthSession(null)
-    setActiveTab('chat')
+    setSidebarMenuOrder(null)
+    navigateToTab('chat', true)
   }
 
   if (!role) {
@@ -11343,7 +7529,7 @@ function App() {
         role={role}
         username={username}
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        onNavigateTab={navigateToTab}
         onLogout={handleLogout}
         menuOrder={sidebarMenuOrder}
         onMenuOrderChange={handleMenuOrderChange}
@@ -11367,17 +7553,21 @@ function App() {
         onChatLoadMore={handleAppLoadMore}
       />
       <main className="flex-1 h-full overflow-hidden relative">
-        {activeTab === 'chat' && <ChatInterface role={role} ref={chatInterfaceRef} onConversationsChanged={loadAppConversations} />}
-        {activeTab === 'knowledge' && <DatasetManager currentRole={role} />}
-        {activeTab === 'databases' && <DatabaseLibrary />}
-        {activeTab === 'skill_lib' && <SkillLibrary role={role} />}
-        {activeTab === 'models' && <ModelLibrary role={role} />}
-        {activeTab === 'super_overview' && isAdminLikeRole(role) && <SuperAdminOverview role={role} />}
-        {activeTab === 'user_management' && isAdminLikeRole(role) && <UserManagement currentRole={role} currentUserId={userId} />}
-        {activeTab === 'permissions' && isAdminLikeRole(role) && <PermissionManager />}
-        {activeTab === 'skills' && isAdminLikeRole(role) && <SkillManager role={role} />}
-        {activeTab === 'memory' && <MemoryManager />}
-        {activeTab === 'route_samples' && isSuperAdminRole(role) && <RouteSampleManager />}
+        <Routes>
+          <Route path="/" element={<Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('chat')} element={<ChatPage role={role} username={username} ref={chatInterfaceRef} onConversationsChanged={loadAppConversations} />} />
+          <Route path={getPathForTab('knowledge')} element={<KnowledgePage currentRole={role} />} />
+          <Route path={getPathForTab('databases')} element={<DatabaseLibrary />} />
+          <Route path={getPathForTab('skill_lib')} element={<SkillLibrary role={role} />} />
+          <Route path={getPathForTab('models')} element={<ModelLibrary role={role} />} />
+          <Route path={getPathForTab('super_overview')} element={isAdminLikeRole(role) ? <SuperAdminOverview role={role} /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('user_management')} element={isAdminLikeRole(role) ? <UserManagement currentRole={role} currentUserId={userId} /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('permissions')} element={isAdminLikeRole(role) ? <PermissionManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('skills')} element={isAdminLikeRole(role) ? <SkillManager role={role} /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('memory')} element={isAdminLikeRole(role) ? <MemoryManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path={getPathForTab('route_samples')} element={isSuperAdminRole(role) ? <RouteSampleManager /> : <Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+          <Route path="*" element={<Navigate replace to={getPathForTab(defaultHomeTab)} />} />
+        </Routes>
       </main>
     </div>
   )

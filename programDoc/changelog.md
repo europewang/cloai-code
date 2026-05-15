@@ -1,7 +1,173 @@
 # 变更日志
 
-> 更新时间：2026-05-14（第十三次）
+> 更新时间：2026-05-15（第十七次）
 > 作用：每次重要改动后追加，按时间倒序排列。
+
+---
+
+## 2026-05-15（第十七次）资源卡片左上角移出按钮改为悬浮显示 ✅
+
+**需求**：
+1. 知识库、技能库、数据库、模型库中的内容卡片，左上角 `×` 不要持久显示
+2. 只有鼠标悬浮到卡片上时才显示，并与右上角操作区交互一致
+
+**修改**：
+- 在 `frontend/src/App.jsx` 的共享分组卡片容器中补充 `group`
+- 将左上角“移出分组”按钮改为：
+  - 默认 `opacity-0`
+  - 悬浮时 `group-hover:opacity-100`
+  - 聚焦时 `focus:opacity-100`
+- 在 `frontend/src/pages/knowledge/KnowledgePage.jsx` 中同步相同改法
+
+**影响范围**：
+- 知识库卡片
+- 技能库卡片
+- 数据库卡片
+- 模型库卡片
+
+**验证**：
+- `KnowledgePage.jsx` 诊断无错误
+- `App.jsx` 无新增错误，仅保留历史 Hint
+- 本地执行 `cd frontend && npm run build` 通过 ✅
+
+**专项文档**：
+- `programDoc/specs/bugfix-card-hover-remove-button-20260515.md`
+
+---
+
+## 2026-05-15（第十六次）智能问答历史会话侧边栏显示修复 ✅
+
+**问题**：
+1. 用户反馈已有历史会话在前端“智能问答”侧边栏中不显示
+2. 视觉上表现为“历史对话不见了”
+
+**排查**：
+- 使用 `curl` 直接验证后端接口：
+  - 管理员账号 `GET /api/v1/conversations` 返回 2 条历史会话
+  - 普通用户 `zhangsan` 返回 4 条历史会话
+- 结论是后端会话数据存在，问题不在接口返回
+- 继续排查代码后确认：`frontend/src/App.jsx` 仍在调用 `normalizeConversationId/Title`，但函数定义在聊天页迁移时被一起移走了
+
+**根因**：
+- `App.jsx` 会话加载成功后，在映射会话数据阶段触发 `ReferenceError`
+- 原先异常被 `catch {}` 静默吞掉，导致 `chatConversations` 一直保持空数组
+- 同时 `AppSidebar.jsx` 对排序状态缺少兜底，也会放大“历史会话不显示”的现象
+
+**修复**：
+- 在 `frontend/src/App.jsx` 中补回 `normalizeConversationId` 和 `normalizeConversationTitle`
+- 将静默 `catch {}` 改为 `console.error(...)`
+- 在 `frontend/src/components/AppSidebar.jsx` 中增加历史会话兜底合并逻辑
+- 进入“智能问答”页时自动展开会话列表，避免误判为“没有会话”
+
+**验证**：
+- `AppSidebar.jsx` 诊断无错误
+- 本地执行 `cd frontend && npm run build` 通过 ✅
+
+**专项文档**：
+- `programDoc/specs/bugfix-chat-history-sidebar-20260515.md`
+
+---
+
+## 2026-05-15（第十五次）知识库页迁移到独立页面 ✅
+
+**需求**：
+1. 按侧边栏一级栏目做大件拆分，让 `App.jsx` 继续退回编排层
+2. 在已完成 `ChatPage` 的基础上，继续迁出知识库页
+3. 保持知识库列表、分组、详情、文档上传/解析/预览等能力不变
+
+**改动概述**：
+
+### 页面迁移
+- 新增 `frontend/src/pages/knowledge/KnowledgePage.jsx`
+- 将原 `DatasetManager` 的主流程迁移为独立页面路由组件
+- 知识库页内部同时收纳了知识库详情、文档表格、文档预览、分组导航、拖拽落组等专属子组件
+- `frontend/src/App.jsx` 的知识库路由改为直接装配 `KnowledgePage`
+
+### 共享 API 抽离
+- 扩展 `frontend/src/lib/appApi.js`
+- 新增知识库页相关接口封装：
+  - `fetchDatasets`
+  - `createDataset`
+  - `updateDatasetShare`
+  - `deleteDataset`
+  - `deleteDatasets`
+  - `updateDataset`
+  - `updateDocument`
+  - `fetchDocuments`
+  - `uploadDocument`
+  - `deleteDocuments`
+  - `runDocuments`
+  - `getDocumentFile`
+  - `fetchChunks`
+- 让页面级迁移不再依赖 `App.jsx` 内部 API helper
+
+### AppShell 收敛进展
+- `ChatPage` 已独立
+- `KnowledgePage` 已独立
+- `App.jsx` 继续从“页面实现文件”收敛为“路由装配层”
+- 下一优先迁移目标收敛为 `DatabasePage`
+
+**验证**：
+- `GetDiagnostics`：
+  - `frontend/src/pages/knowledge/KnowledgePage.jsx` 无错误
+  - `frontend/src/lib/appApi.js` 无错误
+- 本地执行 `cd frontend && npm run build` 通过 ✅
+
+**专项文档**：
+- `programDoc/specs/bugfix-frontend-routing-sidebar-chat-20260515.md`
+- `programDoc/specs/frontend-app-shell-refactor-plan-20260515.md`
+
+---
+
+## 2026-05-15（第十四次）前端路由、侧边栏排序与智能问答输入改造 ✅
+
+**需求**：
+1. 侧边栏“智能问答”支持与其他栏目一致的自由拖拽排序
+2. 智能问答页移除记忆 profile 输入和默认提示语
+3. 输入框 `@技能` 自动弹出候选，并按使用频率排序，统一语义为“请使用 xxx 技能”
+4. 刷新页面时保持当前页面，且默认首页取侧边栏排序后的第一项
+5. 拆分过大的 `frontend/src/App.jsx`
+
+**改动概述**：
+
+### 路由与默认页
+- `frontend/src/main.jsx` 接入 `BrowserRouter`
+- 新增 `frontend/src/utils/appRouting.js`，统一管理 `tab -> path` 映射
+- `App` 改为从 URL 推导当前页面，并用 `<Routes>` 渲染各页面
+- 根路径 `/` 和未知路径统一跳转到“当前侧边栏排序后的第一项”
+
+### 侧边栏排序
+- 新增 `frontend/src/components/AppSidebar.jsx`
+- 将“智能问答”从固定项改为可拖拽项，和其余菜单共享同一套排序逻辑
+- 侧边栏顺序继续按用户维度保存在本地存储
+
+### 智能问答输入精简与增强
+- 移除“当前记忆 profile（可选）”输入框
+- 移除输入框下方预置示例语句
+- 新增 `frontend/src/utils/skillMentions.js`
+- `@技能` 候选按“关键字匹配 + 使用频率 + 名称”排序
+- 匹配到 `@技能名` 后统一改写为“请使用 xxx 技能”
+
+### 代码拆分
+- 新增 `frontend/src/components/SkillChatModal.jsx`
+- 新增 `frontend/src/components/chat/ChatMessagesPanel.jsx`
+- 新增 `frontend/src/components/chat/ChatComposer.jsx`
+- 新增 `frontend/src/components/chat/ToolDraftCard.jsx`
+- `App.jsx` 删除内联的侧边栏与技能弹窗实现，职责收敛到应用壳层和页面编排
+- 新文件补充了关键注释，说明拖拽排序、路由默认页和技能语义改写逻辑
+- `ChatInterface` 继续拆分为“消息流 / 输入区 / 技能草稿区”三个独立组件
+- 新增长期重构方案文档 `programDoc/specs/frontend-app-shell-refactor-plan-20260515.md`，作为后续智能体执行“按侧边栏一级栏目拆分 `App.jsx`”的统一说明
+
+### 追加修复
+- 修复数据库页面运行时报错：`Plus is not defined`
+- 原因为图标导入遗漏，已在 `frontend/src/App.jsx` 补回 `Plus`
+
+**验证**：
+- 未启动 Docker
+- 本地执行 `cd frontend && npm run build` 通过 ✅
+
+**专项文档**：
+- `programDoc/specs/bugfix-frontend-routing-sidebar-chat-20260515.md`
 
 ---
 

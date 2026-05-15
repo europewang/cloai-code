@@ -1,6 +1,6 @@
 # cloai-code 项目进度总览
 
-> 更新时间：2026-05-14（第十三次）
+> 更新时间：2026-05-15（第十七次）
 > 作用：唯一进度来源。每次改动后同步更新，其他文档引用本文件。
 
 ---
@@ -202,6 +202,21 @@
 
 依赖：lucide-react、react-markdown、remark-gfm、react-pdf、pdfjs-dist、recharts、tailwind-merge、clsx
 
+### 2.17 前端壳层与路由重构
+
+1. 前端主页面切换从单一 `activeTab` 内存态升级为 `react-router-dom` 子路由
+2. 默认首页改为“当前用户侧边栏排序后的第一项”
+3. 侧边栏组件拆分为 `frontend/src/components/AppSidebar.jsx`
+4. 技能对话弹窗拆分为 `frontend/src/components/SkillChatModal.jsx`
+5. 页面路径映射独立到 `frontend/src/utils/appRouting.js`
+6. 技能频率排序与 `@技能` 语义改写独立到 `frontend/src/utils/skillMentions.js`
+7. 智能问答页移除记忆 profile 输入和默认示例文案，主输入区更精简
+8. `ChatInterface` 已进一步拆分为 `ChatMessagesPanel`、`ChatComposer`、`ToolDraftCard`
+9. 已形成独立的长期重构说明：`programDoc/specs/frontend-app-shell-refactor-plan-20260515.md`
+10. `ChatInterface` 已整体迁移到 `frontend/src/pages/chat/ChatPage.jsx`
+11. `DatasetManager` 已整体迁移到 `frontend/src/pages/knowledge/KnowledgePage.jsx`
+12. 聊天页与知识库页所需共享接口已抽离到 `frontend/src/lib/appApi.js`
+
 ### 2.16 运维与脚本
 
 1. `ops:cleanup-s3-orphans` — S3 孤立对象清理
@@ -220,10 +235,89 @@
 1. 多用户端到端验证：持续验证各角色权限隔离正确性
 2. 接口鉴权强化：令牌轮换、refreshToken 黑名单机制
 3. 管理侧查询能力：权限/审计查询的分页与过滤
+4. 前端继续拆分数据库页、技能库、模型库等大型页面，降低 `App.jsx` 体量
+5. 前端重构主线已明确为“按侧边栏一级栏目做大件拆分”，详见 `programDoc/specs/frontend-app-shell-refactor-plan-20260515.md`
 
 ---
 
 ## 4. 已完成内容（按日期）
+
+### 2026-05-15（第十七次）资源卡片左上角移出按钮悬浮显示优化 ✅
+
+**需求**：知识库、技能库、数据库、模型库中的内容卡片，左上角 `×` 改为仅在悬浮时显示。
+
+**修复**：
+- `frontend/src/App.jsx` 的共享分组卡片容器增加 `group`
+- 左上角“移出分组”按钮改为默认隐藏，悬浮显示，聚焦可见
+- `frontend/src/pages/knowledge/KnowledgePage.jsx` 同步同样逻辑
+
+**影响范围**：
+- 知识库卡片
+- 技能库卡片
+- 数据库卡片
+- 模型库卡片
+
+**验证**：
+- `KnowledgePage.jsx` 诊断无错误 ✅
+- `App.jsx` 无新增错误，仅有历史 Hint ✅
+- 前端本地构建通过：`cd frontend && npm run build` ✅
+
+### 2026-05-15（第十六次）智能问答历史会话侧边栏显示修复 ✅
+
+**问题**：用户反馈“智能问答”中已有历史会话不显示。
+
+**排查**：
+- 使用 `curl` 直接验证 `POST /api/v1/auth/login` 与 `GET /api/v1/conversations`
+- 确认管理员账号和普通用户账号都能从后端拿到历史会话数据
+- 进一步确认 `frontend/src/App.jsx` 在会话映射阶段调用了已丢失的 `normalizeConversationId/Title`
+- 因此定位为前端会话加载链路问题，而非会话数据丢失
+
+**修复**：
+- `frontend/src/App.jsx` 补回会话标准化函数，并将静默异常改为 `console.error(...)`
+- `frontend/src/components/AppSidebar.jsx` 改为容错渲染会话列表
+- 排序命中的会话优先显示，未命中的历史会话自动补回列表
+- 进入“智能问答”页时自动展开会话列表
+
+**验证**：
+- `AppSidebar.jsx` 诊断无错误 ✅
+- 前端本地构建通过：`cd frontend && npm run build` ✅
+
+### 2026-05-15（第十五次）知识库页迁移到独立页面 ✅
+
+**需求**：继续按侧边栏一级栏目做大件拆分，让 `App.jsx` 进一步回退为编排层。
+
+**改动**：
+- 新增 `frontend/src/pages/knowledge/KnowledgePage.jsx`
+- 将原 `DatasetManager` 页面迁移为独立路由页，并保留知识库分组、详情、文档上传/解析/预览能力
+- 扩展 `frontend/src/lib/appApi.js`，抽离知识库页相关共享接口
+- `frontend/src/App.jsx` 的知识库路由改为直接装配 `KnowledgePage`
+- 至此第一批大件迁移已完成两块：`ChatPage`、`KnowledgePage`
+
+**验证**：
+- `GetDiagnostics`：`KnowledgePage.jsx`、`appApi.js` 均无错误 ✅
+- 前端本地构建通过：`cd frontend && npm run build` ✅
+
+### 2026-05-15（第十四次）前端路由、侧边栏排序与智能问答输入改造 ✅
+
+**需求**：让“智能问答”支持自由拖拽排序；智能问答页精简；`@技能` 增强；刷新保持当前页；拆分过大的 `App.jsx`。
+
+**改动**：
+- `frontend/src/main.jsx` 接入 `BrowserRouter`
+- `App` 主内容区改为 `<Routes>` 路由编排，支持 `/qa`、`/knowledge`、`/databases`、`/skill-library`、`/models` 等子路由
+- 默认首页改为侧边栏排序后的第一个栏目，而不是写死某个 `activeTab`
+- 新增 `frontend/src/components/AppSidebar.jsx`，将主侧边栏和智能问答子侧边栏整体拆出
+- 新增 `frontend/src/components/SkillChatModal.jsx`，拆出技能聊天弹窗
+- 新增 `frontend/src/components/chat/ChatMessagesPanel.jsx`，抽离消息流容器
+- 新增 `frontend/src/components/chat/ChatComposer.jsx`，抽离聊天输入区
+- 新增 `frontend/src/components/chat/ToolDraftCard.jsx`，抽离技能草稿卡片
+- 新增 `frontend/src/utils/appRouting.js` 和 `frontend/src/utils/skillMentions.js`
+- 智能问答页移除“当前记忆 profile（可选）”输入及默认提示语
+- `@技能` 改为自动候选 + 使用频率排序 + 语义改写为“请使用 xxx 技能”
+- 追加修复 `DatabaseLibrary` 页的 `Plus is not defined` 运行时报错
+- 新增长期架构规划文档 `programDoc/specs/frontend-app-shell-refactor-plan-20260515.md`，明确后续应按侧边栏一级栏目做大件迁移，使 `App.jsx` 退回编排层
+
+**验证**：
+- 前端本地构建通过：`cd frontend && npm run build` ✅
 
 ### 2026-05-14（第十三次）分组交互彻底改造 ✅
 
